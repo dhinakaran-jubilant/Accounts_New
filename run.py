@@ -186,10 +186,37 @@ def stream_process_output(process, tag, color):
     except Exception:
         pass
 
+import socket
+
+def get_local_network_ip():
+    """Detects primary local network IPv4 address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return '127.0.0.1'
+
 def main():
+    network_ip = get_local_network_ip()
+    backend_host = os.environ.get('HOST', '0.0.0.0')
+    backend_port = os.environ.get('PORT', os.environ.get('BACKEND_PORT', '1110'))
+    frontend_port = os.environ.get('VITE_PORT', os.environ.get('FRONTEND_PORT', '1111'))
+
     print(f"""
 {CYAN}{BOLD}=======================================================
    LoanDesk - Unified Backend & Frontend
+   Host Machine:      {socket.gethostname()}
+   Server Network IP: {network_ip}
+   Frontend Local:    http://localhost:{frontend_port}
+   Frontend Network:  http://{network_ip}:{frontend_port}
+   Backend Local:     http://localhost:{backend_port}
+   Backend Network:   http://{network_ip}:{backend_port}
 ======================================================={RESET}
     """)
 
@@ -219,12 +246,14 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     # Launch Backend
-    backend_host = os.environ.get('HOST', '127.0.0.1')
-    backend_port = os.environ.get('PORT', os.environ.get('BACKEND_PORT', '1110'))
-    log("BACKEND", f"Starting Flask server on http://{backend_host}:{backend_port} ...", CYAN)
+    log("BACKEND", f"Starting Flask server on http://{network_ip}:{backend_port} ...", CYAN)
+    env_backend = os.environ.copy()
+    env_backend['HOST'] = backend_host
+    env_backend['PORT'] = str(backend_port)
     backend_proc = subprocess.Popen(
         [venv_python, "app.py"],
         cwd=BACKEND_DIR,
+        env=env_backend,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -234,10 +263,9 @@ def main():
 
     # Launch Frontend
     npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-    frontend_port = os.environ.get('VITE_PORT', os.environ.get('FRONTEND_PORT', '1111'))
-    log("FRONTEND", f"Starting Vite frontend on port {frontend_port} ...", GREEN)
+    log("FRONTEND", f"Starting Vite frontend on http://{network_ip}:{frontend_port} ...", GREEN)
     frontend_proc = subprocess.Popen(
-        [npm_cmd, "run", "dev"],
+        [npm_cmd, "run", "dev", "--", "--host", "0.0.0.0", "--port", str(frontend_port)],
         cwd=FRONTEND_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
