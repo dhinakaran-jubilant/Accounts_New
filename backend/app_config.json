@@ -1,0 +1,4 @@
+{
+    "require_secondary_approval": true,
+    "require_admin_approval": true
+}
