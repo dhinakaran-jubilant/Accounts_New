@@ -13,6 +13,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const host = env.VITE_HOST || '0.0.0.0';
+  const port = parseInt(env.VITE_PORT || env.PORT || '1111', 10);
   const proxyTarget = env.VITE_PROXY_TARGET || 'http://127.0.0.1:1110';
 
   return {
