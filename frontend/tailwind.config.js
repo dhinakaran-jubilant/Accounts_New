@@ -6,12 +6,23 @@ Date: 2026-04-30 18:41
 Description: Tailwind CSS configuration defining theme extensions, color schemes, and content purge paths.
 */
 
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: "class",
   content: [
+    path.resolve(__dirname, "index.html"),
+    path.resolve(__dirname, "src/**/*.{js,ts,jsx,tsx}"),
+    path.resolve(__dirname, "*.{js,ts,jsx,tsx}"),
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
+    "./frontend/index.html",
+    "./frontend/src/**/*.{js,ts,jsx,tsx}",
     "./*.{js,ts,jsx,tsx}",
   ],
   theme: {

@@ -207,6 +207,11 @@ def serialize_pg_loan_to_joint(l):
 
     primary_tag = get_acronym(l.primary_account_name) or 'SCS'
     
+    pri_share_val = l.primary_account_share if l.primary_account_share is not None else (
+        (100.0 - sum(float(r.percentage or 0) for r in l.remaining_accounts)) if l.remaining_accounts else 60.0
+    )
+    pri_share_formatted = format_pct_val(pri_share_val)
+
     primary_details = {
         'id': f"acc-pri-{l.id}",
         'isPrimary': True,
@@ -219,7 +224,7 @@ def serialize_pg_loan_to_joint(l):
         'interest': round(float(l.primary_account_interest or 0), 2),
         'interestRate': num_rate if num_rate is not None else '',
         'repayAmount': round(float((l.primary_account_amount or 0) + (l.primary_account_interest or 0)), 2),
-        'share': format_pct_val(l.primary_account_share or 60),
+        'share': pri_share_formatted,
     }
     
     account_details = [primary_details]
@@ -277,11 +282,22 @@ def serialize_pg_loan_to_joint(l):
         p_target = getattr(s, 'payout_approval_target', None)
         p_role = getattr(s, 'payout_requested_role', None)
 
+        has_recd = bool(s.received_date and str(s.received_date).strip() not in ('', '-', '—', 'None'))
+        has_pay = bool(s.payment_date and str(s.payment_date).strip() not in ('', '-', '—', 'None'))
+        is_p_approved = has_pay and bool(getattr(s, 'payout_approved_by', None))
+
         if p_status == 'PENDING':
             if not p_target:
                 p_target = 'PRIMARY' if p_role == 'SECONDARY' else 'SECONDARY'
             if not p_role:
                 p_role = 'SECONDARY' if p_target == 'PRIMARY' else 'PRIMARY'
+        elif is_p_approved:
+            p_status = 'APPROVED'
+            p_target = None
+        elif has_recd and not is_p_approved:
+            p_status = 'PENDING'
+            p_target = 'SECONDARY'
+            p_role = 'PRIMARY'
         elif not p_status and s.payment_date:
             p_status = 'APPROVED'
             p_target = None
@@ -323,14 +339,42 @@ def serialize_pg_loan_to_joint(l):
             'splits': splits_data
         })
         
-    if l.approval_status == 'CLOSED':
-        badge_status = 'Closed'
-    elif l.approval_status == 'REJECTED':
+    has_payout_pending = False
+    all_settled = len(repayment_schedule_list) > 0
+    for s_item in repayment_schedule_list:
+        p_stat = (s_item.get('payout_approval_status') or s_item.get('payoutApprovalStatus') or '').upper()
+        if p_stat == 'PENDING':
+            has_payout_pending = True
+
+        sp_data = s_item.get('splits')
+        if sp_data and isinstance(sp_data, dict):
+            if not sp_data.get('isFinalSettled'):
+                stat_a = (sp_data.get('payoutApprovalStatusA') or '').upper()
+                stat_b = (sp_data.get('payoutApprovalStatusB') or '').upper()
+                due_a = sp_data.get('dueDateA')
+                due_b = sp_data.get('dueDateB')
+                recd_a = sp_data.get('recdDateA') or sp_data.get('recdDate')
+                recd_b = sp_data.get('recdDateB')
+                if stat_a == 'PENDING' or stat_b == 'PENDING':
+                    has_payout_pending = True
+                if not recd_a or not due_a or stat_a != 'APPROVED':
+                    all_settled = False
+                if (recd_b or due_b) and (not recd_b or not due_b or stat_b != 'APPROVED'):
+                    all_settled = False
+        else:
+            if not s_item.get('received_date') or not s_item.get('payment_date') or p_stat != 'APPROVED':
+                all_settled = False
+
+    if l.approval_status == 'REJECTED':
         badge_status = 'Rejected'
     elif l.approval_status in ['PENDING_SECONDARY', 'PENDING'] and not l.verified_by:
         badge_status = 'Pending Secondary'
     elif l.approval_status in ['PENDING_ADMIN', 'VERIFIED']:
         badge_status = 'Pending Admin'
+    elif has_payout_pending:
+        badge_status = 'Pending'
+    elif (all_settled or l.approval_status == 'CLOSED') and not has_payout_pending:
+        badge_status = 'Closed'
     elif has_overdue and l.approval_status == 'APPROVED':
         badge_status = 'Overdue'
     elif l.approval_status == 'APPROVED':
@@ -406,8 +450,8 @@ def serialize_pg_loan_to_joint(l):
         'totalRepayAmount': float(l.total_repayment_amount or 0),
         'total_interest': float(l.total_interest or 0),
         'totalInterest': float(l.total_interest or 0),
-        'primaryShare': format_pct_val(l.primary_account_share or 60),
-        'coShare': format_pct_val(100.0 - float(l.primary_account_share or 60)),
+        'primaryShare': pri_share_formatted,
+        'coShare': format_pct_val(100.0 - float(pri_share_val)),
         'rate': rate_val,
         'interest_rate': rate_val,
         'interestRate': rate_val,
@@ -442,7 +486,8 @@ def serialize_pg_loan_to_joint(l):
         'edited_by': getattr(l, 'edited_by', None),
         'editedBy': getattr(l, 'edited_by', None),
         'history': (json.loads(l.history) if getattr(l, 'history', None) and isinstance(l.history, str) else (l.history if isinstance(getattr(l, 'history', None), list) else [])) if hasattr(l, 'history') else [],
-        'repaymentSchedule': repayment_schedule_list
+        'repaymentSchedule': repayment_schedule_list,
+        'repayment_schedule': repayment_schedule_list
     }
 
 # Helper to safely convert values to float
@@ -806,12 +851,19 @@ def create_joint_loan():
         borrower_address = payload.get('primaryBorrower', {}).get('address') or payload.get('address') or ''
         borrower_contact = payload.get('primaryBorrower', {}).get('contact') or payload.get('contact') or ''
         amount = float(payload.get('amount') or 500000)
-        pri_share = float(payload.get('primaryShare') or 60)
-        pri_name = payload.get('primaryAccountName') or payload.get('primary') or ''
-        pri_amount = round((amount * pri_share) / 100.0, 2)
-        pri_interest = round(pri_amount * 0.072 * 1.5, 2)
-        
         sec_accs = payload.get('secondaryAccounts') or []
+        pri_share_in = payload.get('primaryShare')
+        if pri_share_in is not None and str(pri_share_in).strip() != '':
+            pri_share = float(pri_share_in)
+        elif sec_accs:
+            sec_pct_sum = sum(float(s.get('share') or s.get('percentage') or 0) for s in sec_accs)
+            pri_share = max(0.0, 100.0 - sec_pct_sum)
+        else:
+            pri_share = 60.0
+
+        pri_name = payload.get('primaryAccountName') or payload.get('primary') or ''
+        pri_amount = float(payload['primary_account_amount']) if payload.get('primary_account_amount') is not None else round((amount * pri_share) / 100.0, 2)
+        pri_interest = float(payload['primary_account_interest']) if payload.get('primary_account_interest') is not None else round(pri_amount * 0.072 * 1.5, 2)
         sec_total_share = 100.0 - pri_share
         sec_share_per = sec_total_share / len(sec_accs) if sec_accs else sec_total_share
         
@@ -963,7 +1015,7 @@ def update_joint_loan(loan_id):
 
         pri_share = payload.get('primaryShare')
         if pri_share is not None and str(pri_share).strip() != '':
-            loan.primary_account_share = safe_float(pri_share, loan.primary_account_share or 60.0)
+            loan.primary_account_share = safe_float(pri_share, loan.primary_account_share if loan.primary_account_share is not None else 60.0)
 
         if 'amount' in payload and payload['amount'] is not None and str(payload['amount']).strip() != '':
             loan.loan_amount = safe_float(payload['amount'], loan.loan_amount or 0.0)
@@ -998,7 +1050,7 @@ def update_joint_loan(loan_id):
                     if not pri_name and pri_detail.get('accountName'):
                         loan.primary_account_name = str(pri_detail['accountName']).strip()
                     if pri_share is None and pri_detail.get('share') is not None:
-                        loan.primary_account_share = safe_float(pri_detail['share'], loan.primary_account_share or 60.0)
+                        loan.primary_account_share = safe_float(pri_detail['share'], loan.primary_account_share if loan.primary_account_share is not None else 60.0)
                     if pri_amount is None and pri_detail.get('principal') is not None:
                         loan.primary_account_amount = safe_float(pri_detail['principal'], loan.primary_account_amount or 0.0)
                     if pri_interest is None and pri_detail.get('interest') is not None:
@@ -1052,7 +1104,7 @@ def update_joint_loan(loan_id):
             loan.edited_by = 'User'
 
         db.session.commit()
-        return jsonify({"success": True, "loan": serialize_joint_loan(loan)})
+        return jsonify({"success": True, "loan": serialize_pg_loan_to_joint(loan)})
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error updating loan: {e}")
@@ -1493,6 +1545,13 @@ def save_schedule_override(loan_id):
                             if field == 'receivedDate':
                                 curr_splits['recdDateA'] = value
                                 curr_splits['recdDate'] = value
+                                if value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusA') != 'APPROVED':
+                                    curr_splits['payoutApprovalStatusA'] = 'PENDING'
+                                    sch.payout_approval_status = 'PENDING'
+                                    sch.payout_approval_target = 'SECONDARY'
+                                    sch.payout_requested_role = 'PRIMARY'
+                                    sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
+                                    sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
                             elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
                                 curr_splits['dueDateA'] = value
                                 payout_override_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
@@ -1538,6 +1597,13 @@ def save_schedule_override(loan_id):
                         elif sub_part == 'B':
                             if field == 'receivedDate':
                                 curr_splits['recdDateB'] = value
+                                if value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusB') != 'APPROVED':
+                                    curr_splits['payoutApprovalStatusB'] = 'PENDING'
+                                    sch.payout_approval_status = 'PENDING'
+                                    sch.payout_approval_target = 'SECONDARY'
+                                    sch.payout_requested_role = 'PRIMARY'
+                                    sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
+                                    sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
                             elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
                                 curr_splits['dueDateB'] = value
                                 payout_override_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
@@ -1584,6 +1650,12 @@ def save_schedule_override(loan_id):
                     else:
                         if field == 'receivedDate':
                             sch.received_date = value
+                            if value and str(value).strip() not in ('-', '—', '') and not getattr(sch, 'payout_approved_by', None):
+                                sch.payout_approval_status = 'PENDING'
+                                sch.payout_approval_target = 'SECONDARY'
+                                sch.payout_requested_role = 'PRIMARY'
+                                sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
+                                sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
                         elif field == 'date':
                             sch.date = value
                         elif field == 'chequeNo':
@@ -1769,9 +1841,31 @@ def handle_payout_approval(loan_id, s_no):
         # Check if all installments are now collected & payout approved -> mark loan closed
         all_settled = True
         for item in loan.repayment_schedule:
-            if not item.received_date or (item.payout_approval_status and item.payout_approval_status != 'APPROVED'):
-                all_settled = False
-                break
+            sp_data = None
+            if item.splits:
+                try:
+                    sp_data = json.loads(item.splits) if isinstance(item.splits, str) else item.splits
+                except Exception:
+                    sp_data = None
+            if sp_data and isinstance(sp_data, dict):
+                if not sp_data.get('isFinalSettled'):
+                    stat_a = (sp_data.get('payoutApprovalStatusA') or '').upper()
+                    stat_b = (sp_data.get('payoutApprovalStatusB') or '').upper()
+                    recd_a = sp_data.get('recdDateA') or sp_data.get('recdDate')
+                    recd_b = sp_data.get('recdDateB')
+                    due_a = sp_data.get('dueDateA')
+                    due_b = sp_data.get('dueDateB')
+                    if not recd_a or not due_a or stat_a != 'APPROVED':
+                        all_settled = False
+                        break
+                    if (recd_b or due_b) and (not recd_b or not due_b or stat_b != 'APPROVED'):
+                        all_settled = False
+                        break
+            else:
+                p_stat = getattr(item, 'payout_approval_status', None)
+                if not item.received_date or not item.payment_date or p_stat != 'APPROVED':
+                    all_settled = False
+                    break
         if all_settled and len(loan.repayment_schedule) > 0:
             loan.approval_status = 'CLOSED'
             loan.status = 'Closed'

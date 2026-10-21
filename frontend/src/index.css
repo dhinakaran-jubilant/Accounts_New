@@ -12,6 +12,19 @@ Description: Global stylesheet defining Tailwind base directives, custom CSS var
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-primary: #a73a00;
+  --color-primary-container: #ff5c00;
+  --color-on-primary: #ffffff;
+  --color-surface: #f8fafc;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f1f5f9;
+  --color-surface-container: #e2e8f0;
+  --color-surface-container-high: #cbd5e1;
+  --color-surface-container-highest: #94a3b8;
+  --color-on-surface: #0f172a;
+}
+
 @layer base {
   html,
   body {
@@ -22,8 +35,10 @@ Description: Global stylesheet defining Tailwind base directives, custom CSS var
 
   body {
     overscroll-behavior: none;
-    background-color: #f9f9f9;
-    color: #1a1c1c;
+    background-color: #f8fafc;
+    color: #0f172a;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   main > :first-child {
@@ -109,3 +124,29 @@ Description: Global stylesheet defining Tailwind base directives, custom CSS var
 .text-scale-30 { font-size: 30px; line-height: 36px; }
 .text-scale-32 { font-size: 32px; line-height: 38px; }
 .text-scale-36 { font-size: 36px; line-height: 44px; }
+
+/* Custom theme utility fallbacks */
+.bg-surface { background-color: var(--color-surface, #f8fafc) !important; }
+.bg-surface-container-lowest { background-color: var(--color-surface-container-lowest, #ffffff) !important; }
+.bg-surface-container-low { background-color: var(--color-surface-container-low, #f1f5f9) !important; }
+.bg-surface-container { background-color: var(--color-surface-container, #e2e8f0) !important; }
+.bg-surface-container-high { background-color: var(--color-surface-container-high, #cbd5e1) !important; }
+.bg-surface-container-highest { background-color: var(--color-surface-container-highest, #94a3b8) !important; }
+.bg-primary { background-color: var(--color-primary, #a73a00) !important; }
+.bg-primary-container { background-color: var(--color-primary-container, #ff5c00) !important; }
+.text-primary { color: var(--color-primary, #a73a00) !important; }
+.text-on-primary { color: var(--color-on-primary, #ffffff) !important; }
+.text-on-surface { color: var(--color-on-surface, #0f172a) !important; }
+.border-surface-container-low { border-color: var(--color-surface-container-low, #f1f5f9) !important; }
+
+.px-space-md { padding-left: 1rem !important; padding-right: 1rem !important; }
+.py-space-sm { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+.px-space-lg { padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
+.gap-space-sm { gap: 0.5rem !important; }
+.gap-space-md { gap: 1rem !important; }
+.gap-space-lg { gap: 1.5rem !important; }
+.p-space-md { padding: 1rem !important; }
+.p-space-lg { padding: 1.5rem !important; }
+.py-space-xl { padding-top: 2rem !important; padding-bottom: 2rem !important; }
+.px-space-xl { padding-left: 2rem !important; padding-right: 2rem !important; }
+

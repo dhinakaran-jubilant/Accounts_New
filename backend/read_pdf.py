@@ -51,6 +51,136 @@ def _ocr_page(page):
         return ""
 
 
+def clean_customer_name(raw_name):
+    """
+    Cleans customer name extracted from PDF / OCR:
+    - Strips photo/avatar placeholders and icon noise (e.g. 'vr, Nolmage', 'Nolmage', 'No Image', 'No Photo')
+    - Corrects common OCR character misrecognitions like ']' instead of 'J' (e.g. 'AF]' -> 'AFJ')
+    - Strips unwanted trailing commas, punctuation, and whitespace
+    """
+    if not raw_name:
+        return ""
+    s = str(raw_name).strip()
+    # Strip photo thumbnail/icon OCR artifacts and NoImage text
+    s = re.sub(r'(?i)\b(?:vr|yr|v~|vi|iv|pic|photo|img|icon|thumbnail)\b\s*,?\s*(?:No\s*Image|NoImage|Nolmage|No\s*Photo)?', '', s)
+    s = re.sub(r'(?i)\b(?:No\s*Image|NoImage|Nolmage|No\s*Photo|NoPhoto|S/o|W/o|D/o|C/o)\b', '', s)
+    s = re.sub(r'(?i)\b(?:vr|yr|v~|vi|iv)\b\s*$', '', s)
+
+    # Fix OCR misreading of 'J' as ']'
+    s = re.sub(r'(?<=[A-Z])\]', 'J', s)
+    s = re.sub(r'\](?=[A-Z])', 'J', s)
+    s = re.sub(r'\b\](?=[a-zA-Z])', 'J', s)
+
+    s = re.sub(r'\s+', ' ', s)
+    s = re.sub(r'[,.\s\-_/]+$', '', s).strip()
+    return s
+
+
+def parse_ocr_schedule(schedule_text, expected_emi=None):
+    """
+    Robust parser for OCR amortization schedules where table cells/dates wrap across lines.
+    Reconstructs dates (e.g. '21-' \n '09-' \n '2026' -> '21-09-2026') and matches EMI and Interest.
+    """
+    schedule = []
+    lines = [l.strip() for l in schedule_text.splitlines() if l.strip()]
+
+    inst_blocks = []
+    current_block = []
+
+    for line in lines:
+        if re.match(r'^\d{1,3}\s+(?:\d{1,2}[-/]|\d{1,2}\s+)', line):
+            if current_block:
+                inst_blocks.append(current_block)
+            current_block = [line]
+        elif current_block:
+            if line.startswith('http') or 'page' in line.lower() or 'finance' in line.lower():
+                continue
+            current_block.append(line)
+
+    if current_block:
+        inst_blocks.append(current_block)
+
+    for block in inst_blocks:
+        first_line = block[0]
+        # Match sNo and date parts on first line
+        m = re.match(r'^(\d+)\s+(\d{1,2})[-/](\d{1,2})?[-/]?(\d{4})?\s*(.*)$', first_line)
+        if not m:
+            continue
+        s_no = int(m.group(1))
+        part_day = m.group(2)
+        part_month = m.group(3)
+        part_year = m.group(4)
+        rest_of_line = m.group(5)
+
+        for sub_line in block[1:]:
+            # Check combined month-year '09-2026'
+            my_m = re.match(r'^(\d{1,2})[-/](\d{4})$', sub_line)
+            if my_m:
+                if not part_month:
+                    part_month = my_m.group(1)
+                if not part_year:
+                    part_year = my_m.group(2)
+                continue
+            # Check month '09-' or '09'
+            if not part_month:
+                sub_m = re.match(r'^(\d{1,2})[-/]?$', sub_line)
+                if sub_m:
+                    part_month = sub_m.group(1)
+                    continue
+            # Check year '2026'
+            if not part_year:
+                sub_y = re.match(r'^(\d{4})$', sub_line)
+                if sub_y:
+                    part_year = sub_y.group(1)
+                    continue
+
+        if part_day and part_month and part_year:
+            due_date = f'{int(part_day):02d}-{int(part_month):02d}-{part_year}'
+        else:
+            due_date = ''
+
+        nums = [float(x.replace(',', '')) for x in re.findall(r'[\d,]+\.?\d*', rest_of_line)]
+
+        emi = None
+        interest = 0.0
+
+        if len(nums) >= 4:
+            # Check Principal (nums[2]) + Interest (nums[3]) == EMI (nums[1])
+            if abs((nums[2] + nums[3]) - nums[1]) < 2.0:
+                emi = nums[1]
+                interest = nums[3]
+            elif abs((nums[1] + nums[2]) - nums[0]) < 2.0:
+                emi = nums[0]
+                interest = nums[2]
+            elif expected_emi and abs(nums[1] - expected_emi) < 2.0:
+                emi = nums[1]
+                interest = nums[3]
+            else:
+                emi = nums[1]
+                interest = nums[3]
+        elif len(nums) >= 3:
+            if abs((nums[1] + nums[2]) - nums[0]) < 2.0:
+                emi = nums[0]
+                interest = nums[2]
+            else:
+                emi = nums[0]
+                interest = nums[1]
+        elif len(nums) >= 1:
+            emi = nums[0]
+
+        if emi is not None:
+            schedule.append({
+                'date': due_date,
+                'amount': emi,
+                'interest_amount': interest,
+                'cheque_no': '',
+                'received_date': None,
+                'payment_date': None
+            })
+
+    return schedule
+
+
 def extract_pdf_data(pdf_path):
     output = {
         "loan_number": None,
@@ -62,6 +192,8 @@ def extract_pdf_data(pdf_path):
         "loan_amount": None,
         "total_repayment": None,
         "interest_rate": None,
+        "emi": None,
+        "total_installments": None,
         "table": []
     }
 
@@ -101,9 +233,7 @@ def extract_pdf_data(pdf_path):
             raw_lines = [line.strip() for line in cust_text.splitlines() if line.strip()]
             if raw_lines:
                 # First line is name
-                name_clean = re.sub(r"(?i)\b(No\s*Image|NoImage|Nolmage|S/o|W/o|D/o|C/o)\b", "", raw_lines[0]).strip()
-                name_clean = re.sub(r"[,.\s]+$", "", name_clean).strip()
-                output["client_account"] = name_clean
+                output["client_account"] = clean_customer_name(raw_lines[0])
 
                 addr_lines = []
                 contact_found = None
@@ -123,10 +253,7 @@ def extract_pdf_data(pdf_path):
         else:
             cust_block = re.search(r"Customer Details\s*\n\s*([^\n]+)", text, re.S)
             if cust_block:
-                output["client_account"] = (
-                    re.sub(r"(?i)\b(No\s*Image|NoImage|Nolmage|S/o|W/o|D/o|C/o)\b", "", str(cust_block.group(1)))
-                    .strip()
-                )
+                output["client_account"] = clean_customer_name(cust_block.group(1))
 
         # 4. Agreement Table Extraction
         if not is_scanned:
@@ -204,7 +331,6 @@ def extract_pdf_data(pdf_path):
                 # ------------------------------------------------------------------
                 if not page_text.strip():
                     page_text = _ocr_page(page)
-
                 if page_text:
                     match = re.search(
                         r'(\d{2}[-/]\d{2}[-/]\d{4})\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)\s+([\d,]+\.?\d*)',
@@ -212,8 +338,22 @@ def extract_pdf_data(pdf_path):
                     )
                     if match:
                         output["loan_date"] = match.group(1)
+                        try:
+                            output["emi"] = float(match.group(2).replace(",", ""))
+                        except Exception:
+                            pass
                         output["loan_amount"] = float(match.group(4).replace(",", ""))
                         output["total_repayment"] = float(match.group(5).replace(",", ""))
+
+                        # Total Installments (e.g. '4800000.00 6 (37.15% (Y)) 6')
+                        after_tot = page_text[match.end():match.end() + 100]
+                        inst_m = re.search(r'^\s*(\d+)', after_tot)
+                        if inst_m:
+                            try:
+                                output["total_installments"] = int(inst_m.group(1))
+                            except Exception:
+                                pass
+
                         rate_m = re.search(r'(\d+(?:\.\d+)?)\s*%\s*(?:\(\s*Y\s*\)|per\s*year|\(y\))?', page_text, re.I)
                         if rate_m:
                             output["interest_rate"] = f"{rate_m.group(1)}% per year"
@@ -286,8 +426,7 @@ def extract_pdf_data(pdf_path):
                                 logger.warning(f"Schedule row parse error (table): {e}")
                                 continue
             else:
-                # If it's scanned (OCR), extract_tables() won't work — fallback to regex
-                # page_text is already populated by _ocr_page() above
+                # If it's scanned (OCR), extract_tables() won't work — fallback to OCR schedule parser
                 if page_text.strip() and any(
                     kw in page_text for kw in ("Amortization", "Due Date", "EMI", "Due")
                 ):
@@ -297,23 +436,27 @@ def extract_pdf_data(pdf_path):
                     elif "Due Date" in page_text:
                         schedule_text = page_text.split("Due Date", 1)[1]
 
-                    matches = re.findall(
-                        r'(?:\d+\s+)?(\d{2}[-/]\d{2}[-/]\d{4})\s+[\d,]+\.?\d*\s+([\d,]+\.?\d*)\s+[\d,]+\.?\d*\s+([\d,]+\.?\d*)',
-                        schedule_text
-                    )
-                    for match in matches:
-                        try:
-                            schedule.append({
-                                "date": match[0],
-                                "amount": float(match[1].replace(",", "")),
-                                "interest_amount": float(match[2].replace(",", "")),
-                                "cheque_no": "",
-                                "received_date": None,
-                                "payment_date": None
-                            })
-                        except Exception as e:
-                            logger.warning(f"Schedule row parse error (OCR regex): {e}")
-                            continue
+                    parsed_ocr_rows = parse_ocr_schedule(schedule_text, expected_emi=output.get("emi"))
+                    if parsed_ocr_rows:
+                        schedule.extend(parsed_ocr_rows)
+                    else:
+                        matches = re.findall(
+                            r'(?:\d+\s+)?(\d{2}[-/]\d{2}[-/]\d{4})\s+[\d,]+\.?\d*\s+([\d,]+\.?\d*)\s+[\d,]+\.?\d*',
+                            schedule_text
+                        )
+                        for match in matches:
+                            try:
+                                schedule.append({
+                                    "date": match[0],
+                                    "amount": float(match[1].replace(",", "")),
+                                    "interest_amount": float(match[2].replace(",", "")),
+                                    "cheque_no": "",
+                                    "received_date": None,
+                                    "payment_date": None
+                                })
+                            except Exception as e:
+                                logger.warning(f"Schedule row parse error (OCR regex): {e}")
+                                continue
 
         output["table"] = schedule
 

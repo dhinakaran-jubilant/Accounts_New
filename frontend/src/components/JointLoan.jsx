@@ -7,8 +7,13 @@ Description: Joint loan management component handling loan booking, repayment sc
 */
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import api from '../services/api';
-import { exportJointLoanToExcel } from '../utils/jointLoanExport';
+import {
+	exportJointLoanToExcel,
+	exportJointLoansListToExcel,
+	exportOutstandingReportPerPrimaryAccount,
+} from '../utils/jointLoanExport';
 
 // Status badge styling helper for: Active, Overdue, Date Overdue, Closed, Pending
 export const getStatusBadge = (status) => {
@@ -419,24 +424,31 @@ export const getLoanAccountDetails = (loan) => {
 		: Number(loan.total_repayment_amount || loan.total_repayment || loan.totalRepayAmount || 0);
 
 	if (loan.accountDetails && loan.accountDetails.length > 0) {
-		if (totalSched > 0) {
-			const accRepaySum = loan.accountDetails.reduce((sum, a) => sum + (Number(a.repayAmount) || 0), 0);
-			if (accRepaySum !== totalSched) {
-				const totalPrin = loan.accountDetails.reduce((sum, a) => sum + (Number(a.principal) || 0), 0) || Number(loan.amount) || 0;
-				return loan.accountDetails.map((acc) => {
-					const sharePct = Number(acc.share != null ? acc.share : (totalPrin > 0 ? ((Number(acc.principal) || 0) / totalPrin) * 100 : 0)) || 0;
-					const accPrin = Number(acc.principal) || 0;
-					const accRepay = Math.round((totalSched * sharePct) / 100);
-					const accInt = Math.max(0, accRepay - accPrin);
-					return {
-						...acc,
-						interest: accInt,
-						repayAmount: accRepay,
-					};
-				});
+		const totalPrin = loan.accountDetails.reduce((sum, a) => sum + (Number(a.principal) || 0), 0) || Number(loan.amount) || 0;
+		const secAccounts = loan.accountDetails.filter((a) => !a.isPrimary);
+		const totalSecShare = secAccounts.reduce((sum, a) => sum + Number(a.share || 0), 0);
+
+		return loan.accountDetails.map((acc) => {
+			let sharePct = acc.share != null ? Number(formatSharePercent(acc.share)) : (totalPrin > 0 ? ((Number(acc.principal) || 0) / totalPrin) * 100 : 0);
+			if (acc.isPrimary) {
+				if (totalSecShare >= 100 || (Number(acc.principal) === 0 && totalSecShare > 0)) {
+					sharePct = Math.max(0, 100 - totalSecShare);
+				}
 			}
-		}
-		return loan.accountDetails;
+			const accPrin = Number(acc.principal) || 0;
+			const accInt = (totalSched > 0 && sharePct != null)
+				? Math.round(((totalSched - totalPrin) * sharePct) / 100)
+				: (Number(acc.interest) || 0);
+			const accRepay = (totalSched > 0 && sharePct != null)
+				? Math.round((totalSched * sharePct) / 100)
+				: (accPrin + accInt);
+			return {
+				...acc,
+				share: sharePct,
+				interest: Math.max(0, accInt),
+				repayAmount: accRepay,
+			};
+		});
 	}
 
 	const rawRate = parseFloat(String(loan.rate || '7.2').replace(/[^0-9.]/g, '')) || 7.2;
@@ -459,14 +471,40 @@ export const getLoanAccountDetails = (loan) => {
 
 	const priName = loan.primaryAccountName || loan.primary_account_name || loan.primaryBorrower?.name || 'Primary Account';
 	const priTag = loan.primary || (priName.split(' ').map((w) => w[0]).join('').slice(0, 4).toUpperCase()) || 'PRI';
-	const pShare = loan.primaryShare != null ? Number(formatSharePercent(loan.primaryShare)) : 60;
-	const pPrincipal = loan.primary_account_amount || Math.round((totalAmount * pShare) / 100);
-	const pInterest = hasSchedRepay
-		? Math.round((totalFacilityInterest * pShare) / 100)
-		: (loan.primary_account_interest || calculateInterest(pPrincipal, rawRate, pShare));
-	const pRepay = hasSchedRepay
-		? Math.round((totalSched * pShare) / 100)
-		: (pPrincipal + pInterest);
+	
+	const rawLoanPriShare = loan.primaryShare ?? loan.primary_account_share ?? loan.primarySharePct;
+	let pShare = 60;
+	if (loan.secondaryAccounts && loan.secondaryAccounts.length > 0) {
+		const secPctSum = loan.secondaryAccounts.reduce((sum, s) => sum + Number(s.share || s.percentage || 0), 0);
+		if (secPctSum >= 100 || (loan.primary_account_amount != null && Number(loan.primary_account_amount) === 0)) {
+			pShare = Math.max(0, 100 - secPctSum);
+		} else if (rawLoanPriShare != null && rawLoanPriShare !== '') {
+			pShare = Number(formatSharePercent(rawLoanPriShare));
+		} else {
+			pShare = Math.max(0, 100 - secPctSum);
+		}
+	} else if (rawLoanPriShare != null && rawLoanPriShare !== '') {
+		pShare = Number(formatSharePercent(rawLoanPriShare));
+	} else if (totalAmount > 0 && loan.primary_account_amount != null) {
+		pShare = ((Number(loan.primary_account_amount) || 0) / totalAmount) * 100;
+	}
+	pShare = Number(formatSharePercent(pShare));
+
+	const pPrincipal = pShare === 0
+		? 0
+		: (loan.primary_account_amount != null
+			? Number(loan.primary_account_amount)
+			: Math.round((totalAmount * pShare) / 100));
+	const pInterest = pShare === 0
+		? 0
+		: (hasSchedRepay
+			? Math.round((totalFacilityInterest * pShare) / 100)
+			: (loan.primary_account_interest != null ? Number(loan.primary_account_interest) : calculateInterest(pPrincipal, rawRate, pShare)));
+	const pRepay = pShare === 0
+		? 0
+		: (hasSchedRepay
+			? Math.round((totalSched * pShare) / 100)
+			: (pPrincipal + pInterest));
 
 	const accounts = [
 		{
@@ -524,14 +562,31 @@ export const getLoanAccountDetails = (loan) => {
 	return accounts;
 };
 
+// Helper to clean OCR artifacts from customer name (e.g. 'AF] ASSOCIATES vr' -> 'AFJ ASSOCIATES')
+export const cleanCustomerName = (rawName) => {
+	if (!rawName) return '';
+	let s = String(rawName).trim();
+	s = s.replace(/\b(?:vr|yr|v~|vi|iv|pic|photo|img|icon|thumbnail)\b\s*,?\s*(?:No\s*Image|NoImage|Nolmage|No\s*Photo)?/gi, '');
+	s = s.replace(/\b(?:No\s*Image|NoImage|Nolmage|No\s*Photo|NoPhoto|S\/o|W\/o|D\/o|C\/o)\b/gi, '');
+	s = s.replace(/\b(?:vr|yr|v~|vi|iv)\b\s*$/gi, '');
+	s = s.replace(/(?<=[A-Z])\]/g, 'J');
+	s = s.replace(/\](?=[A-Z])/g, 'J');
+	s = s.replace(/\b\](?=[a-zA-Z])/g, 'J');
+	s = s.replace(/\s+/g, ' ');
+	return s.replace(/[,.\s\-_/]+$/, '').trim();
+};
+
 // Helper to generate realistic installment repayment schedule
 export const generateRepaymentSchedule = (loan, accountsList) => {
 	if (!loan) return [];
 	const totalAmount = Number(loan.amount) || 0;
-	const tenureMatch = String(loan.tenure || '').match(/\d+/);
+	const tenureMatch = String(loan.total_installments || loan.total_dues || loan.total_emis || loan.tenure || '').match(/\d+/);
 	const tenureMonths = tenureMatch ? parseInt(tenureMatch[0], 10) : 10;
-	const hasPdfSchedule = Array.isArray(loan.repaymentSchedule) && loan.repaymentSchedule.length > 0;
-	const count = hasPdfSchedule ? loan.repaymentSchedule.length : Math.min(tenureMonths, 10);
+	const rawSchedule = (Array.isArray(loan.repaymentSchedule) && loan.repaymentSchedule.length > 0)
+		? loan.repaymentSchedule
+		: ((Array.isArray(loan.repayment_schedule) && loan.repayment_schedule.length > 0) ? loan.repayment_schedule : null);
+	const hasPdfSchedule = Boolean(rawSchedule && rawSchedule.length > 0);
+	const count = hasPdfSchedule ? rawSchedule.length : (tenureMatch ? tenureMonths : 10);
 
 	// Resolve accounts for Primary and Secondary split
 	const effectiveAccounts =
@@ -539,12 +594,21 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 	const primaryAcc = effectiveAccounts.find((a) => a.isPrimary) || effectiveAccounts[0] || {
 		accountName: loan.primary_account_name || loan.primaryAccountName || 'Primary Account',
 		accountTag: loan.primary || 'PRI',
-		share: 60,
+		share: (loan.primaryShare != null && loan.primaryShare !== '')
+			? Number(loan.primaryShare)
+			: (loan.primary_account_share != null ? Number(loan.primary_account_share) : 60),
 	};
 	const secAccs = effectiveAccounts.filter((a) => !a.isPrimary);
 
-	const priSharePct = Number(primaryAcc.share) || 60;
-	const totalSecShare = secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0) || (100 - priSharePct);
+	const priSharePct = (primaryAcc && primaryAcc.share != null && primaryAcc.share !== '' && !isNaN(Number(primaryAcc.share)))
+		? Number(primaryAcc.share)
+		: (secAccs.length > 0
+			? Math.max(0, 100 - secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0))
+			: ((loan.primaryShare != null && loan.primaryShare !== '')
+				? Number(loan.primaryShare)
+				: (loan.primary_account_share != null ? Number(loan.primary_account_share) : 60)));
+	const secShareSum = secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0);
+	const totalSecShare = secAccs.length > 0 && secShareSum > 0 ? secShareSum : Math.max(0, 100 - priSharePct);
 
 	// Total facility obligation metrics across all co-lending accounts
 	const totalFacilityRepay = effectiveAccounts.reduce((sum, a) => sum + (Number(a.repayAmount) || 0), 0) || totalAmount;
@@ -582,7 +646,7 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 
 	for (let i = 1; i <= count; i++) {
 		const monthOffset = i - 1;
-		const pdfRow = hasPdfSchedule ? loan.repaymentSchedule[i - 1] : null;
+		const pdfRow = hasPdfSchedule ? rawSchedule[i - 1] : null;
 
 		// Schedule/Billing Date
 		const scheduleDateObj = new Date(startYear, startMonth + monthOffset, startDay);
@@ -602,23 +666,41 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 		currentBalance = Math.max(0, currentBalance - principalComp);
 
 		// Primary split per EMI
-		const priRepayTotal = Number(primaryAcc.repayAmount) || Math.round((totalFacilityRepay * priSharePct) / 100);
-		const priInterestTotal = Number(primaryAcc.interest) || Math.round((totalFacilityInterest * priSharePct) / 100);
-		const priAmount = hasPdfSchedule
-			? Math.round((emiTotal * priSharePct) / 100)
-			: (i === count ? priRepayTotal - Math.round(priRepayTotal / count) * (count - 1) : Math.round(priRepayTotal / count));
-		const priInterest = hasPdfSchedule
-			? Math.round((monthlyInterest * priSharePct) / 100)
-			: (i === count ? priInterestTotal - Math.round(priInterestTotal / count) * (count - 1) : Math.round(priInterestTotal / count));
+		const priRepayTotal = priSharePct === 0
+			? 0
+			: ((primaryAcc && primaryAcc.repayAmount != null && primaryAcc.repayAmount !== '' && !isNaN(Number(primaryAcc.repayAmount)))
+				? Number(primaryAcc.repayAmount)
+				: Math.round((totalFacilityRepay * priSharePct) / 100));
+		const priInterestTotal = priSharePct === 0
+			? 0
+			: ((primaryAcc && primaryAcc.interest != null && primaryAcc.interest !== '' && !isNaN(Number(primaryAcc.interest)))
+				? Number(primaryAcc.interest)
+				: Math.round((totalFacilityInterest * priSharePct) / 100));
+		const priAmount = priSharePct === 0
+			? 0
+			: (hasPdfSchedule
+				? Math.round((emiTotal * priSharePct) / 100)
+				: (i === count ? priRepayTotal - Math.round(priRepayTotal / count) * (count - 1) : Math.round(priRepayTotal / count)));
+		const priInterest = priSharePct === 0
+			? 0
+			: (hasPdfSchedule
+				? Math.round((monthlyInterest * priSharePct) / 100)
+				: (i === count ? priInterestTotal - Math.round(priInterestTotal / count) * (count - 1) : Math.round(priInterestTotal / count)));
 
 		// Per-secondary-account split per EMI
 		let remainingAmount = emiTotal - priAmount;
 		let remainingInterest = monthlyInterest - priInterest;
 
 		const secAccountsData = secAccs.map((sa, idx) => {
-			const saSharePct = Number(sa.share) || (secAccs.length > 0 ? Math.round(totalSecShare / secAccs.length) : 0);
-			const saRepayTotal = Number(sa.repayAmount) || Math.round((totalFacilityRepay * saSharePct) / 100);
-			const saInterestTotal = Number(sa.interest) || Math.round((totalFacilityInterest * saSharePct) / 100);
+			const saSharePct = (sa && sa.share != null && sa.share !== '' && !isNaN(Number(sa.share)))
+				? Number(sa.share)
+				: (secAccs.length > 0 ? Math.round(totalSecShare / secAccs.length) : 0);
+			const saRepayTotal = (sa && sa.repayAmount != null && sa.repayAmount !== '' && !isNaN(Number(sa.repayAmount)))
+				? Number(sa.repayAmount)
+				: Math.round((totalFacilityRepay * saSharePct) / 100);
+			const saInterestTotal = (sa && sa.interest != null && sa.interest !== '' && !isNaN(Number(sa.interest)))
+				? Number(sa.interest)
+				: Math.round((totalFacilityInterest * saSharePct) / 100);
 
 			let saAmount, saInterest;
 			if (idx === secAccs.length - 1) {
@@ -681,6 +763,27 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 
 		const legacySecAcc = secAccountsData[0] || { amount: 0, interest: 0, accountTag: 'SEC', accountName: 'Secondary Account', share: totalSecShare };
 
+		const rawPStatus = pdfRow?.payout_approval_status || pdfRow?.payoutApprovalStatus;
+		const isApprovedPayout = Boolean(
+			pdfRow?.payout_approved_by ||
+			pdfRow?.payoutApprovedBy ||
+			status === 'Settled'
+		);
+		let effectivePayoutStatus = rawPStatus;
+		if (!effectivePayoutStatus) {
+			if (receivedDate && !isApprovedPayout) {
+				effectivePayoutStatus = 'PENDING';
+			} else if (isApprovedPayout) {
+				effectivePayoutStatus = 'APPROVED';
+			} else {
+				effectivePayoutStatus = null;
+			}
+		} else if (rawPStatus === 'APPROVED' && !isApprovedPayout && receivedDate) {
+			effectivePayoutStatus = 'PENDING';
+		}
+		const effectivePayoutTarget = pdfRow?.payout_approval_target || pdfRow?.payoutApprovalTarget || (effectivePayoutStatus === 'PENDING' ? 'SECONDARY' : null);
+		const effectiveRequestedRole = pdfRow?.payout_requested_role || pdfRow?.payoutRequestedRole || (effectivePayoutStatus === 'PENDING' ? 'PRIMARY' : null);
+
 		schedule.push({
 			id: pdfRow?.id,
 			sNo: i,
@@ -714,14 +817,14 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 			totalEmi: emiTotal,
 			remarks: pdfRow?.remarks || '',
 			splits: pdfRow?.splits || null,
-			payout_approval_status: pdfRow?.payout_approval_status || pdfRow?.payoutApprovalStatus || 'APPROVED',
-			payoutApprovalStatus: pdfRow?.payoutApprovalStatus || pdfRow?.payout_approval_status || 'APPROVED',
-			payout_approval_target: pdfRow?.payout_approval_target || pdfRow?.payoutApprovalTarget,
-			payoutApprovalTarget: pdfRow?.payout_approval_target || pdfRow?.payoutApprovalTarget,
-			payout_editor_role: pdfRow?.payout_editor_role || pdfRow?.payoutEditorRole || pdfRow?.payout_requested_role || pdfRow?.payoutRequestedRole,
-			payout_requested_role: pdfRow?.payout_requested_role || pdfRow?.payoutRequestedRole,
-			payoutRequestedRole: pdfRow?.payout_requested_role || pdfRow?.payoutRequestedRole,
-			payout_requested_by: pdfRow?.payout_requested_by || pdfRow?.payoutRequestedBy,
+			payout_approval_status: effectivePayoutStatus,
+			payoutApprovalStatus: effectivePayoutStatus,
+			payout_approval_target: effectivePayoutTarget,
+			payoutApprovalTarget: effectivePayoutTarget,
+			payout_editor_role: pdfRow?.payout_editor_role || pdfRow?.payoutEditorRole || effectiveRequestedRole,
+			payout_requested_role: effectiveRequestedRole,
+			payoutRequestedRole: effectiveRequestedRole,
+			payout_requested_by: pdfRow?.payout_requested_by || pdfRow?.payoutRequestedBy || (effectivePayoutStatus === 'PENDING' ? (primaryAcc.accountName || 'Primary Partner') : null),
 			payout_requested_at: pdfRow?.payout_requested_at || pdfRow?.payoutRequestedAt,
 			payout_approved_by: pdfRow?.payout_approved_by || pdfRow?.payoutApprovedBy,
 			payout_approved_at: pdfRow?.payout_approved_at || pdfRow?.payoutApprovedAt,
@@ -733,11 +836,12 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 	if (schedule.length > 0 && schedule[0].secAccounts) {
 		schedule[0].secAccounts = schedule[0].secAccounts.map((sa, idx) => {
 			const totalSecInterestForAcc =
-				Number(secAccs[idx]?.interest) ||
-				schedule.reduce(
-					(sum, inst) => sum + (Number(inst.secAccounts?.[idx]?.interest) || 0),
-					0
-				);
+				(secAccs[idx]?.interest != null && !isNaN(Number(secAccs[idx].interest)))
+					? Number(secAccs[idx].interest)
+					: schedule.reduce(
+						(sum, inst) => sum + (Number(inst.secAccounts?.[idx]?.interest) || 0),
+						0
+					);
 			const tdsVal = Math.round(totalSecInterestForAcc * 0.10);
 			const grossAmount = Number(sa.amount) || 0;
 			const netAmount = Math.max(0, grossAmount - tdsVal);
@@ -823,8 +927,160 @@ export const isEmiOverdue = (inst) => {
 	return isDueDateCrossed(inst.date);
 };
 
+// Check if a loan has any installment awaiting payout date approval
+export const isLoanPayoutPending = (loan) => {
+	if (!loan || loan.is_deleted) return false;
+	const loanStatus = (loan.status || '').toLowerCase();
+	const appStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
+	if (
+		loanStatus === 'pending payout approval' ||
+		loanStatus === 'payout pending' ||
+		loanStatus === 'pending' ||
+		appStatus === 'PENDING_PAYOUT'
+	) {
+		return true;
+	}
+	const sch = loan.repaymentSchedule || loan.repayment_schedule;
+	if (Array.isArray(sch)) {
+		for (const item of sch) {
+			if (!item) continue;
+			const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
+			const instStatus = (item.status || '').toLowerCase();
+			if (pStatus === 'PENDING' || instStatus === 'pending payout approval') {
+				return true;
+			}
+			if (Array.isArray(item.subInstallments) && item.subInstallments.length > 0) {
+				for (const sub of item.subInstallments) {
+					if (!sub) continue;
+					const subPStatus = (sub.payout_approval_status || sub.payoutApprovalStatus || '').toUpperCase();
+					const subStatus = (sub.status || '').toLowerCase();
+					if (subPStatus === 'PENDING' || subStatus === 'pending payout approval') {
+						return true;
+					}
+					const subRecd = sub.receivedDate || sub.received_date || sub.recdDate;
+					const hasSubRecd = Boolean(subRecd && String(subRecd).trim() && String(subRecd).trim() !== '-' && String(subRecd).trim() !== '—');
+					const subPayoutDate = sub.dueDate || sub.paymentDate || sub.payment_date;
+					const hasSubPayout = Boolean(subPayoutDate && String(subPayoutDate).trim() && String(subPayoutDate).trim() !== '-' && String(subPayoutDate).trim() !== '—');
+					const isSubApproved = hasSubPayout && (subStatus === 'settled' || ((subPStatus === 'APPROVED' || sub.payout_approved_by || sub.payoutApprovedBy) && subPStatus !== 'PENDING' && subPStatus !== 'REJECTED' && (sub.payout_approved_by || sub.payoutApprovedBy || subStatus === 'settled')));
+					if (hasSubRecd && !isSubApproved) {
+						return true;
+					}
+				}
+			}
+			if (item.splits) {
+				let sp = item.splits;
+				if (typeof sp === 'string') {
+					try {
+						sp = JSON.parse(sp);
+					} catch (e) {
+						sp = null;
+					}
+				}
+				if (sp && typeof sp === 'object') {
+					const sA = (sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
+					const sB = (sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
+					const sAll = (sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
+					if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
+						return true;
+					}
+					if (!sp.isFinalSettled) {
+						const recdA = sp.recdDateA || sp.recdDate;
+						const recdB = sp.recdDateB;
+						if (recdA && sA !== 'APPROVED') return true;
+						if (recdB && sB !== 'APPROVED') return true;
+					}
+				}
+			}
+
+			// Main / regular installment:
+			// If EMI received date is filled, but payout to secondary is not yet approved/settled
+			const recdDate = item.receivedDate || item.received_date || item.recdDate || item.recd_date;
+			const hasRecdDate = Boolean(recdDate && String(recdDate).trim() && String(recdDate).trim() !== '-' && String(recdDate).trim() !== '—') || instStatus === 'collected';
+			const payoutDate = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
+			const hasPayoutDate = Boolean(payoutDate && String(payoutDate).trim() && String(payoutDate).trim() !== '-' && String(payoutDate).trim() !== '—');
+			const isApproved = hasPayoutDate && (instStatus === 'settled' || ((pStatus === 'APPROVED' || item.payout_approved_by || item.payoutApprovedBy) && pStatus !== 'PENDING' && pStatus !== 'REJECTED' && (item.payout_approved_by || item.payoutApprovedBy || instStatus === 'settled')));
+
+			if (hasRecdDate && !isApproved) {
+				return true;
+			}
+		}
+	}
+	return false;
+};
+
+// Check if all installments in a loan have their payout date filled and approved
+export const areAllPayoutsApproved = (loan) => {
+	if (!loan || loan.is_deleted) return false;
+	const sch = Array.isArray(loan.repaymentSchedule)
+		? loan.repaymentSchedule
+		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+	if (!sch || sch.length === 0) return true;
+
+	for (const item of sch) {
+		if (!item) continue;
+
+		// 1. Partial / split subInstallments
+		if (item.isPartial && Array.isArray(item.subInstallments) && item.subInstallments.length > 0) {
+			const allSubsApproved = item.subInstallments.every((sub) => {
+				const hasDueDate = Boolean(
+					sub &&
+					sub.dueDate &&
+					String(sub.dueDate).trim() &&
+					String(sub.dueDate).trim() !== '-' &&
+					String(sub.dueDate).trim() !== '—'
+				);
+				const pStatus = (sub?.payout_approval_status || sub?.payoutApprovalStatus || '').toUpperCase();
+				return hasDueDate && (pStatus === 'APPROVED' || sub?.status === 'Settled');
+			});
+			if (!allSubsApproved) return false;
+			continue;
+		}
+
+		// 2. Splits JSON object
+		if (item.splits) {
+			let sp = item.splits;
+			if (typeof sp === 'string') {
+				try {
+					sp = JSON.parse(sp);
+				} catch (e) {
+					sp = null;
+				}
+			}
+			if (sp && typeof sp === 'object') {
+				if (sp.isFinalSettled) {
+					continue;
+				}
+				const sA = (sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
+				const sB = (sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
+				const hasDueDateA = Boolean(sp.dueDateA && String(sp.dueDateA).trim() && String(sp.dueDateA).trim() !== '-' && String(sp.dueDateA).trim() !== '—');
+				const hasDueDateB = Boolean(sp.dueDateB && String(sp.dueDateB).trim() && String(sp.dueDateB).trim() !== '-' && String(sp.dueDateB).trim() !== '—');
+
+				if (!hasDueDateA || sA !== 'APPROVED') return false;
+				if (hasDueDateB && sB !== 'APPROVED') return false;
+				continue;
+			}
+		}
+
+		// 3. Regular installment
+		const payoutDate = item.dueDate || item.paymentDate || item.payment_date;
+		const hasPayoutDate = Boolean(
+			payoutDate &&
+			String(payoutDate).trim() &&
+			String(payoutDate).trim() !== '-' &&
+			String(payoutDate).trim() !== '—'
+		);
+		const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
+		const isApproved = hasPayoutDate && pStatus !== 'PENDING' && (pStatus === 'APPROVED' || item.payout_approved_by || item.payoutApprovedBy || item.status === 'Settled');
+		if (!isApproved) {
+			return false;
+		}
+	}
+	return true;
+};
+
 // Compute loan status based on EMI schedule and approval status:
-// - Closed: all EMIs are paid (or status/approval_status is Closed)
+// - Pending: if any payout date approval is pending, or if pending initial approval
+// - Closed: all EMIs are paid AND all payout dates are approved
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
 // - Active: loan is active, EMI is not pending/overdue
 export const getComputedLoanStatus = (loan) => {
@@ -835,66 +1091,89 @@ export const getComputedLoanStatus = (loan) => {
 		return 'Rejected';
 	}
 
-	// 2. Pending secondary approval
+	// 2. Pending secondary approval (initial creation)
 	if (loan.approval_status === 'PENDING_SECONDARY' || (loan.approval_status === 'PENDING' && !loan.verified_by)) {
 		return 'Pending Secondary';
 	}
 
-	// 3. Pending admin final approval
+	// 3. Pending admin final approval (initial creation)
 	if (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED') {
 		return 'Pending Admin';
 	}
 
-	// 4. Closed: all EMIs are paid
-	if (loan.status === 'Closed' || loan.approval_status === 'CLOSED') {
-		return 'Closed';
+	// 4. Any payout date approval pending -> loan status is ALWAYS 'Pending'
+	const hasPayoutPending = isLoanPayoutPending(loan);
+	if (hasPayoutPending) {
+		return 'Pending';
 	}
-	const schedule = Array.isArray(loan.repaymentSchedule) ? loan.repaymentSchedule : [];
-	if (schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst))) {
+
+	const schedule = Array.isArray(loan.repaymentSchedule)
+		? loan.repaymentSchedule
+		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+
+	// 5. Closed: only once all payout dates are approved AND all EMIs are paid
+	const allPayoutsApproved = areAllPayoutsApproved(loan);
+	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
+
+	if (!hasPayoutPending && allPayoutsApproved && (allEmisPaid || loan.status === 'Closed' || loan.approval_status === 'CLOSED')) {
 		return 'Closed';
 	}
 
-	// 5. Overdue: loan is active but any one of EMI is overdue
+	// 6. Overdue: loan is active but any one of EMI is overdue
 	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
 	if (hasOverdue || loan.status === 'Overdue' || loan.status === 'Date Overdue') {
 		return 'Overdue';
 	}
 
-	// 6. Generic pending fallback
+	// 7. Generic pending fallback
 	if (loan.status === 'Pending') {
 		return 'Pending';
 	}
 
-	// 7. Active: loan is active, EMI is not pending/overdue
+	// 8. Active: loan is active, EMI is not pending/overdue
 	return 'Active';
 };
 
-// Check if a loan is pending approval (either secondary manager or admin approval)
-export const isLoanPendingApproval = (loan) => {
-	if (!loan) return false;
-	const computed = getComputedLoanStatus(loan);
-	if (computed === 'Pending Secondary' || computed === 'Pending Admin' || computed === 'Pending') {
-		return true;
+// Check if a loan is newly created and pending initial multi-stage approval (secondary or admin)
+export const isNewLoanPendingApproval = (loan) => {
+	if (!loan || loan.is_deleted) return false;
+	if (isLoanPayoutPending(loan)) {
+		return false;
 	}
-	const approvalStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
+	const loanStatus = (loan.status || '').toLowerCase();
+	const appStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
 	if (
-		approvalStatus === 'PENDING_SECONDARY' ||
-		approvalStatus === 'PENDING_ADMIN' ||
-		approvalStatus === 'PENDING' ||
-		approvalStatus === 'VERIFIED'
+		loanStatus === 'pending payout approval' ||
+		loanStatus === 'payout pending' ||
+		appStatus === 'PENDING_PAYOUT'
 	) {
-		return true;
+		return false;
 	}
-	const st = (loan.status || '').toLowerCase();
-	if (st === 'pending' || st === 'pending secondary' || st === 'pending admin' || st.includes('pending')) {
-		return true;
+	if (
+		appStatus === 'APPROVED' ||
+		loan.status === 'Active' ||
+		loan.status === 'Closed' ||
+		appStatus === 'REJECTED' ||
+		loan.status === 'Rejected'
+	) {
+		return false;
 	}
-	// Also check if any repayment schedule installment is awaiting payout approval
-	const sch = loan.repaymentSchedule || loan.repayment_schedule;
-	if (Array.isArray(sch) && sch.some((item) => item && (item.payout_approval_status === 'PENDING' || item.payoutApprovalStatus === 'PENDING'))) {
-		return true;
-	}
-	return false;
+	const computed = getComputedLoanStatus(loan);
+	return (
+		computed === 'Pending Secondary' ||
+		computed === 'Pending Admin' ||
+		appStatus === 'PENDING_SECONDARY' ||
+		appStatus === 'PENDING_ADMIN' ||
+		appStatus === 'PENDING' ||
+		appStatus === 'VERIFIED' ||
+		loan.status === 'Pending'
+	);
+};
+
+// Check if a loan is pending approval (either secondary manager or admin approval, or payout approval)
+export const isLoanPendingApproval = (loan) => {
+	if (!loan || loan.is_deleted) return false;
+	return isNewLoanPendingApproval(loan) || isLoanPayoutPending(loan);
 };
 
 // Calculate offset date in DD-MM-YYYY format from base dateStr
@@ -1518,7 +1797,7 @@ export const checkLoanSecondaryRequiresApproval = (loan, accountObjects = []) =>
 export const canUserAccessLoan = (loan, user, userPerms, accountObjects = [], allUsers = []) => {
 	if (!loan) return false;
 
-	const isFinallyApproved = loan.approval_status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed';
+	const isFinallyApproved = loan.approval_status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed' || isLoanPayoutPending(loan);
 	if (isFinallyApproved) return true;
 
 	if (!user) return false;
@@ -1564,53 +1843,57 @@ export function ModernCalendarPicker({
 	onClose,
 	openUpward = 'auto',
 	align = 'left',
+	usePortal = false,
+	anchorRef = null,
 }) {
 	const popoverRef = useRef(null);
 	const [dynamicUpward, setDynamicUpward] = useState(openUpward === true);
+	const [portalPos, setPortalPos] = useState({ top: null, bottom: null, left: null, right: null });
 
 	useLayoutEffect(() => {
-		if (openUpward === true) {
-			setDynamicUpward(true);
-			return;
-		}
-		if (openUpward === false) {
-			setDynamicUpward(false);
-			return;
-		}
-
-		// 'auto' mode: check available space below vs above
 		const determineDirection = () => {
-			const popover = popoverRef.current;
-			const parentEl = popover?.parentElement;
-			if (!parentEl) return;
+			const targetEl = anchorRef?.current || popoverRef.current?.parentElement;
+			if (!targetEl) return;
 
-			const rect = parentEl.getBoundingClientRect();
-
-			// Find closest scrollable ancestor container (e.g. modal body)
-			let scrollParent = parentEl.parentElement;
-			while (scrollParent && scrollParent !== document.body) {
-				const style = window.getComputedStyle(scrollParent);
-				if (/(auto|scroll)/.test(style.overflow + style.overflowY)) {
-					break;
-				}
-				scrollParent = scrollParent.parentElement;
-			}
-			if (!scrollParent || scrollParent === document.body) {
-				scrollParent = document.documentElement;
+			const rect = targetEl.getBoundingClientRect();
+			if (rect.bottom < -50 || rect.top > window.innerHeight + 50) {
+				if (onClose) onClose();
+				return;
 			}
 
-			const parentRect = scrollParent === document.documentElement
-				? { top: 0, bottom: window.innerHeight }
-				: scrollParent.getBoundingClientRect();
+			const calHeight = 345;
+			const calWidth = 280;
+			const spaceBelow = window.innerHeight - rect.bottom;
+			const spaceAbove = rect.top;
 
-			const spaceBelow = Math.min(window.innerHeight, parentRect.bottom) - rect.bottom;
-			const spaceAbove = rect.top - Math.max(0, parentRect.top);
-			const calHeight = popover.offsetHeight || 315;
-
-			if (spaceBelow < calHeight && spaceAbove > spaceBelow) {
-				setDynamicUpward(true);
+			let isUp = false;
+			if (openUpward === true) {
+				isUp = spaceAbove >= calHeight || spaceAbove >= spaceBelow;
+			} else if (openUpward === false) {
+				isUp = spaceBelow < calHeight && spaceAbove > spaceBelow;
 			} else {
-				setDynamicUpward(false);
+				isUp = spaceBelow < calHeight && spaceAbove > spaceBelow;
+			}
+			setDynamicUpward(isUp);
+
+			if (usePortal) {
+				let rightPos = align === 'right' ? Math.max(8, window.innerWidth - rect.right) : null;
+				let leftPos = align === 'right' ? null : Math.max(8, rect.left);
+
+				if (align === 'right' && rect.right < calWidth + 16) {
+					rightPos = null;
+					leftPos = Math.max(8, rect.left);
+				} else if (align !== 'right' && rect.left + calWidth > window.innerWidth - 8) {
+					leftPos = null;
+					rightPos = Math.max(8, window.innerWidth - rect.right);
+				}
+
+				setPortalPos({
+					top: isUp ? null : rect.bottom + 6,
+					bottom: isUp ? window.innerHeight - rect.top + 6 : null,
+					left: leftPos,
+					right: rightPos,
+				});
 			}
 		};
 
@@ -1622,7 +1905,7 @@ export function ModernCalendarPicker({
 			window.removeEventListener('resize', determineDirection);
 			window.removeEventListener('scroll', determineDirection, true);
 		};
-	}, [openUpward]);
+	}, [openUpward, align, usePortal, anchorRef, onClose]);
 
 	const getInitialDate = () => {
 		const parsed = parseDDMMYYYY(value);
@@ -1701,13 +1984,33 @@ export function ModernCalendarPicker({
 		onClose();
 	};
 
-	return (
+	const popoverContent = (
 		<div
 			ref={popoverRef}
 			onMouseDown={(e) => e.stopPropagation()}
 			onClick={(e) => e.stopPropagation()}
-			className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} z-50 w-[276px] bg-white rounded-2xl shadow-2xl ring-1 ring-slate-900/10 p-3 flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-100 ${dynamicUpward ? 'bottom-full mb-2' : 'top-full mt-2'
-				}`}
+			style={
+				usePortal
+					? {
+							position: 'fixed',
+							top: !dynamicUpward && portalPos.top != null ? `${portalPos.top}px` : undefined,
+							bottom: dynamicUpward && portalPos.bottom != null ? `${portalPos.bottom}px` : undefined,
+							left: portalPos.left != null ? `${portalPos.left}px` : undefined,
+							right: portalPos.right != null ? `${portalPos.right}px` : undefined,
+							maxHeight: dynamicUpward
+								? portalPos.bottom != null ? `${Math.max(260, window.innerHeight - portalPos.bottom - 16)}px` : undefined
+								: portalPos.top != null ? `${Math.max(260, window.innerHeight - portalPos.top - 16)}px` : undefined,
+							zIndex: 99999,
+						}
+					: undefined
+			}
+			className={`${
+				usePortal
+					? ''
+					: `absolute ${align === 'right' ? 'right-0' : 'left-0'} z-50 ${
+							dynamicUpward ? 'bottom-full mb-2' : 'top-full mt-2'
+						}`
+			} w-[276px] bg-white rounded-2xl shadow-2xl ring-1 ring-slate-900/10 p-3 flex flex-col gap-2 overflow-y-auto animate-in fade-in zoom-in-95 duration-100`}
 		>
 			{/* Top Header with Month/Year Navigation */}
 			<div className="flex items-center justify-between px-1 pb-2 border-b border-slate-100">
@@ -1835,6 +2138,11 @@ export function ModernCalendarPicker({
 			</div>
 		</div>
 	);
+
+	if (usePortal && typeof document !== 'undefined') {
+		return createPortal(popoverContent, document.body);
+	}
+	return popoverContent;
 }
 
 // Editable Date Cell (type directly in dd-mm-yyyy, select from modern calendar, or pick from suggestions)
@@ -1850,7 +2158,7 @@ export function EditableDateCell({
 	disabled = false,
 	tooltip = '',
 	suggestions = null,
-	openUpward = false,
+	openUpward = 'auto',
 	align = 'left',
 	fullWidth = false,
 }) {
@@ -1858,12 +2166,71 @@ export function EditableDateCell({
 	const [showSuggestions, setShowSuggestions] = useState(false);
 	const [showCalendar, setShowCalendar] = useState(false);
 	const containerRef = useRef(null);
+	const dropdownRef = useRef(null);
+
+	const [suggestionsPos, setSuggestionsPos] = useState({
+		top: null,
+		bottom: null,
+		left: null,
+		right: null,
+		placeUpward: false,
+	});
+
+	const updateSuggestionsPosition = useCallback(() => {
+		if (!containerRef.current) return;
+		const rect = containerRef.current.getBoundingClientRect();
+		const dropdownHeight = 160;
+		const spaceBelow = window.innerHeight - rect.bottom;
+		const spaceAbove = rect.top;
+
+		let shouldOpenUpward = false;
+		if (openUpward === true) {
+			shouldOpenUpward = spaceAbove >= dropdownHeight || spaceAbove >= spaceBelow;
+		} else if (openUpward === false) {
+			shouldOpenUpward = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+		} else {
+			shouldOpenUpward = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+		}
+
+		setSuggestionsPos({
+			top: shouldOpenUpward ? null : rect.bottom + 6,
+			bottom: shouldOpenUpward ? window.innerHeight - rect.top + 6 : null,
+			left: align === 'right' ? null : Math.max(8, rect.left),
+			right: align === 'right' ? Math.max(8, window.innerWidth - rect.right) : null,
+			placeUpward: shouldOpenUpward,
+		});
+	}, [openUpward, align]);
+
+	useLayoutEffect(() => {
+		if (!showSuggestions) return;
+		updateSuggestionsPosition();
+		const handleScrollOrResize = () => {
+			if (containerRef.current) {
+				const rect = containerRef.current.getBoundingClientRect();
+				if (rect.bottom < 0 || rect.top > window.innerHeight) {
+					setShowSuggestions(false);
+					return;
+				}
+			}
+			updateSuggestionsPosition();
+		};
+		window.addEventListener('scroll', handleScrollOrResize, true);
+		window.addEventListener('resize', handleScrollOrResize);
+		return () => {
+			window.removeEventListener('scroll', handleScrollOrResize, true);
+			window.removeEventListener('resize', handleScrollOrResize);
+		};
+	}, [showSuggestions, updateSuggestionsPosition]);
 
 	// Close suggestions & calendar dropdown when clicking outside or pressing Escape
 	useEffect(() => {
 		if (!showSuggestions && !showCalendar) return;
 		const handleClickOutside = (e) => {
-			if (containerRef.current && !containerRef.current.contains(e.target)) {
+			if (
+				containerRef.current &&
+				!containerRef.current.contains(e.target) &&
+				(!dropdownRef.current || !dropdownRef.current.contains(e.target))
+			) {
 				setShowSuggestions(false);
 				setShowCalendar(false);
 			}
@@ -2033,6 +2400,8 @@ export function EditableDateCell({
 					minDateLabel={minDateLabel}
 					openUpward={openUpward}
 					align={align}
+					usePortal={true}
+					anchorRef={containerRef}
 					onChange={(newDate) => {
 						onChange(newDate);
 						setShowCalendar(false);
@@ -2042,11 +2411,20 @@ export function EditableDateCell({
 			)}
 
 			{/* Interactive Date Suggestions Dropdown */}
-			{showSuggestions && !showCalendar && suggestions && suggestions.length > 0 && (
+			{showSuggestions && !showCalendar && suggestions && suggestions.length > 0 && typeof document !== 'undefined' && createPortal(
 				<div
-					onMouseDown={(e) => e.preventDefault()}
-					className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} z-50 min-w-[215px] bg-white rounded-xl shadow-xl ring-1 ring-slate-200/90 py-1.5 px-1.5 flex flex-col gap-1 text-left animate-in fade-in zoom-in-95 duration-100 ${openUpward ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
-						}`}
+					ref={dropdownRef}
+					onMouseDown={(e) => e.stopPropagation()}
+					onClick={(e) => e.stopPropagation()}
+					style={{
+						position: 'fixed',
+						top: suggestionsPos.placeUpward ? undefined : `${suggestionsPos.top}px`,
+						bottom: suggestionsPos.placeUpward ? `${suggestionsPos.bottom}px` : undefined,
+						left: suggestionsPos.left != null ? `${suggestionsPos.left}px` : undefined,
+						right: suggestionsPos.right != null ? `${suggestionsPos.right}px` : undefined,
+						zIndex: 99999,
+					}}
+					className="min-w-[215px] bg-white rounded-xl shadow-2xl ring-1 ring-slate-900/10 py-1.5 px-1.5 flex flex-col gap-1 text-left animate-in fade-in zoom-in-95 duration-100"
 				>
 					<div className="flex items-center justify-between px-2 py-1 text-[10.5px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100">
 						<span className="flex items-center gap-1 text-primary">
@@ -2109,7 +2487,8 @@ export function EditableDateCell({
 							);
 						})}
 					</div>
-				</div>
+				</div>,
+				document.body
 			)}
 		</div>
 	);
@@ -2989,7 +3368,7 @@ export function PartialPaymentModal({
 				accountName: 'Secondary Account',
 				accountTag: secTag || 'FC',
 				share: 100 - primarySharePct,
-				amount: fullAmount - (Number(inst.primaryAmount) || Math.round((fullAmount * primarySharePct) / 100)),
+				amount: fullAmount - (inst.primaryAmount != null ? Number(inst.primaryAmount) : Math.round((fullAmount * primarySharePct) / 100)),
 			},
 		];
 	}, [inst.secAccounts, inst.primaryAmount, secAccounts, primarySharePct, secTag, fullAmount]);
@@ -3244,7 +3623,7 @@ export function PartialPaymentModal({
 		}
 
 		const alreadyPaidPri = isCurrentlyPartial
-			? Number(inst.subInstallments?.[0]?.primaryAmount) || Math.round((alreadyPaid * primarySharePct) / 100)
+			? (inst.subInstallments?.[0]?.primaryAmount != null ? Number(inst.subInstallments[0].primaryAmount) : Math.round((alreadyPaid * primarySharePct) / 100))
 			: 0;
 
 		const alreadyPaidSecAccounts =
@@ -3285,7 +3664,7 @@ export function PartialPaymentModal({
 
 	return (
 		<div
-			className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs font-sans overscroll-contain"
+			className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm font-sans overscroll-contain"
 			onClick={onClose}
 		>
 			<div
@@ -3868,23 +4247,21 @@ function EditAllocationsModal({
 											placeholder="0"
 											onWheel={(e) => e.target.blur()}
 											onChange={(e) => onAccountChange(primaryAcc.id, 'principal', e.target.value)}
-											className={`w-full h-10 pl-7 pr-10 text-[12px] font-bold text-slate-900 bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${
-												primaryAcc.isLocked
+											className={`w-full h-10 pl-7 pr-10 text-[12px] font-bold text-slate-900 bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${primaryAcc.isLocked
 													? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 													: 'border-slate-200'
-											}`}
+												}`}
 										/>
 										<button
 											type="button"
 											onClick={() => toggleLock(primaryAcc.id)}
-											className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${
-												primaryAcc.isLocked
+											className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${primaryAcc.isLocked
 													? 'text-amber-700 bg-amber-100/90 hover:bg-amber-200 ring-1 ring-amber-300/60 shadow-2xs'
 													: 'text-slate-300 hover:text-slate-600 hover:bg-slate-100'
-											}`}
+												}`}
 											title={primaryAcc.isLocked ? 'Amount locked (will not change when editing other accounts). Click to unlock.' : 'Amount unlocked. Click to lock.'}
 										>
-											<span className="material-symbols-outlined" style={{fontSize: "15px"}}>
+											<span className="material-symbols-outlined" style={{ fontSize: "15px" }}>
 												{primaryAcc.isLocked ? 'lock' : 'lock_open'}
 											</span>
 										</button>
@@ -3906,11 +4283,10 @@ function EditAllocationsModal({
 											placeholder="0"
 											onWheel={(e) => e.target.blur()}
 											onChange={(e) => onAccountChange(primaryAcc.id, 'share', e.target.value)}
-											className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${
-												primaryAcc.isLocked
+											className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${primaryAcc.isLocked
 													? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 													: 'border-slate-200 text-slate-800'
-											}`}
+												}`}
 										/>
 										<span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[12px] pointer-events-none select-none">
 											%
@@ -4021,20 +4397,18 @@ function EditAllocationsModal({
 														placeholder="0"
 														onWheel={(e) => e.target.blur()}
 														onChange={(e) => onAccountChange(sec.id, 'principal', e.target.value)}
-														className={`w-full h-10 pl-7 pr-10 text-[12px] font-bold text-slate-900 bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${
-															sec.isLocked
+														className={`w-full h-10 pl-7 pr-10 text-[12px] font-bold text-slate-900 bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${sec.isLocked
 																? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 																: 'border-slate-200'
-														}`}
+															}`}
 													/>
 													<button
 														type="button"
 														onClick={() => toggleLock(sec.id)}
-														className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${
-															sec.isLocked
+														className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${sec.isLocked
 																? 'text-amber-700 bg-amber-100/90 hover:bg-amber-200 ring-1 ring-amber-300/60 shadow-2xs'
 																: 'text-slate-300 hover:text-slate-600 hover:bg-slate-100'
-														}`}
+															}`}
 														title={sec.isLocked ? 'Amount locked (will not change when editing other accounts). Click to unlock.' : 'Amount unlocked. Click to lock.'}
 													>
 														<span className="material-symbols-outlined" style={{ fontSize: "15px" }}>
@@ -4056,11 +4430,10 @@ function EditAllocationsModal({
 														placeholder="0"
 														onWheel={(e) => e.target.blur()}
 														onChange={(e) => onAccountChange(sec.id, 'share', e.target.value)}
-														className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${
-															sec.isLocked
+														className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${sec.isLocked
 																? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 																: 'border-slate-200 text-slate-800'
-														}`}
+															}`}
 													/>
 													<span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[12px] pointer-events-none select-none">
 														%
@@ -4540,9 +4913,10 @@ export function JointLoanDetailsPage({
 		return { isAdmin, primary, secondary };
 	}, [activeUser]);
 
-	const isFinallyApproved = loan?.approval_status === 'APPROVED' || loan?.status === 'Active' || loan?.status === 'Closed';
-	const isPendingSecondary = loan?.approval_status === 'PENDING_SECONDARY' || (loan?.approval_status === 'PENDING' && !loan?.verified_by) || (!loan?.approval_status && loan?.status === 'Pending');
-	const isPendingAdmin = loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED';
+	const hasPayoutPending = isLoanPayoutPending(loan);
+	const isFinallyApproved = loan?.approval_status === 'APPROVED' || loan?.status === 'Active' || loan?.status === 'Closed' || hasPayoutPending;
+	const isPendingSecondary = !hasPayoutPending && (loan?.approval_status === 'PENDING_SECONDARY' || (loan?.approval_status === 'PENDING' && !loan?.verified_by) || (!loan?.approval_status && loan?.status === 'Pending'));
+	const isPendingAdmin = !hasPayoutPending && (loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED');
 	const isRejected = loan?.approval_status === 'REJECTED' || loan?.status === 'Rejected';
 
 	const isUserSecManager = useMemo(() => {
@@ -4623,7 +4997,7 @@ export function JointLoanDetailsPage({
 	const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
 	const [accounts, setAccounts] = useState(() => getLoanAccountDetails(loan));
-	const [currentStatus, setCurrentStatus] = useState(loan?.status);
+	const [currentStatus, setCurrentStatus] = useState(() => getComputedLoanStatus(loan) || loan?.status);
 	const [isEditing, setIsEditing] = useState(false);
 	const [editAccounts, setEditAccounts] = useState(() => getLoanAccountDetails(loan));
 	const [saveFeedback, setSaveFeedback] = useState(null);
@@ -4660,7 +5034,7 @@ export function JointLoanDetailsPage({
 			const accs = getLoanAccountDetails(loan);
 			setAccounts(accs);
 			setEditAccounts(accs);
-			setCurrentStatus(loan.status);
+			setCurrentStatus(getComputedLoanStatus(loan) || loan.status);
 			if (loan.repaymentSchedule && Array.isArray(loan.repaymentSchedule)) {
 				const fromLoan = {};
 				loan.repaymentSchedule.forEach((sch) => {
@@ -6070,6 +6444,36 @@ export function JointLoanDetailsPage({
 						}
 					}
 				}
+
+				// If client paid (recd date entered), remittance to secondary partner is pending approval
+				if (finalVal && finalVal.length === 10) {
+					const isAlreadyApproved = Boolean(
+						currentInst.payout_approved_by ||
+						currentInst.payoutApprovedBy ||
+						currentInst.status === 'Settled'
+					);
+					if (!isAlreadyApproved) {
+						const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+						const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
+						const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
+						const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
+
+						instOverrides.payout_approval_status = 'PENDING';
+						instOverrides.payoutApprovalStatus = 'PENDING';
+						instOverrides.payout_approval_target = targetRole;
+						instOverrides.payoutApprovalTarget = targetRole;
+						instOverrides.payout_editor_role = editorRole;
+						instOverrides.payoutEditorRole = editorRole;
+						instOverrides.payout_requested_role = editorRole;
+						instOverrides.payoutRequestedRole = editorRole;
+						instOverrides.payout_requested_by = editorName;
+						instOverrides.payout_requested_at = getFormattedNow();
+						instOverrides.payout_approved_by = null;
+						instOverrides.payout_approved_at = null;
+						instOverrides.payout_notes = null;
+					}
+				}
+
 				// If new recd date is after due date, advance due date to match recd date (due date >= recd date)
 				const effectiveDueDate = instOverrides.dueDate || currentInst.dueDate;
 				if (
@@ -6583,7 +6987,11 @@ export function JointLoanDetailsPage({
 		return secAccount?.accountTag || secAccount?.initials || 'SEC';
 	}, [secAccount]);
 
-	const primarySharePct = Number(primaryAccount?.share) || 60;
+	const primarySharePct = primaryAccount?.share != null && primaryAccount.share !== ''
+		? Number(primaryAccount.share)
+		: (accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0) > 0 && primaryAccount?.principal != null
+			? ((Number(primaryAccount.principal) || 0) / accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0)) * 100
+			: (secAccounts.length > 0 ? Math.max(0, 100 - secAccounts.reduce((sum, s) => sum + Number(s.share || 0), 0)) : 60));
 
 	// Per-secondary-account totals across all schedule rows
 	const secAccountTotals = useMemo(() => {
@@ -6825,13 +7233,16 @@ export function JointLoanDetailsPage({
 		let raw = 60;
 		if (primaryAcc?.share != null && primaryAcc.share !== '') {
 			raw = Number(primaryAcc.share);
-		} else if (totalPrincipal > 0 && primaryAcc) {
+		} else if (totalPrincipal > 0 && primaryAcc && primaryAcc.principal != null) {
 			raw = ((Number(primaryAcc.principal) || 0) / totalPrincipal) * 100;
-		} else if (loan.primaryShare != null) {
-			raw = Number(loan.primaryShare);
+		} else if (secondaryAccountsList.length > 0) {
+			const secSum = secondaryAccountsList.reduce((sum, s) => sum + Number(s.share || 0), 0);
+			raw = Math.max(0, 100 - secSum);
+		} else if ((loan.primaryShare != null && loan.primaryShare !== '') || (loan.primary_account_share != null && loan.primary_account_share !== '')) {
+			raw = Number(loan.primaryShare ?? loan.primary_account_share);
 		}
 		return formatSharePercent(raw);
-	}, [totalPrincipal, primaryAcc, loan.primaryShare]);
+	}, [totalPrincipal, primaryAcc, secondaryAccountsList, loan.primaryShare]);
 
 	const secondarySharePercents = useMemo(() => {
 		if (secondaryAccountsList.length > 0) {
@@ -6980,7 +7391,7 @@ export function JointLoanDetailsPage({
 		setPenalFormError('');
 		const num = parseFloat(String(val).replace(/,/g, ''));
 		if (!isNaN(num) && num > 0) {
-			const pShare = Number(primarySharePercent) || 60;
+			const pShare = Number(primarySharePercent) || 0;
 			const priAmt = Math.round((num * pShare) / 100);
 			setPenalPriAmount(String(priAmt));
 
@@ -8865,25 +9276,25 @@ export function JointLoanDetailsPage({
 					</div>
 
 					{/* Schedule Table - dynamic columns based on secondary account count */}
-					<div className="overflow-x-auto min-h-[420px]">
+					<div className="overflow-x-auto min-h-[240px]">
 						<table className={`w-full text-left border-collapse ${isDetailedView ? 'min-w-[1300px]' : 'min-w-[880px]'}`}>
 							<thead>
 								<tr className="border-b border-slate-200/80 bg-surface-container-low/60 text-slate-600 font-bold text-[11.5px] uppercase tracking-wider">
-									<th className="py-3 px-3 w-14 text-left">S.No</th>
+									<th className="py-3 px-3 w-14 text-left">#</th>
 									<th className="py-3 px-3.5">Date</th>
 									{isDetailedView && <th className="py-3 px-3 min-w-[100px] text-center">Chq No</th>}
 									<th className="py-3 px-3.5 text-right">Amount</th>
 									{isDetailedView && <th className="py-3 px-3.5 text-right">Interest</th>}
 									<th className="py-3 px-3 text-center min-w-[145px]">Recd Date</th>
 									<th className="py-3 px-3.5 text-right">{primaryTag}</th>
-									{isDetailedView && <th className="py-3 px-3.5 text-right">{primaryTag} Int</th>}
+									{isDetailedView && <th className="py-3 px-3.5 text-right min-w-[95px]">{primaryTag} Int</th>}
 									<th className="py-3 px-3.5 text-center min-w-[175px]">Payout Date</th>
 									{secAccounts.map((sa) => {
 										const tag = sa.accountTag || sa.initials || 'SEC';
 										return (
 											<React.Fragment key={`hdr-${tag}`}>
 												<th className="py-3 px-3.5 text-right">{tag}</th>
-												{isDetailedView && <th className="py-3 px-3.5 text-right">{tag} Int</th>}
+												{isDetailedView && <th className="py-3 px-3.5 text-right min-w-[95px]">{tag} Int</th>}
 												<th className="py-3 px-3.5 text-center">{tag} TDS</th>
 											</React.Fragment>
 										);
@@ -8992,10 +9403,11 @@ export function JointLoanDetailsPage({
 											));
 
 									// Amounts split based on account share %
-									const priAmount =
-										inst.primaryAmount != null
+									const priAmount = primarySharePct === 0
+										? 0
+										: (inst.primaryAmount != null
 											? inst.primaryAmount
-											: Math.round(((Number(inst.amount) || 0) * primarySharePct) / 100);
+											: Math.round(((Number(inst.amount) || 0) * primarySharePct) / 100));
 									// Generate smart payout date suggestions: Same Day, Next Day, Today
 									const sameDay = getOffsetDateDDMMYYYY(inst.receivedDate, 0);
 									const nextDay = getOffsetDateDDMMYYYY(inst.receivedDate, 1);
@@ -9049,7 +9461,7 @@ export function JointLoanDetailsPage({
 												{/* 1. S.No with expand/collapse chevron if partial & absolute clear button */}
 												<td className="py-3 px-3 text-left text-slate-700 font-extrabold text-[12px] font-mono whitespace-nowrap relative">
 													<div className="relative flex items-center gap-2 pr-5">
-														<span>#{String(inst.sNo).padStart(2, '0')}</span>
+														<span className="text-slate-400">{inst.sNo}</span>
 														{inst.isPartial && (
 															<button
 																type="button"
@@ -9148,6 +9560,7 @@ export function JointLoanDetailsPage({
 														minDate={inst.date}
 														minDateLabel="EMI Date"
 														disabled={!canEditRecdDate}
+														openUpward="auto"
 														tooltip={
 															isSecEditor
 																? 'Received date can only be edited by primary manager'
@@ -9173,7 +9586,7 @@ export function JointLoanDetailsPage({
 												{/* 8. Primary Interest */}
 												{isDetailedView && (
 													<td className="py-3 px-3.5 text-right font-extrabold text-[12.5px] text-blue-900 whitespace-nowrap">
-														{formatCurrency(inst.primaryInterest)}
+														{formatCurrency(primarySharePct === 0 ? 0 : inst.primaryInterest)}
 													</td>
 												)}
 
@@ -9196,7 +9609,7 @@ export function JointLoanDetailsPage({
 																		: `Payout date to ${secTag} cannot be earlier than client receipt date (${inst.receivedDate})`
 															}
 															suggestions={payoutSuggestions}
-															openUpward={rowIdx >= 5}
+															openUpward="auto"
 															align="right"
 															onChange={(newVal) =>
 																handleScheduleDateChange(inst.isPartial ? `${inst.sNo}A` : inst.sNo, 'dueDate', newVal)
@@ -9498,6 +9911,7 @@ export function JointLoanDetailsPage({
 																	minDate={subMinRecdDate}
 																	minDateLabel={subMinRecdLabel}
 																	disabled={!canEditSubRecdDate}
+																	openUpward="auto"
 																	tooltip={
 																		isSecEditor
 																			? 'Received date cannot be edited by secondary manager'
@@ -9517,7 +9931,7 @@ export function JointLoanDetailsPage({
 
 															{/* Sub-row Primary Amount */}
 															<td className="py-2.5 px-3.5 text-right font-extrabold text-[12.5px] text-blue-900 whitespace-nowrap">
-																{formatCurrency(sub.primaryAmount)}
+																{formatCurrency(primarySharePct === 0 ? 0 : sub.primaryAmount)}
 															</td>
 
 															{/* Sub-row Primary Interest */}
@@ -9542,7 +9956,7 @@ export function JointLoanDetailsPage({
 																					: `Payout date to ${secTag} cannot be earlier than client receipt date (${sub.receivedDate})`
 																		}
 																		suggestions={subPayoutSuggestions}
-																		openUpward={rowIdx >= 5}
+																		openUpward="auto"
 																		align="right"
 																		onChange={(newVal) =>
 																			handleScheduleDateChange(sub.sNo, 'dueDate', newVal)
@@ -9940,16 +10354,6 @@ export function JointLoanDetailsPage({
 										{/* 2. Account Name (Primary and Secondary) */}
 										<td className="py-3.5 px-4">
 											<div className="flex items-center gap-3">
-												<div
-													className={`w-8 h-8 rounded-xl font-extrabold text-[11px] flex items-center justify-center flex-shrink-0 ring-1 ${acc.isPrimary
-														? 'bg-purple-50 text-purple-700 ring-purple-200'
-														: acc.accountTag === 'FC'
-															? 'bg-teal-50 text-teal-700 ring-teal-200'
-															: 'bg-blue-50 text-blue-700 ring-blue-200'
-														}`}
-												>
-													{acc.initials || acc.accountName.slice(0, 2).toUpperCase()}
-												</div>
 												<div>
 													<div className="flex items-center gap-2">
 														<span className="font-extrabold text-slate-900 text-[12px]">
@@ -10142,7 +10546,7 @@ export function JointLoanDetailsPage({
 			{/* Edit Contact Details Modal */}
 			{isEditingContact && (
 				<div
-					className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs font-sans overscroll-contain animate-fadeIn"
+					className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-sm font-sans overscroll-contain animate-fadeIn"
 					onClick={() => setIsEditingContact(false)}
 				>
 					<div
@@ -10483,318 +10887,339 @@ export function JointLoanDetailsPage({
 						<form onSubmit={handleCreatePenalInterest} className="flex flex-col flex-1 min-h-0 overflow-hidden">
 							{/* Scrollable Form Content */}
 							<div className="overflow-y-auto overscroll-contain p-6 space-y-4 flex-1">
-							{penalFormError && (
-								<div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-[12.5px] font-semibold flex items-center gap-2">
-									<span className="material-symbols-outlined text-[18px] text-rose-500">error</span>
-									<span>{penalFormError}</span>
-								</div>
-							)}
+								{penalFormError && (
+									<div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-[12.5px] font-semibold flex items-center gap-2">
+										<span className="material-symbols-outlined text-[18px] text-rose-500">error</span>
+										<span>{penalFormError}</span>
+									</div>
+								)}
 
-							{/* Date & Penal Amount Row */}
-							<div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-								{/* Date Field */}
-								<div>
-									<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-										Date <span className="text-rose-500">*</span>
-									</label>
-									<div ref={penalDateContainerRef} className="relative flex items-center">
-										<input
-											type="text"
-											value={penalFormDate}
-											placeholder="DD-MM-YYYY"
-											maxLength={10}
-											onChange={(e) => {
-												const formatted = formatWithAutoDash(e.target.value, penalFormDate);
-												setPenalFormDate(formatted);
-											}}
-											className="w-full pl-3.5 pr-24 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-[13.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
-											required
-										/>
-										<div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-											<button
-												type="button"
-												onClick={(e) => {
-													e.stopPropagation();
-													setShowPenalDateCalendar((prev) => !prev);
-													setOpenSecPayoutCalendarIdx(null);
-												}}
-												className={`w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${
-													showPenalDateCalendar
-														? 'bg-primary text-white shadow-xs'
-														: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
-												}`}
-												title="Pick from calendar"
-											>
-												<span className="material-symbols-outlined text-[17px]">calendar_today</span>
-											</button>
-											<button
-												type="button"
-												onClick={() => {
-													setPenalFormDate(getTodayDDMMYYYY());
-													setShowPenalDateCalendar(false);
-												}}
-												className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-slate-200/70 text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
-												title="Set to today's date"
-											>
-												Today
-											</button>
-										</div>
-
-										{/* Modern Interactive Calendar Popover */}
-										{showPenalDateCalendar && (
-											<ModernCalendarPicker
+								{/* Date & Penal Amount Row */}
+								<div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+									{/* Date Field */}
+									<div>
+										<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+											Date <span className="text-rose-500">*</span>
+										</label>
+										<div ref={penalDateContainerRef} className="relative flex items-center">
+											<input
+												type="text"
 												value={penalFormDate}
-												align="left"
-												openUpward="auto"
-												onChange={(newDate) => {
-													setPenalFormDate(newDate);
-													setShowPenalDateCalendar(false);
+												placeholder="DD-MM-YYYY"
+												maxLength={10}
+												onChange={(e) => {
+													const formatted = formatWithAutoDash(e.target.value, penalFormDate);
+													setPenalFormDate(formatted);
 												}}
-												onClose={() => setShowPenalDateCalendar(false)}
+												className="w-full pl-3.5 pr-24 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-[13.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+												required
 											/>
+											<div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+												<button
+													type="button"
+													onClick={(e) => {
+														e.stopPropagation();
+														setShowPenalDateCalendar((prev) => !prev);
+														setOpenSecPayoutCalendarIdx(null);
+													}}
+													className={`w-7 h-7 flex items-center justify-center rounded-lg transition-all cursor-pointer ${showPenalDateCalendar
+															? 'bg-primary text-white shadow-xs'
+															: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
+														}`}
+													title="Pick from calendar"
+												>
+													<span className="material-symbols-outlined text-[17px]">calendar_today</span>
+												</button>
+												<button
+													type="button"
+													onClick={() => {
+														setPenalFormDate(getTodayDDMMYYYY());
+														setShowPenalDateCalendar(false);
+													}}
+													className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-slate-200/70 text-slate-700 hover:bg-slate-300 transition-colors cursor-pointer"
+													title="Set to today's date"
+												>
+													Today
+												</button>
+											</div>
+
+											{/* Modern Interactive Calendar Popover */}
+											{showPenalDateCalendar && (
+												<ModernCalendarPicker
+													value={penalFormDate}
+													align="left"
+													openUpward="auto"
+													onChange={(newDate) => {
+														setPenalFormDate(newDate);
+														setShowPenalDateCalendar(false);
+													}}
+													onClose={() => setShowPenalDateCalendar(false)}
+												/>
+											)}
+										</div>
+									</div>
+
+									{/* Penal Amount Field */}
+									<div>
+										<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+											Penal Amount <span className="text-rose-500">*</span>
+										</label>
+										<div className="relative">
+											<span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[14px]">
+												₹
+											</span>
+											<input
+												type="number"
+												min="1"
+												step="any"
+												value={penalFormAmount}
+												placeholder="e.g. 5000"
+												onChange={(e) => handlePenalAmountChange(e.target.value)}
+												onWheel={(e) => e.target.blur()}
+												className="w-full pl-8 pr-3.5 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-[13.5px] font-bold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+												required
+											/>
+										</div>
+									</div>
+								</div>
+
+								{/* Account Split Section */}
+								<div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/90 space-y-3">
+									<div className="flex items-center justify-between flex-wrap gap-1 pb-1 border-b border-slate-200/70">
+										<span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+											<span className="material-symbols-outlined text-[15px] text-primary">pie_chart</span>
+											<span>Account Split ({shareRatioText}%)</span>
+										</span>
+										{penalFormAmount && Number(penalFormAmount) > 0 && (
+											<span
+												className={`text-[10.5px] font-bold px-2 py-0.5 rounded-md ${isPenalExceeded
+														? 'bg-rose-100 text-rose-700 ring-1 ring-rose-300'
+														: Math.abs(penalAllocatedTotal - Number(penalFormAmount)) < 0.01
+															? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300'
+															: 'bg-amber-100 text-amber-800 ring-1 ring-amber-300'
+													}`}
+											>
+												{isPenalExceeded
+													? `Exceeds by ₹${(penalAllocatedTotal - Number(penalFormAmount)).toLocaleString('en-IN')}`
+													: Math.abs(penalAllocatedTotal - Number(penalFormAmount)) < 0.01
+														? '✓ 100% Allocated'
+														: `₹${(Number(penalFormAmount) - penalAllocatedTotal).toLocaleString('en-IN')} unallocated`}
+											</span>
 										)}
 									</div>
-								</div>
 
-								{/* Penal Amount Field */}
-								<div>
-									<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-										Penal Amount <span className="text-rose-500">*</span>
-									</label>
-									<div className="relative">
-										<span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[14px]">
-											₹
-										</span>
-										<input
-											type="number"
-											min="1"
-											step="any"
-											value={penalFormAmount}
-											placeholder="e.g. 5000"
-											onChange={(e) => handlePenalAmountChange(e.target.value)}
-											onWheel={(e) => e.target.blur()}
-											className="w-full pl-8 pr-3.5 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-[13.5px] font-bold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-											required
-										/>
-									</div>
-								</div>
-							</div>
-
-							{/* Account Split Section */}
-							<div className="p-3.5 rounded-2xl bg-slate-50/80 border border-slate-200/90 space-y-3">
-								<div className="flex items-center justify-between flex-wrap gap-1 pb-1 border-b border-slate-200/70">
-									<span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
-										<span className="material-symbols-outlined text-[15px] text-primary">pie_chart</span>
-										<span>Account Split ({shareRatioText}%)</span>
-									</span>
-									{penalFormAmount && Number(penalFormAmount) > 0 && (
-										<span
-											className={`text-[10.5px] font-bold px-2 py-0.5 rounded-md ${
-												isPenalExceeded
-													? 'bg-rose-100 text-rose-700 ring-1 ring-rose-300'
-													: Math.abs(penalAllocatedTotal - Number(penalFormAmount)) < 0.01
-													? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300'
-													: 'bg-amber-100 text-amber-800 ring-1 ring-amber-300'
-											}`}
-										>
-											{isPenalExceeded
-												? `Exceeds by ₹${(penalAllocatedTotal - Number(penalFormAmount)).toLocaleString('en-IN')}`
-												: Math.abs(penalAllocatedTotal - Number(penalFormAmount)) < 0.01
-												? '✓ 100% Allocated'
-												: `₹${(Number(penalFormAmount) - penalAllocatedTotal).toLocaleString('en-IN')} unallocated`}
-										</span>
-									)}
-								</div>
-
-								<div className="space-y-2.5">
-									{/* Primary Account: Amount */}
-									<div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
-										<div className="flex items-center justify-between pb-1 border-b border-slate-100">
-											<span className="truncate text-[11.5px] font-bold text-slate-800" title={primaryAcc?.accountName || primaryTag}>
-												{primaryTag} ({primarySharePercent}%)
-											</span>
-											<span className="text-[9px] text-blue-700 font-bold uppercase bg-blue-50 px-1.5 rounded ring-1 ring-blue-200">
-												Primary
-											</span>
-										</div>
-										<div>
-											<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-												Amount
-											</label>
-											<div className="relative">
-												<span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[12.5px]">
-													₹
-												</span>
-												<input
-													type="number"
-													min="0"
-													step="any"
-													value={penalPriAmount}
-													placeholder="0"
-													onChange={(e) => handlePriAmountChange(e.target.value)}
-													onWheel={(e) => e.target.blur()}
-													className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-														isPenalExceeded
-															? 'border-rose-300 focus:border-rose-500'
-															: 'border-slate-200 focus:border-primary'
-													}`}
-												/>
-											</div>
-										</div>
-									</div>
-
-									{/* When multiple secondary accounts: display 1 shared Payout Date field */}
-									{effectiveSecAccounts.length > 1 && (
+									<div className="space-y-2.5">
+										{/* Primary Account: Amount */}
 										<div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
 											<div className="flex items-center justify-between pb-1 border-b border-slate-100">
-												<span className="text-[11.5px] font-bold text-slate-800 flex items-center gap-1.5">
-													<span className="material-symbols-outlined text-[15px] text-purple-600">calendar_month</span>
-													<span>Payout Date (Secondary Accounts)</span>
+												<span className="truncate text-[11.5px] font-bold text-slate-800" title={primaryAcc?.accountName || primaryTag}>
+													{primaryTag} ({primarySharePercent}%)
 												</span>
-												<span className="text-[9px] text-purple-700 font-bold uppercase bg-purple-50 px-1.5 rounded ring-1 ring-purple-200">
-													All Secondary
+												<span className="text-[9px] text-blue-700 font-bold uppercase bg-blue-50 px-1.5 rounded ring-1 ring-blue-200">
+													Primary
 												</span>
 											</div>
 											<div>
 												<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-													Payout Date
+													Amount
 												</label>
-												<div
-													ref={commonSecPayoutRef}
-													className="relative flex items-center"
-												>
+												<div className="relative">
+													<span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[12.5px]">
+														₹
+													</span>
 													<input
-														type="text"
-														value={penalSecPayoutDates[0] !== undefined ? penalSecPayoutDates[0] : ''}
-														placeholder="DD-MM-YYYY"
-														maxLength={10}
-														onChange={(e) => {
-															const prevVal = penalSecPayoutDates[0] || '';
-															const formatted = formatWithAutoDash(e.target.value, prevVal);
-															setPenalSecPayoutDates(effectiveSecAccounts.map(() => formatted));
-														}}
-														className="w-full pl-3 pr-9 py-2 bg-slate-50/60 border border-slate-200 rounded-xl text-[12.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+														type="number"
+														min="0"
+														step="any"
+														value={penalPriAmount}
+														placeholder="0"
+														onChange={(e) => handlePriAmountChange(e.target.value)}
+														onWheel={(e) => e.target.blur()}
+														className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${isPenalExceeded
+																? 'border-rose-300 focus:border-rose-500'
+																: 'border-slate-200 focus:border-primary'
+															}`}
 													/>
-													<button
-														type="button"
-														onClick={(e) => {
-															e.stopPropagation();
-															setShowCommonSecCalendar((prev) => !prev);
-															setShowPenalDateCalendar(false);
-														}}
-														className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-lg transition-all cursor-pointer ${
-															showCommonSecCalendar
-																? 'bg-primary text-white shadow-xs'
-																: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
-														}`}
-														title="Pick Payout Date from calendar"
-													>
-														<span className="material-symbols-outlined text-[16px]">calendar_today</span>
-													</button>
-
-													{/* Modern Interactive Calendar Popover */}
-													{showCommonSecCalendar && (
-														<ModernCalendarPicker
-															value={penalSecPayoutDates[0] || ''}
-															align="left"
-															openUpward="auto"
-															onChange={(newDate) => {
-																setPenalSecPayoutDates(effectiveSecAccounts.map(() => newDate));
-																setShowCommonSecCalendar(false);
-															}}
-															onClose={() => setShowCommonSecCalendar(false)}
-														/>
-													)}
 												</div>
 											</div>
 										</div>
-									)}
 
-									{/* Secondary Accounts Amount Cards */}
-									{effectiveSecAccounts.map((sec, idx) => {
-										const tag = sec.accountTag || sec.initials || `SEC${idx + 1}`;
-										const sharePct = secondarySharePercents[idx] || (100 - Number(primarySharePercent));
-										const isSingleSec = effectiveSecAccounts.length === 1;
-
-										return (
-											<div key={`sec-input-${tag}-${idx}`} className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
+										{/* When multiple secondary accounts: display 1 shared Payout Date field */}
+										{effectiveSecAccounts.length > 1 && (
+											<div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
 												<div className="flex items-center justify-between pb-1 border-b border-slate-100">
-													<span className="truncate text-[11.5px] font-bold text-slate-800" title={sec.accountName || tag}>
-														{tag} ({sharePct}%)
+													<span className="text-[11.5px] font-bold text-slate-800 flex items-center gap-1.5">
+														<span className="material-symbols-outlined text-[15px] text-purple-600">calendar_month</span>
+														<span>Payout Date (Secondary Accounts)</span>
 													</span>
 													<span className="text-[9px] text-purple-700 font-bold uppercase bg-purple-50 px-1.5 rounded ring-1 ring-purple-200">
-														Secondary
+														All Secondary
 													</span>
 												</div>
+												<div>
+													<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+														Payout Date
+													</label>
+													<div
+														ref={commonSecPayoutRef}
+														className="relative flex items-center"
+													>
+														<input
+															type="text"
+															value={penalSecPayoutDates[0] !== undefined ? penalSecPayoutDates[0] : ''}
+															placeholder="DD-MM-YYYY"
+															maxLength={10}
+															onChange={(e) => {
+																const prevVal = penalSecPayoutDates[0] || '';
+																const formatted = formatWithAutoDash(e.target.value, prevVal);
+																setPenalSecPayoutDates(effectiveSecAccounts.map(() => formatted));
+															}}
+															className="w-full pl-3 pr-9 py-2 bg-slate-50/60 border border-slate-200 rounded-xl text-[12.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+														/>
+														<button
+															type="button"
+															onClick={(e) => {
+																e.stopPropagation();
+																setShowCommonSecCalendar((prev) => !prev);
+																setShowPenalDateCalendar(false);
+															}}
+															className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-lg transition-all cursor-pointer ${showCommonSecCalendar
+																	? 'bg-primary text-white shadow-xs'
+																	: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
+																}`}
+															title="Pick Payout Date from calendar"
+														>
+															<span className="material-symbols-outlined text-[16px]">calendar_today</span>
+														</button>
 
-												{isSingleSec ? (
-													<div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-														{/* Payout Date */}
-														<div>
-															<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-																Payout Date
-															</label>
-															<div
-																ref={(el) => {
-																	if (el) secPayoutContainerRefs.current[idx] = el;
-																	else delete secPayoutContainerRefs.current[idx];
+														{/* Modern Interactive Calendar Popover */}
+														{showCommonSecCalendar && (
+															<ModernCalendarPicker
+																value={penalSecPayoutDates[0] || ''}
+																align="left"
+																openUpward="auto"
+																onChange={(newDate) => {
+																	setPenalSecPayoutDates(effectiveSecAccounts.map(() => newDate));
+																	setShowCommonSecCalendar(false);
 																}}
-																className="relative flex items-center"
-															>
-																<input
-																	type="text"
-																	value={penalSecPayoutDates[idx] !== undefined ? penalSecPayoutDates[idx] : ''}
-																	placeholder="DD-MM-YYYY"
-																	maxLength={10}
-																	onChange={(e) => {
-																		const prevVal = penalSecPayoutDates[idx] || '';
-																		const formatted = formatWithAutoDash(e.target.value, prevVal);
-																		setPenalSecPayoutDates((prev) => {
-																			const next = [...prev];
-																			next[idx] = formatted;
-																			return next;
-																		});
-																	}}
-																	className="w-full pl-3 pr-9 py-2 bg-slate-50/60 border border-slate-200 rounded-xl text-[12.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
-																/>
-																<button
-																	type="button"
-																	onClick={(e) => {
-																		e.stopPropagation();
-																		setOpenSecPayoutCalendarIdx((prev) => (prev === idx ? null : idx));
-																		setShowPenalDateCalendar(false);
-																	}}
-																	className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-lg transition-all cursor-pointer ${
-																		openSecPayoutCalendarIdx === idx
-																			? 'bg-primary text-white shadow-xs'
-																			: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
-																	}`}
-																	title="Pick Payout Date from calendar"
-																>
-																	<span className="material-symbols-outlined text-[16px]">calendar_today</span>
-																</button>
+																onClose={() => setShowCommonSecCalendar(false)}
+															/>
+														)}
+													</div>
+												</div>
+											</div>
+										)}
 
-																{/* Modern Interactive Calendar Popover */}
-																{openSecPayoutCalendarIdx === idx && (
-																	<ModernCalendarPicker
-																		value={penalSecPayoutDates[idx] || ''}
-																		align="left"
-																		openUpward="auto"
-																		onChange={(newDate) => {
+										{/* Secondary Accounts Amount Cards */}
+										{effectiveSecAccounts.map((sec, idx) => {
+											const tag = sec.accountTag || sec.initials || `SEC${idx + 1}`;
+											const sharePct = secondarySharePercents[idx] || (100 - Number(primarySharePercent));
+											const isSingleSec = effectiveSecAccounts.length === 1;
+
+											return (
+												<div key={`sec-input-${tag}-${idx}`} className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
+													<div className="flex items-center justify-between pb-1 border-b border-slate-100">
+														<span className="truncate text-[11.5px] font-bold text-slate-800" title={sec.accountName || tag}>
+															{tag} ({sharePct}%)
+														</span>
+														<span className="text-[9px] text-purple-700 font-bold uppercase bg-purple-50 px-1.5 rounded ring-1 ring-purple-200">
+															Secondary
+														</span>
+													</div>
+
+													{isSingleSec ? (
+														<div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+															{/* Payout Date */}
+															<div>
+																<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+																	Payout Date
+																</label>
+																<div
+																	ref={(el) => {
+																		if (el) secPayoutContainerRefs.current[idx] = el;
+																		else delete secPayoutContainerRefs.current[idx];
+																	}}
+																	className="relative flex items-center"
+																>
+																	<input
+																		type="text"
+																		value={penalSecPayoutDates[idx] !== undefined ? penalSecPayoutDates[idx] : ''}
+																		placeholder="DD-MM-YYYY"
+																		maxLength={10}
+																		onChange={(e) => {
+																			const prevVal = penalSecPayoutDates[idx] || '';
+																			const formatted = formatWithAutoDash(e.target.value, prevVal);
 																			setPenalSecPayoutDates((prev) => {
 																				const next = [...prev];
-																				next[idx] = newDate;
+																				next[idx] = formatted;
 																				return next;
 																			});
-																			setOpenSecPayoutCalendarIdx(null);
 																		}}
-																		onClose={() => setOpenSecPayoutCalendarIdx(null)}
+																		className="w-full pl-3 pr-9 py-2 bg-slate-50/60 border border-slate-200 rounded-xl text-[12.5px] font-semibold text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
 																	/>
-																)}
+																	<button
+																		type="button"
+																		onClick={(e) => {
+																			e.stopPropagation();
+																			setOpenSecPayoutCalendarIdx((prev) => (prev === idx ? null : idx));
+																			setShowPenalDateCalendar(false);
+																		}}
+																		className={`absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-lg transition-all cursor-pointer ${openSecPayoutCalendarIdx === idx
+																				? 'bg-primary text-white shadow-xs'
+																				: 'text-slate-400 hover:text-primary hover:bg-slate-100 active:scale-95'
+																			}`}
+																		title="Pick Payout Date from calendar"
+																	>
+																		<span className="material-symbols-outlined text-[16px]">calendar_today</span>
+																	</button>
+
+																	{/* Modern Interactive Calendar Popover */}
+																	{openSecPayoutCalendarIdx === idx && (
+																		<ModernCalendarPicker
+																			value={penalSecPayoutDates[idx] || ''}
+																			align="left"
+																			openUpward="auto"
+																			onChange={(newDate) => {
+																				setPenalSecPayoutDates((prev) => {
+																					const next = [...prev];
+																					next[idx] = newDate;
+																					return next;
+																				});
+																				setOpenSecPayoutCalendarIdx(null);
+																			}}
+																			onClose={() => setOpenSecPayoutCalendarIdx(null)}
+																		/>
+																	)}
+																</div>
+															</div>
+
+															{/* Amount */}
+															<div>
+																<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+																	Amount
+																</label>
+																<div className="relative">
+																	<span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[12.5px]">
+																		₹
+																	</span>
+																	<input
+																		type="number"
+																		min="0"
+																		step="any"
+																		value={penalSecAmounts[idx] !== undefined ? penalSecAmounts[idx] : ''}
+																		placeholder="0"
+																		onChange={(e) => handleSecAmountChange(e.target.value, idx)}
+																		onWheel={(e) => e.target.blur()}
+																		className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${isPenalExceeded
+																				? 'border-rose-300 focus:border-rose-500'
+																				: 'border-slate-200 focus:border-primary'
+																			}`}
+																	/>
+																</div>
 															</div>
 														</div>
-
-														{/* Amount */}
+													) : (
+														/* When multiple secondary accounts: only Amount is displayed per account */
 														<div>
 															<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
 																Amount
@@ -10811,69 +11236,41 @@ export function JointLoanDetailsPage({
 																	placeholder="0"
 																	onChange={(e) => handleSecAmountChange(e.target.value, idx)}
 																	onWheel={(e) => e.target.blur()}
-																	className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-																		isPenalExceeded
+																	className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${isPenalExceeded
 																			? 'border-rose-300 focus:border-rose-500'
 																			: 'border-slate-200 focus:border-primary'
-																	}`}
+																		}`}
 																/>
 															</div>
 														</div>
-													</div>
-												) : (
-													/* When multiple secondary accounts: only Amount is displayed per account */
-													<div>
-														<label className="block text-[10.5px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-															Amount
-														</label>
-														<div className="relative">
-															<span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400 text-[12.5px]">
-																₹
-															</span>
-															<input
-																type="number"
-																min="0"
-																step="any"
-																value={penalSecAmounts[idx] !== undefined ? penalSecAmounts[idx] : ''}
-																placeholder="0"
-																onChange={(e) => handleSecAmountChange(e.target.value, idx)}
-																onWheel={(e) => e.target.blur()}
-																className={`w-full pl-6 pr-2.5 py-2 bg-slate-50/60 border rounded-xl text-[12.5px] font-bold text-slate-900 outline-none focus:bg-white focus:ring-2 focus:ring-primary/20 transition-all font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-																	isPenalExceeded
-																		? 'border-rose-300 focus:border-rose-500'
-																		: 'border-slate-200 focus:border-primary'
-																}`}
-															/>
-														</div>
-													</div>
-												)}
-											</div>
-										);
-									})}
+													)}
+												</div>
+											);
+										})}
+									</div>
+
+									{/* Allocation summary text */}
+									<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500">
+										<span>Total Allocated:</span>
+										<span className={`font-mono font-extrabold ${isPenalExceeded ? 'text-rose-600' : 'text-slate-800'}`}>
+											{formatCurrency(penalAllocatedTotal)} / {formatCurrency(Number(penalFormAmount) || 0)}
+										</span>
+									</div>
 								</div>
 
-								{/* Allocation summary text */}
-								<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500">
-									<span>Total Allocated:</span>
-									<span className={`font-mono font-extrabold ${isPenalExceeded ? 'text-rose-600' : 'text-slate-800'}`}>
-										{formatCurrency(penalAllocatedTotal)} / {formatCurrency(Number(penalFormAmount) || 0)}
-									</span>
+								{/* Remarks Field */}
+								<div>
+									<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Remarks
+									</label>
+									<textarea
+										rows={3}
+										value={penalFormRemarks}
+										placeholder="e.g., Delay penalty for EMI #3, late payment surcharge, etc."
+										onChange={(e) => setPenalFormRemarks(e.target.value)}
+										className="w-full p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-[13px] font-medium text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all resize-none"
+									/>
 								</div>
-							</div>
-
-							{/* Remarks Field */}
-							<div>
-								<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-									Remarks
-								</label>
-								<textarea
-									rows={3}
-									value={penalFormRemarks}
-									placeholder="e.g., Delay penalty for EMI #3, late payment surcharge, etc."
-									onChange={(e) => setPenalFormRemarks(e.target.value)}
-									className="w-full p-3 bg-slate-50/70 border border-slate-200 rounded-xl text-[13px] font-medium text-slate-900 outline-none focus:bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all resize-none"
-								/>
-							</div>
 
 							</div>
 
@@ -10889,11 +11286,10 @@ export function JointLoanDetailsPage({
 								<button
 									type="submit"
 									disabled={isPenalExceeded}
-									className={`px-5 py-2 rounded-xl text-[12.5px] font-bold text-white shadow-sm transition-all active:scale-95 flex items-center gap-1.5 ${
-										isPenalExceeded
+									className={`px-5 py-2 rounded-xl text-[12.5px] font-bold text-white shadow-sm transition-all active:scale-95 flex items-center gap-1.5 ${isPenalExceeded
 											? 'bg-slate-400 cursor-not-allowed opacity-60'
 											: 'bg-primary hover:bg-primary/90 cursor-pointer'
-									}`}
+										}`}
 								>
 									<span className="material-symbols-outlined text-[18px]">check</span>
 									<span>Save Penal Interest</span>
@@ -11886,7 +12282,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					// Auto-fill form fields from parsed data
 					const priName = d.primary_account || '';
 					if (priName) setNewPrimaryName(priName);
-					if (d.client_account) setNewCoName(d.client_account);
+					if (d.client_account) setNewCoName(cleanCustomerName(d.client_account));
 
 					// Filter out primary account from initial secondary account allocation
 					const validSecondaryOptions = availableAccountOptions.filter(
@@ -11963,7 +12359,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		return [
 			{ id: 'ALL', label: 'All Statuses', dot: 'bg-primary', count: total },
 			{ id: 'Active', label: 'Active', dot: 'bg-emerald-500', count: activeCount },
-			{ id: 'Pending', label: 'Approval Pending', dot: 'bg-amber-500', count: pendingCount },
+			{ id: 'Pending', label: 'Pending', dot: 'bg-amber-500', count: pendingCount },
 			{ id: 'Overdue', label: 'Overdue', dot: 'bg-rose-500', count: overdueCount },
 			{ id: 'Closed', label: 'Closed', dot: 'bg-slate-400', count: closedCount },
 		];
@@ -12153,7 +12549,15 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		[userPermittedLoans]
 	);
 
-	// 4. Approval Pending (multi-stage approval: Secondary or Admin)
+	// 4. Approval Pending (multi-stage approval: Secondary or Admin + Payout Pending)
+	const pendingNewLoanCount = useMemo(
+		() => userPermittedLoans.filter((l) => isNewLoanPendingApproval(l)).length,
+		[userPermittedLoans]
+	);
+	const pendingPayoutCount = useMemo(
+		() => userPermittedLoans.filter((l) => isLoanPayoutPending(l)).length,
+		[userPermittedLoans]
+	);
 	const pendingApprovalCount = useMemo(
 		() => userPermittedLoans.filter((l) => isLoanPendingApproval(l)).length,
 		[userPermittedLoans]
@@ -12163,6 +12567,78 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0),
 		[userPermittedLoans]
 	);
+
+	const [listExportNotification, setListExportNotification] = useState(null);
+	const [listExportError, setListExportError] = useState(null);
+	const listExportTimerRef = useRef(null);
+	const listExportErrorTimerRef = useRef(null);
+
+	const showListExportError = useCallback((errMsg) => {
+		if (listExportErrorTimerRef.current) {
+			clearTimeout(listExportErrorTimerRef.current);
+		}
+		setListExportError(errMsg);
+		listExportErrorTimerRef.current = setTimeout(() => {
+			setListExportError(null);
+			listExportErrorTimerRef.current = null;
+		}, 5000);
+		alert(errMsg);
+	}, []);
+
+	const handleExportLoansList = useCallback(() => {
+		try {
+			const isFiltered = Boolean(
+				(statusFilter && statusFilter !== 'ALL') ||
+				(accountFilter && accountFilter !== 'ALL') ||
+				dateRangeFilter?.startDate ||
+				dateRangeFilter?.endDate ||
+				(searchQuery && searchQuery.trim())
+			);
+			const loansToExport = isFiltered
+				? filteredLoans
+				: (filteredLoans.length > 0 ? filteredLoans : userPermittedLoans);
+
+			if (!loansToExport || loansToExport.length === 0) {
+				showListExportError('No outstanding loans');
+				return;
+			}
+			const result = exportOutstandingReportPerPrimaryAccount(
+				loansToExport,
+				(loan) => generateRepaymentSchedule(loan, getLoanAccountDetails(loan)),
+				availableAccountObjects
+			);
+			if (!result || result.success === false) {
+				const errMsg = (result && result.message) ? result.message : 'No outstanding loans';
+				showListExportError(errMsg);
+				return;
+			}
+			const filename = result.filename || (typeof result === 'string' ? result : null);
+			if (filename) {
+				if (listExportTimerRef.current) {
+					clearTimeout(listExportTimerRef.current);
+				}
+				setListExportNotification(filename);
+				listExportTimerRef.current = setTimeout(() => {
+					setListExportNotification(null);
+					listExportTimerRef.current = null;
+				}, 5000);
+			}
+		} catch (err) {
+			console.error('Failed to export outstanding report to Excel:', err);
+			showListExportError('Failed to export Excel file. Please try again.');
+		}
+	}, [filteredLoans, userPermittedLoans, availableAccountObjects, statusFilter, accountFilter, dateRangeFilter, searchQuery, showListExportError]);
+
+	useEffect(() => {
+		return () => {
+			if (listExportTimerRef.current) {
+				clearTimeout(listExportTimerRef.current);
+			}
+			if (listExportErrorTimerRef.current) {
+				clearTimeout(listExportErrorTimerRef.current);
+			}
+		};
+	}, []);
 
 	// Delete loan handler: removes loan and cleans up its repayment schedule, remaining account details, and notifications
 	const handleDeleteLoan = async (loanId, targetLoan = null) => {
@@ -12687,8 +13163,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl ring-1 ring-slate-200 animate-in zoom-in-95 duration-200 text-center"
 					onClick={(e) => e.stopPropagation()}
 				>
-					<div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 shadow-inner">
-						<span className="material-symbols-outlined text-[30px]">lock</span>
+					<div className="w-12 h-12 mx-auto mb-4 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 shadow-inner">
+						<span className="material-symbols-outlined" style={{fontSize: "20px"}}>lock</span>
 					</div>
 					<span className="inline-block px-3 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-wider bg-amber-100 text-amber-800 mb-2">
 						Access Restricted
@@ -12872,7 +13348,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						<button
 							type="button"
 							onClick={() => setAccountRoleFilter('all')}
-							className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-[12.5px] transition-all cursor-pointer ${accountRoleFilter === 'all'
+							className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${accountRoleFilter === 'all'
 								? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/80'
 								: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
 								}`}
@@ -12880,7 +13356,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						>
 							<span>All</span>
 							<span
-								className={`text-[11px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'all'
+								className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'all'
 									? 'bg-slate-100 text-slate-800 ring-1 ring-slate-200'
 									: 'bg-slate-200/70 text-slate-600'
 									}`}
@@ -12892,7 +13368,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						<button
 							type="button"
 							onClick={() => setAccountRoleFilter('primary')}
-							className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-[12.5px] transition-all cursor-pointer ${accountRoleFilter === 'primary'
+							className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${accountRoleFilter === 'primary'
 								? 'bg-white text-emerald-700 shadow-xs ring-1 ring-emerald-200/70'
 								: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
 								}`}
@@ -12901,7 +13377,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 							<span className="w-2 h-2 rounded-full bg-emerald-500"></span>
 							<span>Primary</span>
 							<span
-								className={`text-[11px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'primary'
+								className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'primary'
 									? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200'
 									: 'bg-slate-200/70 text-slate-600'
 									}`}
@@ -12913,7 +13389,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						<button
 							type="button"
 							onClick={() => setAccountRoleFilter('secondary')}
-							className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-[12.5px] transition-all cursor-pointer ${accountRoleFilter === 'secondary'
+							className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${accountRoleFilter === 'secondary'
 								? 'bg-white text-purple-700 shadow-xs ring-1 ring-purple-200/70'
 								: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
 								}`}
@@ -12922,7 +13398,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 							<span className="w-2 h-2 rounded-full bg-purple-500"></span>
 							<span>Secondary</span>
 							<span
-								className={`text-[11px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'secondary'
+								className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${accountRoleFilter === 'secondary'
 									? 'bg-purple-100 text-purple-800 ring-1 ring-purple-200'
 									: 'bg-slate-200/70 text-slate-600'
 									}`}
@@ -12936,7 +13412,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						type="button"
 						onClick={handleDbSync}
 						disabled={isSyncing}
-						className="flex items-center gap-1.5 bg-surface-container-low hover:bg-surface-container text-slate-700 hover:text-slate-900 border border-slate-200/80 px-space-md py-2.5 rounded-xl font-bold text-[13px] shadow-xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer"
+						className="flex items-center gap-1.5 bg-surface-container-low hover:bg-surface-container text-slate-700 hover:text-slate-900 border border-slate-200/80 px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer"
 						title="Sync with Day Book"
 					>
 						<span
@@ -12950,11 +13426,24 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 					<button
 						type="button"
+						onClick={handleExportLoansList}
+						disabled={filteredLoans.length === 0 && userPermittedLoans.length === 0}
+						className="flex items-center gap-1.5 bg-blue-700 hover:bg-blue-900 text-white border border-slate-200/80 px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+						title="Export outstanding report per primary account (.xlsx)"
+					>
+						<span className="material-symbols-outlined text-[18px] text-white">
+							download
+						</span>
+						<span>Export</span>
+					</button>
+
+					<button
+						type="button"
 						onClick={() => {
 							handleCloseCreateModal();
 							setIsCreateOpen(true);
 						}}
-						className="flex items-center gap-1.5 bg-primary-container hover:bg-primary text-on-primary px-space-md py-2.5 rounded-xl font-bold text-[13px] shadow-sm transition-all active:scale-95"
+						className="flex items-center gap-1.5 bg-primary-container hover:bg-primary text-on-primary px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-sm transition-all active:scale-95"
 					>
 						<span className="material-symbols-outlined text-[18px]">add</span>
 						<span>New Loan</span>
@@ -13030,12 +13519,24 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						</span>
 					</div>
 					<div className="my-2">
-						<div className="font-extrabold text-[28px] text-slate-900 leading-tight">
-							{pendingApprovalCount}
+						<div className="flex items-baseline justify-between">
+							<div className="font-extrabold text-[28px] text-slate-900 leading-tight">
+								{pendingApprovalCount}
+							</div>
+							{pendingApprovalCapital > 0 && (
+								<span className="text-[11px] font-semibold text-slate-500">
+									{formatCurrency(pendingApprovalCapital)}
+								</span>
+							)}
 						</div>
-						<div className="flex items-center gap-1 text-[12px] text-amber-700 font-semibold mt-1">
-							<span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-							<span>{formatCurrency(pendingApprovalCapital)} under review</span>
+						<div className="flex items-center flex-wrap gap-1.5 text-[12px] mt-1 text-slate-600 font-semibold">
+							<span>
+								New Loan: <span className="text-amber-700 font-bold">{pendingNewLoanCount}</span>
+							</span>
+							<span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+							<span>
+								Payout: <span className="text-blue-700 font-bold">{pendingPayoutCount}</span>
+							</span>
 						</div>
 					</div>
 				</div>
@@ -13163,8 +13664,9 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 							) : (
 								paginatedLoans.map((loan, idx) => {
 									const canAccess = canUserAccessLoan(loan, activeUser, userPermissions, availableAccountObjects, allUsers);
-									const isPendingSec = loan.approval_status === 'PENDING_SECONDARY' || (!loan.approval_status && loan.status === 'Pending');
-									const isPendingAdm = loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED';
+									const hasPayoutPending = isLoanPayoutPending(loan);
+									const isPendingSec = !hasPayoutPending && (loan.approval_status === 'PENDING_SECONDARY' || (!loan.approval_status && loan.status === 'Pending'));
+									const isPendingAdm = !hasPayoutPending && (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED');
 									const isUserSecMgr = checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, availableAccountObjects);
 
 									return (
@@ -13806,7 +14308,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 														Borrower / Client
 													</span>
 													<span className="font-bold text-slate-900 truncate block">
-														{pdfParsed.client_account || '-'}
+														{cleanCustomerName(pdfParsed.client_account) || '-'}
 													</span>
 												</div>
 
@@ -13851,7 +14353,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 														Installments
 													</span>
 													<span className="font-bold text-slate-900 block">
-														{pdfParsed.table?.length ? `${pdfParsed.table.length} EMIs` : '-'}
+														{pdfParsed.table?.length ? `${pdfParsed.table.length} EMIs` : (pdfParsed.total_installments ? `${pdfParsed.total_installments} EMIs` : '-')}
 													</span>
 												</div>
 											</div>
@@ -14179,6 +14681,54 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 			{/* Bottom Right Success Notification Alert */}
 			{renderBottomRightAlert()}
+
+			{/* Export Download Success Notification */}
+			{listExportNotification && (
+				<div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300 pointer-events-auto">
+					<div className="flex items-center gap-3 px-4 py-3 bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-2xl shadow-xl ring-1 ring-emerald-300/50">
+						<span className="material-symbols-outlined text-emerald-600 text-[22px]">
+							task_alt
+						</span>
+						<div className="flex flex-col">
+							<span className="text-[12.5px] font-extrabold">Outstanding Report Exported Successfully</span>
+							<span className="text-[11px] text-emerald-700 font-medium">
+								Downloaded <span className="font-bold underline">{listExportNotification}</span>
+							</span>
+						</div>
+						<button
+							type="button"
+							onClick={() => setListExportNotification(null)}
+							className="w-6 h-6 flex items-center justify-center rounded-lg text-emerald-700 hover:bg-emerald-100 transition-colors cursor-pointer"
+						>
+							<span className="material-symbols-outlined text-[16px]">close</span>
+						</button>
+					</div>
+				</div>
+			)}
+
+			{/* Export Download Error Notification (e.g. No outstanding loans) */}
+			{listExportError && (
+				<div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300 pointer-events-auto">
+					<div className="flex items-center gap-3 px-4 py-3 bg-rose-50 text-rose-900 border border-rose-200 rounded-2xl shadow-xl ring-1 ring-rose-300/50">
+						<span className="material-symbols-outlined text-rose-600 text-[22px]">
+							error
+						</span>
+						<div className="flex flex-col">
+							<span className="text-[12.5px] font-extrabold">Cannot Export Report</span>
+							<span className="text-[11.5px] text-rose-700 font-medium">
+								{listExportError}
+							</span>
+						</div>
+						<button
+							type="button"
+							onClick={() => setListExportError(null)}
+							className="w-6 h-6 flex items-center justify-center rounded-lg text-rose-700 hover:bg-rose-100 transition-colors cursor-pointer"
+						>
+							<span className="material-symbols-outlined text-[16px]">close</span>
+						</button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

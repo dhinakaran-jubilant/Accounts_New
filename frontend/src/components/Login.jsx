@@ -11,10 +11,22 @@ import { api } from '../services/api';
 import ForgotPasswordModal from './forgotpasswordmodel';
 
 export default function Login({ onLoginSuccess }) {
-	const [employeeCode, setEmployeeCode] = useState('');
+	const [employeeCode, setEmployeeCode] = useState(() => {
+		try {
+			return localStorage.getItem('loanDesk_remembered_code') || '';
+		} catch (e) {
+			return '';
+		}
+	});
 	const [password, setPassword] = useState('');
 	const [showPassword, setShowPassword] = useState(false);
-	const [rememberMe, setRememberMe] = useState(true);
+	const [rememberMe, setRememberMe] = useState(() => {
+		try {
+			return localStorage.getItem('loanDesk_remember_me') !== 'false';
+		} catch (e) {
+			return true;
+		}
+	});
 	const [isLoading, setIsLoading] = useState(false);
 	const [errorMessage, setErrorMessage] = useState('');
 	const [successNotice, setSuccessNotice] = useState('');
@@ -61,30 +73,25 @@ export default function Login({ onLoginSuccess }) {
 			});
 
 			if (res && res.success && res.user) {
-				if (rememberMe) {
-					// 30 days expiration in milliseconds
-					const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
-					localStorage.setItem('loanDesk_user', JSON.stringify(res.user));
-					if (res.token) {
-						localStorage.setItem('loanDesk_token', res.token);
-					}
-					localStorage.setItem('loanDesk_expires_at', expiresAt.toString());
-
-					// Clean up sessionStorage to prevent stale data conflicts
-					sessionStorage.removeItem('loanDesk_user');
-					sessionStorage.removeItem('loanDesk_token');
-				} else {
-					// Session only (clears when browser tab/window closes)
-					sessionStorage.setItem('loanDesk_user', JSON.stringify(res.user));
-					if (res.token) {
-						sessionStorage.setItem('loanDesk_token', res.token);
-					}
-
-					// Clear any previous persistent remember-me data from localStorage
-					localStorage.removeItem('loanDesk_user');
-					localStorage.removeItem('loanDesk_token');
-					localStorage.removeItem('loanDesk_expires_at');
+				// Store active session for current browser tab/window
+				sessionStorage.setItem('loanDesk_user', JSON.stringify(res.user));
+				if (res.token) {
+					sessionStorage.setItem('loanDesk_token', res.token);
 				}
+
+				// Remember employee code on login screen if Remember Me is checked
+				if (rememberMe) {
+					localStorage.setItem('loanDesk_remembered_code', trimmedCode);
+					localStorage.setItem('loanDesk_remember_me', 'true');
+				} else {
+					localStorage.removeItem('loanDesk_remembered_code');
+					localStorage.setItem('loanDesk_remember_me', 'false');
+				}
+
+				// Always clear persistent auth from localStorage so http://localhost:1111/ defaults to login page
+				localStorage.removeItem('loanDesk_user');
+				localStorage.removeItem('loanDesk_token');
+				localStorage.removeItem('loanDesk_expires_at');
 
 				if (onLoginSuccess) {
 					onLoginSuccess(res.user);

@@ -18,24 +18,15 @@ export default function App() {
 
 	const [currentUser, setCurrentUser] = useState(() => {
 		try {
-			// 1. Check active browser session first (sessionStorage)
+			// Clear legacy persistent auth from localStorage to ensure http://localhost:1111/ defaults to login page
+			localStorage.removeItem('loanDesk_user');
+			localStorage.removeItem('loanDesk_token');
+			localStorage.removeItem('loanDesk_expires_at');
+
+			// Check active browser tab session only (sessionStorage)
 			const sessionUser = sessionStorage.getItem('loanDesk_user');
 			if (sessionUser) {
 				return JSON.parse(sessionUser);
-			}
-
-			// 2. Check persistent storage (localStorage) with 30-day expiration check
-			const localUser = localStorage.getItem('loanDesk_user');
-			if (localUser) {
-				const expiresAt = localStorage.getItem('loanDesk_expires_at');
-				if (expiresAt && Date.now() > Number(expiresAt)) {
-					// Session expired after 30 days -> clean up
-					localStorage.removeItem('loanDesk_user');
-					localStorage.removeItem('loanDesk_token');
-					localStorage.removeItem('loanDesk_expires_at');
-					return null;
-				}
-				return JSON.parse(localUser);
 			}
 			return null;
 		} catch (e) {
@@ -51,9 +42,24 @@ export default function App() {
 		return () => window.removeEventListener('popstate', handlePopState);
 	}, []);
 
+	// Default to /login when unauthenticated (e.g. visiting http://localhost:1111/)
+	useEffect(() => {
+		if (!currentUser) {
+			if (window.location.pathname !== '/login') {
+				window.history.replaceState({}, '', '/login');
+				setCurrentPath('/login');
+			}
+		}
+	}, [currentUser]);
+
 	const handleLoginSuccess = (user) => {
+		try {
+			sessionStorage.setItem('loanDesk_user', JSON.stringify(user));
+		} catch (e) {
+			// ignore
+		}
 		setCurrentUser(user);
-		if (window.location.pathname === '/login') {
+		if (window.location.pathname === '/login' || window.location.pathname === '/') {
 			window.history.pushState({}, '', '/');
 			setCurrentPath('/');
 		}

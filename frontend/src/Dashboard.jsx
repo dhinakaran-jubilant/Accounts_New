@@ -575,7 +575,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 	};
 
 	return (
-		<div className="bg-surface font-sans text-body-md text-on-surface antialiased min-h-screen">
+		<div className="bg-slate-50 font-sans text-body-md text-slate-900 antialiased min-h-screen">
 			{/* Fixed Left Sidebar (filtered to only allowed menus for current user) */}
 			<Sidebar
 				isOpen={isSidebarOpen}
@@ -601,7 +601,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 				/>
 
 				{/* Main Container */}
-				<main className="w-full pt-[6rem] bg-surface min-h-screen px-space-xl py-space-xl">
+				<main className="w-full pt-[5.25rem] bg-slate-50 min-h-screen px-4 sm:px-6 lg:px-8 py-6">
 					{!allowedMenus.includes(activeNav) ? (
 						<div className="bg-white rounded-2xl p-12 text-center max-w-lg mx-auto shadow-sm border border-slate-200 mt-12">
 							<div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-4">

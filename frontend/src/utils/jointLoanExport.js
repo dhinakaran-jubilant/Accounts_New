@@ -342,3 +342,1151 @@ export function exportJointLoanToExcel(loan, accounts = [], repaymentSchedule = 
 	XLSX.writeFile(wb, filename);
 	return filename;
 }
+
+/**
+ * Export a list of joint loans to an Excel file (.xlsx)
+ * Output filename format: JOINT_LOANS_PORTFOLIO_YYYY-MM-DD.xlsx
+ *
+ * @param {Array} loansList - List of joint loan objects
+ * @returns {string} The generated filename
+ */
+export function exportJointLoansListToExcel(loansList = []) {
+	if (!Array.isArray(loansList) || loansList.length === 0) return null;
+
+	const border1px = {
+		top: { style: 'thin', color: { rgb: '000000' } },
+		bottom: { style: 'thin', color: { rgb: '000000' } },
+		left: { style: 'thin', color: { rgb: '000000' } },
+		right: { style: 'thin', color: { rgb: '000000' } },
+	};
+
+	const rows = [];
+	const rowStyles = [];
+
+	const addRow = (rowCells, styleType = 'data') => {
+		rows.push(rowCells);
+		rowStyles.push(styleType);
+	};
+
+	// 1. Title Row
+	addRow(['JOINT LOANS PORTFOLIO REPORT'], 'title');
+	// 2. Subtitle / Metadata Row
+	const now = new Date();
+	const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+	addRow([`Generated on: ${dateStr} | Total Facilities: ${loansList.length}`], 'meta');
+	addRow([], 'empty');
+
+	// 3. Table Headers
+	const headers = [
+		'#',
+		'Loan ID',
+		'Loan Date',
+		'Client Name',
+		'Primary Partner',
+		'Primary Share %',
+		'Secondary Partner(s)',
+		'Sanctioned Amount',
+		'Total Repayment',
+		'Status',
+	];
+	addRow(headers, 'tblHeader');
+
+	let grandSanctioned = 0;
+	let grandRepay = 0;
+
+	// 4. Data Rows
+	loansList.forEach((loan, idx) => {
+		const sNo = idx + 1;
+		const loanId = loan.loan_ref_id || loan.id || '-';
+		const loanDate = loan.loan_date || loan.appliedDate || loan.loanDate || loan.date || loan.applied_date || '-';
+		const clientName = loan.client_account_name || loan.primaryBorrower?.name || loan.clientName || 'Client';
+		const primaryTag = loan.primary || loan.primary_account_name || (loan.primaryAccountName ? loan.primaryAccountName.slice(0, 4).toUpperCase() : 'PRI');
+		const priShareVal = loan.primaryShare ?? loan.primary_account_share ?? 60;
+		const priShareFormatted = `${formatSharePercent(priShareVal)}%`;
+
+		const secList = loan.secondaryAccounts || loan.remaining_accounts || (loan.accountDetails ? loan.accountDetails.filter((a) => !a.isPrimary) : []);
+		const secDesc = secList.length > 0
+			? secList.map((s) => {
+				const tag = s.accountTag || s.tag || s.account_name || s.name || 'SEC';
+				const share = s.share ?? s.percentage ?? '';
+				return share !== '' ? `${tag} (${formatSharePercent(share)}%)` : tag;
+			}).join(', ')
+			: '-';
+
+		const sanctionedAmt = Number(loan.amount || loan.loan_amount || loan.principal || 0);
+		const repayAmt = Number(loan.total_repayment_amount || loan.total_repayment || loan.totalRepayAmount || loan.amount || 0);
+		const status = loan.status || 'Active';
+
+		grandSanctioned += sanctionedAmt;
+		grandRepay += repayAmt;
+
+		addRow([
+			sNo,
+			loanId,
+			loanDate,
+			clientName,
+			primaryTag,
+			priShareFormatted,
+			secDesc,
+			sanctionedAmt,
+			repayAmt,
+			status,
+		], 'data');
+	});
+
+	// 5. Total Row
+	const totalRowIdx = rows.length;
+	addRow([
+		'Total',
+		'',
+		'',
+		'',
+		'',
+		'',
+		'',
+		grandSanctioned,
+		grandRepay,
+		'',
+	], 'total');
+
+	const merges = [
+		{ s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } },
+		{ s: { r: 1, c: 0 }, e: { r: 1, c: headers.length - 1 } },
+		{ s: { r: totalRowIdx, c: 0 }, e: { r: totalRowIdx, c: 6 } },
+	];
+
+	// Convert to Sheet
+	const ws = XLSX.utils.aoa_to_sheet(rows);
+	ws['!merges'] = merges;
+
+	// Apply styles
+	for (let r = 0; r < rows.length; r++) {
+		const rowData = rows[r];
+		if (!rowData || rowData.length === 0) continue;
+		const rowType = rowStyles[r];
+
+		for (let c = 0; c < rowData.length; c++) {
+			const cellAddr = XLSX.utils.encode_cell({ r, c });
+			if (!ws[cellAddr]) {
+				ws[cellAddr] = { t: 's', v: '' };
+			}
+			const cell = ws[cellAddr];
+			const isNumeric = cell.t === 'n';
+
+			if (rowType === 'title') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '1E3A8A' }, sz: 14 },
+					alignment: { horizontal: 'left', vertical: 'center' },
+				};
+			} else if (rowType === 'meta') {
+				cell.s = {
+					font: { color: { rgb: '475569' }, sz: 10, italic: true },
+					alignment: { horizontal: 'left', vertical: 'center' },
+				};
+			} else if (rowType === 'tblHeader') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '0F172A' }, sz: 10.5 },
+					fill: { fgColor: { rgb: 'B8CCE4' } },
+					border: { ...border1px },
+					alignment: { horizontal: 'center', vertical: 'center' },
+				};
+			} else if (rowType === 'data') {
+				cell.s = {
+					font: { color: { rgb: '0F172A' }, sz: 10 },
+					border: { ...border1px },
+					alignment: {
+						horizontal: isNumeric ? 'right' : (c === 0 || c === 1 || c === 2 || c === 4 || c === 5 || c === 9 ? 'center' : 'left'),
+						vertical: 'center',
+					},
+				};
+				if (isNumeric) cell.z = '#,##0';
+			} else if (rowType === 'total') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '0F172A' }, sz: 10.5 },
+					fill: { fgColor: { rgb: 'C4D79B' } },
+					border: { ...border1px },
+					alignment: { horizontal: isNumeric ? 'right' : 'center', vertical: 'center' },
+				};
+				if (isNumeric) cell.z = '#,##0';
+			}
+		}
+	}
+
+	ws['!cols'] = [
+		{ wch: 6 },  // S.No
+		{ wch: 14 }, // Loan ID
+		{ wch: 14 }, // Date
+		{ wch: 28 }, // Client Name
+		{ wch: 16 }, // Primary
+		{ wch: 16 }, // Primary Share %
+		{ wch: 26 }, // Secondary Partners
+		{ wch: 20 }, // Sanctioned Amount
+		{ wch: 20 }, // Total Repayment
+		{ wch: 14 }, // Status
+	];
+
+	const wb = XLSX.utils.book_new();
+	XLSX.utils.book_append_sheet(wb, ws, 'Joint Loans');
+
+	const datePart = new Date().toISOString().slice(0, 10);
+	const filename = `JOINT_LOANS_PORTFOLIO_${datePart}.xlsx`;
+
+	XLSX.writeFile(wb, filename);
+	return filename;
+}
+
+/**
+ * Format any date value into standard DD-MM-YYYY format for Excel presentation
+ */
+export const formatDisplayDate = (val) => {
+	if (!val || val === '-' || val === '—') return '-';
+	const s = String(val).trim();
+	const ymd = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+	if (ymd) {
+		const dd = String(ymd[3]).padStart(2, '0');
+		const mm = String(ymd[2]).padStart(2, '0');
+		const yyyy = ymd[1];
+		return `${dd}-${mm}-${yyyy}`;
+	}
+	const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+	if (dmy) {
+		const dd = String(dmy[1]).padStart(2, '0');
+		const mm = String(dmy[2]).padStart(2, '0');
+		const yyyy = dmy[3];
+		return `${dd}-${mm}-${yyyy}`;
+	}
+	return s;
+};
+
+/**
+ * Calculate days outstanding (D/o) between EMI due date and today
+ * Only applies when Pri Not Recd Amount > 0 and the EMI date is in the past
+ */
+export const calculateDaysOutstanding = (emiDateStr, priNotRecdAmount) => {
+	if (!priNotRecdAmount || Number(priNotRecdAmount) <= 0) return 0;
+	if (!emiDateStr || emiDateStr === '-' || emiDateStr === '—') return 0;
+
+	const str = String(emiDateStr).trim();
+	let emiDate = null;
+	const dmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+	if (dmy) {
+		emiDate = new Date(parseInt(dmy[3], 10), parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10));
+	} else {
+		const ymd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+		if (ymd) {
+			emiDate = new Date(parseInt(ymd[1], 10), parseInt(ymd[2], 10) - 1, parseInt(ymd[3], 10));
+		} else {
+			const d = new Date(str);
+			if (!isNaN(d.getTime())) emiDate = d;
+		}
+	}
+
+	if (!emiDate) return 0;
+
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const due = new Date(emiDate.getFullYear(), emiDate.getMonth(), emiDate.getDate());
+
+	const diffMs = today.getTime() - due.getTime();
+	const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+	return diffDays > 0 ? diffDays : 0;
+};
+
+/**
+ * Resolve primary account tag and display name for a joint loan
+ */
+export const resolveLoanPrimaryAccount = (loan, availableAccounts = []) => {
+	const rawTag = loan.primary || loan.primary_tag || loan.primaryTag || '';
+	const rawName = loan.primary_account_name || loan.primaryAccountName || loan.primaryBorrower?.name || '';
+
+	let tag = (rawTag && String(rawTag).trim()) || '';
+	let name = (rawName && String(rawName).trim()) || '';
+
+	if (!tag && name) {
+		const words = name.split(/\s+/);
+		tag = words.length > 1 ? words.map((w) => w[0]).join('').slice(0, 5).toUpperCase() : name.slice(0, 4).toUpperCase();
+	}
+	if (!name && tag) {
+		if (Array.isArray(availableAccounts) && availableAccounts.length > 0) {
+			const match = availableAccounts.find((a) => (a.acronym || a.tag || a.accountTag) === tag);
+			if (match?.name || match?.accountName) name = match.name || match.accountName;
+		}
+		if (!name) name = tag;
+	}
+	return {
+		tag: tag || 'PRI',
+		name: name || tag || 'Primary Account',
+	};
+};
+
+/**
+ * Check if a date string is filled with a valid date (not empty, dash, or N/A)
+ */
+export const isDateFilled = (d) => {
+	if (!d) return false;
+	const str = String(d).trim();
+	return str !== '' && str !== '-' && str !== '—' && str !== 'N/A' && str !== 'null' && str !== 'undefined';
+};
+
+/**
+ * Build a styled worksheet for the Outstanding Report
+ */
+function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null) {
+	const border1px = {
+		top: { style: 'thin', color: { rgb: '000000' } },
+		bottom: { style: 'thin', color: { rgb: '000000' } },
+		left: { style: 'thin', color: { rgb: '000000' } },
+		right: { style: 'thin', color: { rgb: '000000' } },
+	};
+
+	const rows = [];
+	const rowStyles = []; // 'title' | 'meta' | 'empty' | 'tblHeader' | 'data' | 'total'
+	const rowDataMeta = [];
+
+	const addRow = (cells, styleType = 'data', meta = {}) => {
+		rows.push(cells);
+		rowStyles.push(styleType);
+		rowDataMeta.push(meta);
+	};
+
+	// 1. Table Headers
+	const headers = [
+		'S.No',
+		'Loan Date',
+		'Loan ID',
+		'Client Name',
+		'EMI Date',
+		'Dues',
+		'EMI Amount',
+		'Recd Amount',
+		'Not Recd Amount',
+		'Due Amount',
+		'Payable',
+		'Status',
+	];
+	addRow(headers, 'tblHeader');
+
+	let rowIndexSeq = 0;
+
+	loans.forEach((loan) => {
+		const loanDate = formatDisplayDate(loan.loan_date || loan.appliedDate || loan.loanDate || loan.date || loan.applied_date);
+		const loanId = loan.loan_ref_id || loan.id || '-';
+		const clientName = loan.client_account_name || loan.primaryBorrower?.name || loan.clientName || 'Client';
+
+		let rawSchedule = [];
+		if (typeof getScheduleFn === 'function') {
+			try {
+				rawSchedule = getScheduleFn(loan) || [];
+			} catch (err) {
+				console.warn('Error generating schedule for loan:', loanId, err);
+			}
+		}
+		if (!rawSchedule || rawSchedule.length === 0) {
+			rawSchedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+		}
+
+		const totalDuesCount = rawSchedule.length;
+
+		// Flatten schedule items to handle partial subInstallments if any
+		const scheduleItems = [];
+		rawSchedule.forEach((inst, idx) => {
+			if (inst.isPartial && Array.isArray(inst.subInstallments) && inst.subInstallments.length > 0) {
+				inst.subInstallments.forEach((sub) => {
+					scheduleItems.push({
+						...sub,
+						duesLabel: `${sub.sNo || inst.sNo} / ${totalDuesCount || 1}`,
+						date: sub.date || inst.date || '-',
+					});
+				});
+			} else {
+				scheduleItems.push({
+					...inst,
+					duesLabel: `${inst.displaySNo?.replace('#', '') || inst.sNo || idx + 1} / ${totalDuesCount || 1}`,
+					date: inst.date || '-',
+				});
+			}
+		});
+
+		scheduleItems.forEach((item) => {
+			const recdDateRaw = item.receivedDate || item.received_date || item.recdDate || item.recd_date || item.recdDateA || item.recdDateB;
+			let hasRecdDate = isDateFilled(recdDateRaw) || item.status === 'Collected';
+			if (!hasRecdDate && item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp && (isDateFilled(sp.recdDate) || isDateFilled(sp.recdDateA) || isDateFilled(sp.recdDateB))) {
+						hasRecdDate = true;
+					}
+				} catch (_) {}
+			}
+
+			const payoutDateRaw = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
+
+			// Payout approval check: if payout date is filled but not approved from sec manager, consider it not filled
+			const pStatus = String(
+				item.payout_approval_status ||
+				item.payoutApprovalStatus ||
+				item.payout_status ||
+				item.payoutStatus ||
+				''
+			).trim().toUpperCase();
+			const isPayoutApproved = (pStatus === 'APPROVED' || item.status === 'Settled') && pStatus !== 'PENDING' && pStatus !== 'REJECTED';
+			const hasPayoutDate = isDateFilled(payoutDateRaw) && isPayoutApproved;
+
+			// Rule: only include pending payment entries where received date not filled OR payout date not filled/approved
+			// If BOTH received date is filled and payout date is filled & approved, payment is fully complete -> skip
+			if (hasRecdDate && hasPayoutDate) {
+				return;
+			}
+
+			// Determine payout approval status
+			let isPayoutPending = false;
+			if (isDateFilled(payoutDateRaw) && !isPayoutApproved) {
+				isPayoutPending = true;
+			} else if (pStatus === 'PENDING' || item.status === 'Pending Payout Approval' || item.status === 'pending payout approval') {
+				isPayoutPending = true;
+			} else if (item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp) {
+						const sA = String(sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
+						const sB = String(sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
+						const sAll = String(sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
+						if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
+							isPayoutPending = true;
+						} else if (!sp.isFinalSettled && ((sp.recdDateA && sA !== 'APPROVED') || (sp.recdDateB && sB !== 'APPROVED'))) {
+							isPayoutPending = true;
+						}
+					}
+				} catch (_) {}
+			}
+
+			// Rule: If payout date is not approved, status is 'Approval pending'
+			// If recd date is filled, it means EMI amount received from client -> status is 'Need to send'
+			// If recd date is not filled, EMI amount is not yet received from client -> status is 'Not received from client'
+			let status = '';
+			let recdAmount = 0;
+			let outstandingAmount = 0;
+			const emiAmount = Number(item.amount ?? item.totalEmi ?? 0);
+
+			if (isPayoutPending) {
+				status = 'Approval pending';
+				recdAmount = emiAmount;
+				outstandingAmount = 0;
+			} else if (hasRecdDate) {
+				status = 'Need to send';
+				recdAmount = emiAmount;
+				outstandingAmount = 0;
+			} else {
+				status = 'Not received from client';
+				recdAmount = 0;
+				outstandingAmount = emiAmount;
+			}
+
+			let dueSecAmount = 0;
+			if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
+				dueSecAmount = item.secAccounts.reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
+			} else {
+				dueSecAmount = Number(item.secAmount ?? 0);
+			}
+
+			let payableSecName = '-';
+			if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
+				payableSecName = item.secAccounts
+					.map((sa) => sa.accountTag || sa.accountName || sa.initials || '')
+					.filter(Boolean)
+					.join(', ');
+			} else if (item.secAccountTag || item.secAccountName) {
+				payableSecName = item.secAccountTag || item.secAccountName;
+			}
+			if (!payableSecName || !payableSecName.trim()) payableSecName = 'SEC';
+
+			rowIndexSeq += 1;
+			const emiDate = formatDisplayDate(item.date || item.emiDate || '-');
+
+			addRow([
+				rowIndexSeq,
+				loanDate,
+				loanId,
+				clientName,
+				emiDate,
+				item.duesLabel,
+				emiAmount,
+				recdAmount,
+				outstandingAmount,
+				dueSecAmount,
+				payableSecName,
+				status,
+			], 'data', { status });
+		});
+	});
+
+	const ws = XLSX.utils.aoa_to_sheet(rows);
+
+	// Apply styles
+	for (let r = 0; r < rows.length; r++) {
+		const rowData = rows[r];
+		if (!rowData || rowData.length === 0) continue;
+		const rowType = rowStyles[r];
+		const meta = rowDataMeta[r] || {};
+
+		for (let c = 0; c < rowData.length; c++) {
+			const cellAddr = XLSX.utils.encode_cell({ r, c });
+			if (!ws[cellAddr]) {
+				ws[cellAddr] = { t: 's', v: '' };
+			}
+			const cell = ws[cellAddr];
+			const isNumeric = cell.t === 'n';
+
+			if (rowType === 'title') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '1E3A8A' }, sz: 13 },
+					alignment: { horizontal: 'left', vertical: 'center' },
+				};
+			} else if (rowType === 'meta') {
+				cell.s = {
+					font: { italic: true, color: { rgb: '475569' }, sz: 10 },
+					alignment: { horizontal: 'left', vertical: 'center' },
+				};
+			} else if (rowType === 'tblHeader') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '0F172A' }, sz: 10 },
+					fill: { fgColor: { rgb: 'B8CCE4' } },
+					border: { ...border1px },
+					alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+				};
+			} else if (rowType === 'data') {
+				const isCurrencyCol = c === 6 || c === 7 || c === 8 || c === 9;
+				const isStatusCol = c === 11;
+				const isClientNameCol = c === 3;
+
+				let fontColor = '0F172A';
+				let isBold = false;
+
+				if (isStatusCol) {
+					if (meta.status === 'Not received from client' || meta.status === 'Overdue') {
+						fontColor = 'BE123C';
+						isBold = true;
+					} else if (meta.status === 'Approval pending' || meta.status === 'Partial') {
+						fontColor = 'B45309';
+						isBold = true;
+					} else if (meta.status === 'Need to send') {
+						fontColor = '047857';
+						isBold = true;
+					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
+						fontColor = '047857';
+						isBold = true;
+					}
+				}
+
+				cell.s = {
+					font: { color: { rgb: fontColor }, bold: isBold, sz: 10 },
+					border: { ...border1px },
+					alignment: {
+						horizontal: isCurrencyCol ? 'right' : (isClientNameCol ? 'left' : 'center'),
+						vertical: 'center',
+					},
+				};
+				if (isCurrencyCol) {
+					cell.z = '#,##0';
+				}
+			}
+		}
+	}
+
+	// Auto-fit column widths based on maximum content length with padding
+	ws['!cols'] = headers.map((header, c) => {
+		let maxLen = String(header || '').length;
+
+		for (let r = 0; r < rows.length; r++) {
+			const row = rows[r];
+			if (!row) continue;
+			const val = row[c];
+			if (val == null || val === '') continue;
+
+			let len = 0;
+			if (typeof val === 'number') {
+				len = Math.round(val).toLocaleString('en-IN').length;
+			} else {
+				len = String(val).length;
+			}
+
+			if (len > maxLen) {
+				maxLen = len;
+			}
+		}
+
+		return { wch: Math.max(maxLen + 3, 8) };
+	});
+
+	ws['!rows'] = [
+		{ hpt: 26 }, // Header
+	];
+	ws['!rowCount'] = rowIndexSeq;
+
+	return { ws, count: rowIndexSeq };
+}
+
+/**
+ * Helper to match an account string or object against a target account's tag or name
+ */
+export const isAccountTagOrNameMatch = (value, targetTag, targetName, availableAccounts = []) => {
+	if (!value) return false;
+	const clean = (s) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+	const vClean = clean(value);
+	const tTagClean = clean(targetTag);
+	const tNameClean = clean(targetName);
+
+	if (vClean && tTagClean && vClean === tTagClean) return true;
+	if (vClean && tNameClean && vClean === tNameClean) return true;
+
+	if (Array.isArray(availableAccounts) && availableAccounts.length > 0) {
+		const targetObj = availableAccounts.find((a) => {
+			const aTag = clean(a.acronym || a.tag || a.accountTag);
+			const aName = clean(a.name || a.accountName);
+			return (tTagClean && aTag === tTagClean) || (tNameClean && aName === tNameClean);
+		});
+		if (targetObj) {
+			const oTag = clean(targetObj.acronym || targetObj.tag || targetObj.accountTag);
+			const oName = clean(targetObj.name || targetObj.accountName);
+			if (vClean === oTag || vClean === oName) return true;
+		}
+
+		const valObj = availableAccounts.find((a) => {
+			const aTag = clean(a.acronym || a.tag || a.accountTag);
+			const aName = clean(a.name || a.accountName);
+			return (vClean && (aTag === vClean || aName === vClean));
+		});
+		if (valObj) {
+			const vTag = clean(valObj.acronym || valObj.tag || valObj.accountTag);
+			const vName = clean(valObj.name || valObj.accountName);
+			if (vTag === tTagClean || vName === tNameClean) return true;
+		}
+	}
+	return false;
+};
+
+/**
+ * Check if a loan has a specific account participating as secondary
+ */
+export const loanHasSecondaryAccount = (loan, targetTag, targetName, availableAccounts = []) => {
+	if (!loan) return false;
+
+	// 1. loan.secondaryAccounts
+	if (Array.isArray(loan.secondaryAccounts)) {
+		for (const sa of loan.secondaryAccounts) {
+			if (!sa) continue;
+			if (
+				isAccountTagOrNameMatch(sa.accountTag, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.accountName, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.name, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.tag, targetTag, targetName, availableAccounts)
+			) {
+				return true;
+			}
+		}
+	}
+
+	// 2. loan.accountDetails (where !isPrimary)
+	if (Array.isArray(loan.accountDetails)) {
+		for (const acc of loan.accountDetails) {
+			if (!acc || acc.isPrimary) continue;
+			if (
+				isAccountTagOrNameMatch(acc.accountTag, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(acc.accountName, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(acc.name, targetTag, targetName, availableAccounts)
+			) {
+				return true;
+			}
+		}
+	}
+
+	// 3. loan.remaining_accounts
+	if (Array.isArray(loan.remaining_accounts)) {
+		for (const ra of loan.remaining_accounts) {
+			if (!ra) continue;
+			if (
+				isAccountTagOrNameMatch(ra.account_name, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(ra.name, targetTag, targetName, availableAccounts)
+			) {
+				return true;
+			}
+		}
+	}
+
+	// 4. Single secondary fields
+	if (isAccountTagOrNameMatch(loan.secondaryAccountName, targetTag, targetName, availableAccounts)) return true;
+	if (isAccountTagOrNameMatch(loan.secAccountName, targetTag, targetName, availableAccounts)) return true;
+	if (isAccountTagOrNameMatch(loan.coBorrower?.name, targetTag, targetName, availableAccounts)) return true;
+
+	return false;
+};
+
+/**
+ * Resolve the secondary due amount for a specific account on an installment item
+ */
+export const getSecondaryDueAmountForItem = (item, loan, targetTag, targetName, availableAccounts = []) => {
+	if (!item) return 0;
+
+	// 1. Check item.secAccounts
+	if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
+		const matchedSec = item.secAccounts.find((sa) => {
+			if (!sa) return false;
+			return (
+				isAccountTagOrNameMatch(sa.accountTag, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.accountName, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.name, targetTag, targetName, availableAccounts) ||
+				isAccountTagOrNameMatch(sa.tag, targetTag, targetName, availableAccounts)
+			);
+		});
+		if (matchedSec && matchedSec.amount != null && !isNaN(Number(matchedSec.amount))) {
+			return Number(matchedSec.amount);
+		}
+		if (item.secAccounts.length === 1 && item.secAccounts[0].amount != null) {
+			return Number(item.secAccounts[0].amount);
+		}
+	}
+
+	// 2. Check item.secAmount
+	if (item.secAmount != null && !isNaN(Number(item.secAmount)) && Number(item.secAmount) > 0) {
+		return Number(item.secAmount);
+	}
+
+	// 3. Fallback based on loan percentage
+	const totalEmi = Number(item.amount ?? item.totalEmi ?? 0);
+	if (totalEmi > 0 && loan) {
+		const secList = loan.secondaryAccounts || loan.accountDetails?.filter((a) => !a.isPrimary) || loan.remaining_accounts || [];
+		if (Array.isArray(secList)) {
+			const matched = secList.find((s) =>
+				isAccountTagOrNameMatch(s.accountName || s.name || s.accountTag, targetTag, targetName, availableAccounts)
+			);
+			if (matched) {
+				const sharePct = Number(matched.share ?? matched.percentage ?? 0);
+				if (sharePct > 0) {
+					return Math.round((totalEmi * sharePct) / 100);
+				}
+			}
+		}
+		const priShare = Number(loan.primaryShare ?? loan.primary_account_share ?? 60);
+		const defaultSecShare = Math.max(0, 100 - priShare);
+		return Math.round((totalEmi * defaultSecShare) / 100);
+	}
+
+	return 0;
+};
+
+/**
+ * Build a styled worksheet for the Secondary Account Outstanding Report
+ * Columns: S.No, Loan Date, Client Name, Loan ID, EMI Date, Receivable, Recd Amount, Not Recd Amount, Due Amount, Status
+ */
+function buildSecondaryOutstandingWorksheet(
+	sheetTitle,
+	targetAccountTag,
+	targetAccountName,
+	loans = [],
+	getScheduleFn = null,
+	availableAccounts = []
+) {
+	const border1px = {
+		top: { style: 'thin', color: { rgb: '000000' } },
+		bottom: { style: 'thin', color: { rgb: '000000' } },
+		left: { style: 'thin', color: { rgb: '000000' } },
+		right: { style: 'thin', color: { rgb: '000000' } },
+	};
+
+	const rows = [];
+	const rowStyles = []; // 'tblHeader' | 'data'
+	const rowDataMeta = [];
+
+	const addRow = (cells, styleType = 'data', meta = {}) => {
+		rows.push(cells);
+		rowStyles.push(styleType);
+		rowDataMeta.push(meta);
+	};
+
+	// 1. Table Headers: S.No, Loan Date, Loan ID, Client Name, EMI Date, Dues, EMI Amount, Receivable, Recd Amount, Not Recd Amount, Due Amount, Status
+	const headers = [
+		'S.No',
+		'Loan Date',
+		'Loan ID',
+		'Client Name',
+		'EMI Date',
+		'Dues',
+		'EMI Amount',
+		'Receivable',
+		'Recd Amount',
+		'Not Recd Amount',
+		'Due Amount',
+		'Status',
+	];
+	addRow(headers, 'tblHeader');
+
+	let rowIndexSeq = 0;
+
+	loans.forEach((loan) => {
+		const loanDate = formatDisplayDate(loan.loan_date || loan.appliedDate || loan.loanDate || loan.date || loan.applied_date);
+		const loanId = loan.loan_ref_id || loan.id || '-';
+		const clientName = loan.client_account_name || loan.primaryBorrower?.name || loan.clientName || 'Client';
+
+		let rawSchedule = [];
+		if (typeof getScheduleFn === 'function') {
+			try {
+				rawSchedule = getScheduleFn(loan) || [];
+			} catch (err) {
+				console.warn('Error generating schedule for loan:', loanId, err);
+			}
+		}
+		if (!rawSchedule || rawSchedule.length === 0) {
+			rawSchedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+		}
+
+		const totalDuesCount = rawSchedule.length;
+
+		// Flatten schedule items to handle partial subInstallments if any
+		const scheduleItems = [];
+		rawSchedule.forEach((inst, idx) => {
+			if (inst.isPartial && Array.isArray(inst.subInstallments) && inst.subInstallments.length > 0) {
+				inst.subInstallments.forEach((sub) => {
+					scheduleItems.push({
+						...sub,
+						duesLabel: `${sub.sNo || inst.sNo} / ${totalDuesCount || 1}`,
+						date: sub.date || inst.date || '-',
+					});
+				});
+			} else {
+				scheduleItems.push({
+					...inst,
+					duesLabel: `${inst.displaySNo?.replace('#', '') || inst.sNo || idx + 1} / ${totalDuesCount || 1}`,
+					date: inst.date || '-',
+				});
+			}
+		});
+
+		scheduleItems.forEach((item) => {
+			const recdDateRaw = item.receivedDate || item.received_date || item.recdDate || item.recd_date || item.recdDateA || item.recdDateB;
+			let hasRecdDate = isDateFilled(recdDateRaw) || item.status === 'Collected';
+			if (!hasRecdDate && item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp && (isDateFilled(sp.recdDate) || isDateFilled(sp.recdDateA) || isDateFilled(sp.recdDateB))) {
+						hasRecdDate = true;
+					}
+				} catch (_) {}
+			}
+
+			const payoutDateRaw = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
+			const pStatus = String(
+				item.payout_approval_status ||
+				item.payoutApprovalStatus ||
+				item.payout_status ||
+				item.payoutStatus ||
+				''
+			).trim().toUpperCase();
+			const isPayoutApproved = (pStatus === 'APPROVED' || item.status === 'Settled') && pStatus !== 'PENDING' && pStatus !== 'REJECTED';
+			const hasPayoutDate = isDateFilled(payoutDateRaw) && isPayoutApproved;
+
+			// If both recd and payout are complete, it's not outstanding
+			if (hasRecdDate && hasPayoutDate) {
+				return;
+			}
+
+			// Determine payout approval status
+			let isPayoutPending = false;
+			if (isDateFilled(payoutDateRaw) && !isPayoutApproved) {
+				isPayoutPending = true;
+			} else if (pStatus === 'PENDING' || item.status === 'Pending Payout Approval' || item.status === 'pending payout approval') {
+				isPayoutPending = true;
+			} else if (item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp) {
+						const sA = String(sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
+						const sB = String(sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
+						const sAll = String(sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
+						if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
+							isPayoutPending = true;
+						} else if (!sp.isFinalSettled && ((sp.recdDateA && sA !== 'APPROVED') || (sp.recdDateB && sB !== 'APPROVED'))) {
+							isPayoutPending = true;
+						}
+					}
+				} catch (_) {}
+			}
+
+			const emiAmount = Number(item.amount ?? item.totalEmi ?? 0);
+			let status = '';
+			let recdAmount = 0;
+			let notRecdAmount = 0;
+
+			if (isPayoutPending) {
+				status = 'Approval pending';
+				recdAmount = emiAmount;
+				notRecdAmount = 0;
+			} else if (hasRecdDate) {
+				status = 'Need to receive';
+				recdAmount = emiAmount;
+				notRecdAmount = 0;
+			} else {
+				status = 'Not received from client';
+				recdAmount = 0;
+				notRecdAmount = emiAmount;
+			}
+
+			const dueSecAmount = getSecondaryDueAmountForItem(
+				item,
+				loan,
+				targetAccountTag,
+				targetAccountName,
+				availableAccounts
+			);
+
+			rowIndexSeq += 1;
+			const emiDate = formatDisplayDate(item.date || item.emiDate || '-');
+			const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+			const primaryAcronym = pri.tag || getAccountAcronym(loan.primary_account_name || loan.primaryAccountName || loan.primary) || 'PRI';
+
+			addRow([
+				rowIndexSeq,
+				loanDate,
+				loanId,
+				clientName,
+				emiDate,
+				item.duesLabel,
+				emiAmount,      // EMI Amount
+				primaryAcronym, // Receivable: Primary Account Acronym of that loan (e.g. SCS, AS)
+				recdAmount,     // Recd Amount
+				notRecdAmount,  // Not Recd Amount
+				dueSecAmount,   // Due Amount
+				status,         // Status
+			], 'data', { status });
+		});
+	});
+
+	const ws = XLSX.utils.aoa_to_sheet(rows);
+
+	// Apply styles
+	for (let r = 0; r < rows.length; r++) {
+		const rowData = rows[r];
+		if (!rowData || rowData.length === 0) continue;
+		const rowType = rowStyles[r];
+		const meta = rowDataMeta[r] || {};
+
+		for (let c = 0; c < rowData.length; c++) {
+			const cellAddr = XLSX.utils.encode_cell({ r, c });
+			if (!ws[cellAddr]) {
+				ws[cellAddr] = { t: 's', v: '' };
+			}
+			const cell = ws[cellAddr];
+
+			if (rowType === 'tblHeader') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '0F172A' }, sz: 10 },
+					fill: { fgColor: { rgb: 'B8CCE4' } },
+					border: { ...border1px },
+					alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+				};
+			} else if (rowType === 'data') {
+				const isCurrencyCol = c === 6 || c === 8 || c === 9 || c === 10;
+				const isStatusCol = c === 11;
+				const isClientNameCol = c === 3;
+
+				let fontColor = '0F172A';
+				let isBold = false;
+
+				if (isStatusCol) {
+					if (meta.status === 'Not received from client' || meta.status === 'Overdue') {
+						fontColor = 'BE123C';
+						isBold = true;
+					} else if (meta.status === 'Approval pending' || meta.status === 'Partial') {
+						fontColor = 'B45309';
+						isBold = true;
+					} else if (meta.status === 'Need to receive' || meta.status === 'Need to send') {
+						fontColor = '047857';
+						isBold = true;
+					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
+						fontColor = '047857';
+						isBold = true;
+					}
+				}
+
+				cell.s = {
+					font: { color: { rgb: fontColor }, bold: isBold, sz: 10 },
+					border: { ...border1px },
+					alignment: {
+						horizontal: isCurrencyCol ? 'right' : (isClientNameCol ? 'left' : 'center'),
+						vertical: 'center',
+					},
+				};
+				if (isCurrencyCol) {
+					cell.z = '#,##0';
+				}
+			}
+		}
+	}
+
+	// Auto-fit column widths based on maximum content length with padding
+	ws['!cols'] = headers.map((header, c) => {
+		let maxLen = String(header || '').length;
+		for (let r = 0; r < rows.length; r++) {
+			const row = rows[r];
+			if (!row) continue;
+			const val = row[c];
+			if (val == null || val === '') continue;
+
+			let len = 0;
+			if (typeof val === 'number') {
+				len = Math.round(val).toLocaleString('en-IN').length;
+			} else {
+				len = String(val).length;
+			}
+			if (len > maxLen) {
+				maxLen = len;
+			}
+		}
+		return { wch: Math.max(maxLen + 3, 10) };
+	});
+
+	ws['!rows'] = [
+		{ hpt: 26 }, // Header
+	];
+	ws['!rowCount'] = rowIndexSeq;
+
+	return { ws, count: rowIndexSeq };
+}
+
+/**
+ * Export outstanding report with 2 sheets per account: Primary and Secondary.
+ * - Primary sheet uses the prepared primary format:
+ *   S.No, Loan Date, Loan ID, Client Name, EMI Date, Dues, EMI Amount, Recd Amount, Not Recd Amount, Due Amount, Payable, Status
+ * - Secondary sheet uses the requested secondary format:
+ *   S.No, Loan Date, Client Name, Loan ID, EMI Date, Receivable, Recd Amount, Not Recd Amount, Due Amount, Status
+ *   where loans are those having that account participating as secondary.
+ *
+ * @param {Array} loansList - List of joint loan objects
+ * @param {Function} getScheduleFn - Optional function to generate schedule for each loan
+ * @param {Array} availableAccounts - Optional list of accounts to resolve tags/names
+ * @returns {Object} Result object with { success, filename, count, message }
+ */
+export function exportOutstandingReportPerPrimaryAccount(loansList = [], getScheduleFn = null, availableAccounts = []) {
+	if (!Array.isArray(loansList) || loansList.length === 0) {
+		return { success: false, message: 'No outstanding loans', count: 0 };
+	}
+
+	const wb = XLSX.utils.book_new();
+
+	// 1. Resolve distinct accounts that participate in availableAccounts or loansList
+	const accountMap = new Map();
+
+	if (Array.isArray(availableAccounts)) {
+		availableAccounts.forEach((acc) => {
+			if (!acc) return;
+			const tag = getAccountAcronym(acc);
+			const name = acc.name || acc.accountName || tag;
+			if (tag && !accountMap.has(tag)) {
+				accountMap.set(tag, { tag, name });
+			}
+		});
+	}
+
+	loansList.forEach((loan) => {
+		const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+		if (pri.tag && !accountMap.has(pri.tag)) {
+			accountMap.set(pri.tag, { tag: pri.tag, name: pri.name });
+		}
+		const secList = loan.secondaryAccounts || loan.accountDetails?.filter((a) => !a.isPrimary) || loan.remaining_accounts || [];
+		if (Array.isArray(secList)) {
+			secList.forEach((s) => {
+				const tag = getAccountAcronym(s);
+				const name = s.accountName || s.name || tag;
+				if (tag && !accountMap.has(tag)) {
+					accountMap.set(tag, { tag, name });
+				}
+			});
+		}
+	});
+
+	const usedSheetNames = new Set();
+	const getUniqueSheetName = (name) => {
+		let clean = String(name || 'Sheet')
+			.replace(/[\\/?*:[\]]/g, '')
+			.trim()
+			.slice(0, 31);
+		if (!clean) clean = 'Sheet';
+		let result = clean;
+		let counter = 1;
+		while (usedSheetNames.has(result.toLowerCase())) {
+			result = `${clean.slice(0, 27)}_${counter++}`;
+		}
+		usedSheetNames.add(result.toLowerCase());
+		return result;
+	};
+
+	let totalEntriesAcrossAll = 0;
+	const accountSheetsToAppend = [];
+
+	accountMap.forEach(({ tag, name }) => {
+		// Loans where this account is Primary
+		const primaryLoans = loansList.filter((loan) => {
+			const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+			return isAccountTagOrNameMatch(pri.tag, tag, name, availableAccounts) ||
+			       isAccountTagOrNameMatch(pri.name, tag, name, availableAccounts);
+		});
+
+		// Loans where this account is Secondary
+		const secondaryLoans = loansList.filter((loan) => {
+			return loanHasSecondaryAccount(loan, tag, name, availableAccounts);
+		});
+
+		// If this account has no loans at all in loansList, skip
+		if (primaryLoans.length === 0 && secondaryLoans.length === 0) {
+			return;
+		}
+
+		// Build Primary sheet (using the prepared primary format)
+		const priTitle = name && name !== tag ? `${name} (${tag})` : tag;
+		const { ws: priWs, count: priCount } = buildOutstandingWorksheet(priTitle, primaryLoans, getScheduleFn);
+
+		// Build Secondary sheet
+		const secTitle = `${tag} Secondary`;
+		const { ws: secWs, count: secCount } = buildSecondaryOutstandingWorksheet(
+			secTitle,
+			tag,
+			name,
+			secondaryLoans,
+			getScheduleFn,
+			availableAccounts
+		);
+
+		totalEntriesAcrossAll += (priCount + secCount);
+
+		// Add pair of sheets if this account has entries in either Primary or Secondary
+		if (priCount > 0 || secCount > 0) {
+			const priSheetName = getUniqueSheetName(`${tag} - Primary`);
+			const secSheetName = getUniqueSheetName(`${tag} - Secondary`);
+			accountSheetsToAppend.push({ ws: priWs, sheetName: priSheetName, tag, count: priCount });
+			accountSheetsToAppend.push({ ws: secWs, sheetName: secSheetName, tag, count: secCount });
+		}
+	});
+
+	// If no entries in any sheet across all accounts, do not download file
+	if (totalEntriesAcrossAll === 0) {
+		return { success: false, message: 'No outstanding loans', count: 0 };
+	}
+
+	// Append all pairs of Primary and Secondary sheets
+	accountSheetsToAppend.forEach(({ ws, sheetName }) => {
+		XLSX.utils.book_append_sheet(wb, ws, sheetName);
+	});
+
+	// Construct filename
+	const datePart = new Date().toISOString().slice(0, 10);
+	const tags = [...new Set(accountSheetsToAppend.map((s) => s.tag))];
+	const filename = tags.length === 1
+		? `OUTSTANDING_REPORT_${tags[0]}_${datePart}.xlsx`
+		: `OUTSTANDING_REPORT_${datePart}.xlsx`;
+
+	XLSX.writeFile(wb, filename);
+	return { success: true, filename, count: totalEntriesAcrossAll };
+}
+
+export const exportOutstandingReport = exportOutstandingReportPerPrimaryAccount;
+
+

@@ -8,7 +8,7 @@ Description: Top navigation header bar with global search, notification indicato
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import api from '../services/api';
-import { isUserPendingLoan } from './Requests';
+import { isUserPendingLoan, hasValidPayoutDate } from './Requests';
 import {
 	checkUserHasPrimaryAccessForLoanPrimary,
 	checkUserHasPrimaryAccessForLoanSecondary,
@@ -249,8 +249,8 @@ export default function Header({
 					const dueDate = inst.date || '';
 					const amount = inst.amount || 0;
 
-					// PENDING: Needs action from user
-					if (pStatus === 'PENDING') {
+					// PENDING: Needs action from user only if payout date is filled
+					if (pStatus === 'PENDING' && hasValidPayoutDate(inst)) {
 						const needsAction =
 							(targetRole === 'PRIMARY' && isUserPri) ||
 							(targetRole === 'SECONDARY' && isUserSec) ||
@@ -429,13 +429,13 @@ export default function Header({
 	};
 
 	return (
-		<header className="fixed top-0 left-0 md:left-[15rem] lg:left-[16rem] xl:left-[16rem] 2xl:left-[16rem] right-0 h-16 bg-surface/85 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-30 px-space-md lg:px-space-xl flex items-center justify-between font-sans border-b border-slate-200/60 transition-all duration-300">
+		<header className="fixed top-0 left-0 md:left-[15rem] lg:left-[16rem] xl:left-[16rem] 2xl:left-[16rem] right-0 h-16 bg-white/95 backdrop-blur-md shadow-xs z-30 px-4 lg:px-8 flex items-center justify-between font-sans border-b border-slate-200/80 transition-all duration-300">
 			{/* Left Search & Breadcrumb */}
-			<div className="flex items-center gap-space-md flex-1 max-w-xl">
+			<div className="flex items-center gap-4 flex-1 max-w-xl">
 				{/* Search Input */}
 				<div className="relative flex items-center flex-1">
 					<svg
-						className="absolute left-space-md w-4 h-4 text-slate-500 pointer-events-none"
+						className="absolute left-3.5 w-4 h-4 text-slate-400 pointer-events-none"
 						fill="none"
 						stroke="currentColor"
 						strokeLinecap="round"
@@ -451,13 +451,13 @@ export default function Header({
 						value={searchQuery}
 						onChange={(e) => onSearchChange(e.target.value)}
 						placeholder="Search Loan ID, Client Name..."
-						className="w-full pl-10 pr-10 py-2 bg-surface-container-lowest rounded-xl font-regular text-[13px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary-container/20 transition-all shadow-[0_1px_3px_rgba(0,0,0,0.02)] ring-1 ring-slate-200/80"
+						className="w-full pl-10 pr-10 py-2 bg-slate-50 hover:bg-slate-100/70 focus:bg-white rounded-xl font-medium text-[13px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500/20 transition-all border border-slate-200/80"
 					/>
 				</div>
 			</div>
 
 			{/* Right Actions */}
-			<div className="flex items-center gap-space-md">
+			<div className="flex items-center gap-3">
 				{/* Notification Icon & Dropdown Popover */}
 				<div ref={notifContainerRef} className="relative flex items-center">
 					<button

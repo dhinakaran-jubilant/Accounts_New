@@ -9,7 +9,7 @@ Description: Navigation sidebar component providing navigation links, collapse t
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../services/api';
-import { isUserPendingLoan } from './Requests';
+import { isUserPendingLoan, isUserPayoutPendingLoan, getLoanPendingPayoutItems } from './Requests';
 
 export const navSections = [
 	{
@@ -40,11 +40,23 @@ export default function Sidebar({
 	const [pendingRequestCount, setPendingRequestCount] = useState(0);
 	const activeItem = controlledActiveItem ?? internalActiveItem;
 
-	// Periodically check count of approval requests requiring this user's action
+	// Periodically check count of approval requests requiring this user's action (both loan approvals and payout approvals)
 	useEffect(() => {
 		let isMounted = true;
 		const checkPending = async () => {
-			if (!currentUser) return;
+			const userToUse =
+				currentUser ||
+				(() => {
+					try {
+						const saved =
+							localStorage.getItem('loanDesk_user') ||
+							sessionStorage.getItem('loanDesk_user');
+						return saved ? JSON.parse(saved) : null;
+					} catch (e) {
+						return null;
+					}
+				})();
+			if (!userToUse) return;
 			try {
 				const [loansRes, accsRes] = await Promise.allSettled([
 					api.getJointLoans(),
@@ -62,8 +74,12 @@ export default function Sidebar({
 
 				let count = 0;
 				loans.forEach((loan) => {
-					if (isUserPendingLoan(loan, currentUser, accs)) {
+					if (isUserPendingLoan(loan, userToUse, accs)) {
 						count += 1;
+					}
+					if (isUserPayoutPendingLoan(loan, userToUse, accs)) {
+						const items = getLoanPendingPayoutItems(loan, userToUse, accs);
+						count += items.length;
 					}
 				});
 				setPendingRequestCount(count);
@@ -73,9 +89,18 @@ export default function Sidebar({
 		};
 
 		checkPending();
+		const handleRefresh = () => checkPending();
+		window.addEventListener('loanDesk_notifications_updated', handleRefresh);
+		window.addEventListener('loanDesk_loans_updated', handleRefresh);
+		window.addEventListener('loan_updated', handleRefresh);
+		window.addEventListener('loan_approved', handleRefresh);
 		const interval = setInterval(checkPending, 20000);
 		return () => {
 			isMounted = false;
+			window.removeEventListener('loanDesk_notifications_updated', handleRefresh);
+			window.removeEventListener('loanDesk_loans_updated', handleRefresh);
+			window.removeEventListener('loan_updated', handleRefresh);
+			window.removeEventListener('loan_approved', handleRefresh);
 			clearInterval(interval);
 		};
 	}, [currentUser]);
@@ -146,22 +171,22 @@ export default function Sidebar({
 			{isOpen && (
 				<div
 					onClick={onClose}
-					className="fixed inset-0 bg-slate-900/50 z-30 md:hidden backdrop-blur-xs transition-opacity"
+					className="fixed inset-0 bg-slate-900/50 z-30 md:hidden backdrop-blur-sm transition-opacity"
 				/>
 			)}
 
 			<aside
-				className={`fixed left-0 top-0 bottom-0 bg-surface-container-lowest z-40 flex flex-col justify-between shadow-[0_1px_8px_rgba(0,0,0,0.04)] font-sans transition-all duration-300
+				className={`fixed left-0 top-0 bottom-0 bg-white border-r border-slate-200/80 z-40 flex flex-col justify-between shadow-xs font-sans transition-all duration-300
 					w-[16rem] max-w-[85vw] sm:w-[16rem] md:w-[15rem] lg:w-[16rem] xl:w-[16rem] 2xl:w-[16rem]
 					${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
 			>
 				<div className="flex flex-col flex-1 overflow-y-auto">
 					{/* Brand Header */}
-					<div className="h-16 px-space-lg flex items-center gap-space-sm border-b border-surface-container-low/50 flex-shrink-0">
-						<div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-primary to-orange-500 text-white flex items-center justify-center shadow-md shadow-orange-950/50 ring-1 ring-primary/20">
+					<div className="h-16 px-5 flex items-center gap-3 border-b border-slate-200/80 flex-shrink-0 bg-white">
+						<div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-primary to-orange-500 text-white flex items-center justify-center shadow-md shadow-orange-950/20 ring-1 ring-primary/20">
 							<span className="material-symbols-outlined text-[22px]">linked_services</span>
 						</div>
-						<span className="font-extrabold text-[26px] tracking-tight text-on-surface">
+						<span className="font-extrabold text-[24px] tracking-tight text-slate-900">
 							LoanDesk
 						</span>
 						{/* Close button on mobile */}
@@ -169,7 +194,7 @@ export default function Sidebar({
 							onClick={onClose}
 							type="button"
 							aria-label="Close sidebar"
-							className="md:hidden ml-auto p-1.5 rounded-lg text-slate-500 hover:bg-surface-container-low transition-colors"
+							className="md:hidden ml-auto p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
 						>
 							<span className="material-symbols-outlined text-[20px]">close</span>
 						</button>
@@ -184,7 +209,7 @@ export default function Sidebar({
 						if (visibleItems.length === 0) return null;
 
 						return (
-							<div key={section.title} className={`px-space-md py-space-xs ${idx > 0 ? 'mt-space-sm' : ''}`}>
+							<div key={section.title} className={`px-3 py-2 ${idx > 0 ? 'mt-2' : ''}`}>
 								<nav className="flex flex-col gap-1">
 									{visibleItems.map((item) => {
 										const isActive = activeItem === item.id;
@@ -193,25 +218,24 @@ export default function Sidebar({
 											<button
 												key={item.id}
 												onClick={() => handleItemClick(item.id)}
-												className={`w-full flex items-center gap-space-sm px-space-md py-space-sm rounded-xl font-semibold text-[14px] transition-colors text-left ${isActive
-													? 'bg-primary-container text-on-primary font-bold shadow-sm'
-													: 'text-slate-700 hover:bg-surface-container-low hover:text-slate-900'
+												className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-semibold text-[14px] transition-all text-left ${isActive
+													? 'bg-primary-container text-white font-bold shadow-sm shadow-orange-500/25 ring-1 ring-orange-400/30'
+													: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
 													}`}
 											>
 												<span
-													className={`material-symbols-outlined text-[20px] flex-shrink-0 transition-colors ${isActive ? 'text-white' : 'text-slate-500'
+													className={`material-symbols-outlined text-[20px] flex-shrink-0 transition-colors ${isActive ? 'text-white' : 'text-slate-400'
 														}`}
 												>
 													{item.icon}
 												</span>
-												<span>{item.label}</span>
+												<span className="truncate">{item.label}</span>
 												{item.id === 'requests' && pendingRequestCount > 0 && (
 													<span
-														className={`ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-															isActive
+														className={`ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${isActive
 																? 'bg-white text-primary shadow-xs'
 																: 'bg-amber-500 text-white animate-pulse'
-														}`}
+															}`}
 													>
 														{pendingRequestCount}
 													</span>
@@ -226,11 +250,11 @@ export default function Sidebar({
 				</div>
 
 				{/* Bottom of Sidebar: Logout Button */}
-				<div className="p-space-md border-t border-slate-200/70 bg-primary-container-lowest flex flex-col flex-shrink-0">
+				<div className="p-3 border-t border-slate-200/80 bg-slate-50/50 flex flex-col flex-shrink-0">
 					<button
 						type="button"
 						onClick={() => setShowLogoutModal(true)}
-						className="w-full flex items-center gap-space-sm px-space-md py-space-sm rounded-xl font-semibold text-[14px] text-slate-700 hover:bg-rose-50 hover:text-rose-600 transition-colors text-left cursor-pointer group"
+						className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-semibold text-[14px] text-slate-600 hover:bg-rose-50 hover:text-rose-600 transition-colors text-left cursor-pointer group"
 					>
 						<span className="material-symbols-outlined text-[20px] text-slate-400 group-hover:text-rose-500 transition-colors flex-shrink-0">
 							logout

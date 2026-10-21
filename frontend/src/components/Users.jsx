@@ -549,7 +549,7 @@ function ModernMenuDropdown({ value, onChange, options = [] }) {
 // =========================================================================
 // Form Modern Role Dropdown (for Add / Edit User Modal)
 // =========================================================================
-function FormRoleDropdown({ value, onChange }) {
+function FormRoleDropdown({ value, onChange, isSoleAdmin = false }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const dropdownRef = useRef(null);
 
@@ -564,19 +564,11 @@ function FormRoleDropdown({ value, onChange }) {
 		},
 		{
 			id: 'admin',
-			label: 'Administrator',
+			label: 'Admin',
 			icon: 'shield_person',
 			color: 'text-indigo-700 bg-indigo-50 ring-indigo-200',
 			dot: 'bg-indigo-500',
 			desc: 'Full administrative access',
-		},
-		{
-			id: 'manager',
-			label: 'Manager',
-			icon: 'supervisor_account',
-			color: 'text-amber-700 bg-amber-50 ring-amber-200',
-			dot: 'bg-amber-500',
-			desc: 'Loan verifier & approvals',
 		},
 		{
 			id: 'user',
@@ -590,7 +582,7 @@ function FormRoleDropdown({ value, onChange }) {
 
 	const selectedRole =
 		roleOptions.find((r) => r.id.toLowerCase() === (value || '').toLowerCase()) ||
-		roleOptions[3];
+		roleOptions[roleOptions.length - 1];
 
 	useEffect(() => {
 		const handleClickOutside = (e) => {
@@ -646,22 +638,32 @@ function FormRoleDropdown({ value, onChange }) {
 				<div className="absolute left-0 top-full mt-1.5 w-full z-50 bg-white rounded-2xl shadow-xl border border-slate-200 p-1.5 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-150">
 					{roleOptions.map((opt) => {
 						const isSelected = opt.id === value;
+						const isDisabled = isSoleAdmin && opt.id.toLowerCase() === 'user';
 						return (
 							<button
 								key={opt.id}
 								type="button"
+								disabled={isDisabled}
 								onClick={() => {
+									if (isDisabled) return;
 									onChange(opt.id);
 									setIsOpen(false);
 								}}
-								className={`flex items-center justify-between px-3 py-2 rounded-xl text-left transition-all cursor-pointer ${isSelected
-									? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
-									: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+								className={`flex items-center justify-between px-3 py-2 rounded-xl text-left transition-all ${isDisabled
+									? 'opacity-40 cursor-not-allowed bg-slate-50'
+									: isSelected
+									? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20 cursor-pointer'
+									: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50 cursor-pointer'
 									}`}
+								title={isDisabled ? 'System requires at least one Administrator' : undefined}
 							>
 								<div className="flex items-center gap-2.5 truncate">
 									<div
-										className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isSelected ? 'bg-primary text-white' : 'bg-slate-100 text-slate-600'
+										className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${isDisabled
+											? 'bg-slate-200 text-slate-400'
+											: isSelected
+											? 'bg-primary text-white'
+											: 'bg-slate-100 text-slate-600'
 											}`}
 									>
 										<span className="material-symbols-outlined text-[16px]">
@@ -669,11 +671,16 @@ function FormRoleDropdown({ value, onChange }) {
 										</span>
 									</div>
 									<div className="truncate">
-										<div className="text-[12.5px] font-bold leading-tight">
-											{opt.label}
+										<div className="text-[12.5px] font-bold leading-tight flex items-center gap-1.5">
+											<span>{opt.label}</span>
+											{isDisabled && (
+												<span className="text-[9.5px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded ring-1 ring-amber-200">
+													Admin Required
+												</span>
+											)}
 										</div>
 										<div className="text-[10.5px] text-slate-400 font-medium">
-											{opt.desc}
+											{isDisabled ? 'Cannot demote sole administrator' : opt.desc}
 										</div>
 									</div>
 								</div>
@@ -2218,8 +2225,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 	const roleDropdownOptions = useMemo(
 		() => [
 			{ id: 'ALL', label: 'All Roles', dot: 'bg-primary', count: roleCounts.ALL },
-			{ id: 'admin', label: 'Administrators', dot: 'bg-purple-500', count: roleCounts.admin },
-			{ id: 'manager', label: 'Managers', dot: 'bg-amber-500', count: roleCounts.manager },
+			{ id: 'admin', label: 'Admin', dot: 'bg-purple-500', count: roleCounts.admin },
 			{ id: 'user', label: 'Users', dot: 'bg-blue-500', count: roleCounts.user },
 		],
 		[roleCounts]
@@ -2597,6 +2603,13 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 									</label>
 									<FormRoleDropdown
 										value={formData.role}
+										isSoleAdmin={
+											Boolean(
+												editingUser &&
+												['admin', 'super admin'].includes((editingUser.role || '').toLowerCase()) &&
+												users.filter((u) => ['admin', 'super admin'].includes((u.role || '').toLowerCase()) && u.id !== editingUser.id).length === 0
+											)
+										}
 										onChange={(newRole) => {
 											setFormData((prev) => ({
 												...prev,
@@ -2608,6 +2621,14 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 											}));
 										}}
 									/>
+									{editingUser &&
+										['admin', 'super admin'].includes((editingUser.role || '').toLowerCase()) &&
+										users.filter((u) => ['admin', 'super admin'].includes((u.role || '').toLowerCase()) && u.id !== editingUser.id).length === 0 && (
+											<p className="text-[11px] text-amber-600 font-semibold mt-1 flex items-center gap-1">
+												<span className="material-symbols-outlined text-[13px]">info</span>
+												Sole Administrator: create or promote another Admin first before demoting.
+											</p>
+									)}
 								</div>
 
 								<div>

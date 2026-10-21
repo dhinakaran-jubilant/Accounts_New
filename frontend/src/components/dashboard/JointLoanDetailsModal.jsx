@@ -27,7 +27,7 @@ export default function JointLoanDetailsModal({ loan, onClose, onOpenInServicing
 	const schedule = loan.repaymentSchedule || [];
 
 	return (
-		<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs font-sans">
+		<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans">
 			<div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl ring-1 ring-slate-200 max-h-[90vh] overflow-y-auto">
 				{/* Top Bar */}
 				<div className="flex items-start justify-between pb-4 border-b border-slate-100">
@@ -184,8 +184,8 @@ export default function JointLoanDetailsModal({ loan, onClose, onOpenInServicing
 											st === 'collected' || st === 'settled'
 												? 'text-emerald-700 bg-emerald-50'
 												: st === 'overdue'
-												? 'text-rose-700 bg-rose-50'
-												: 'text-slate-700 bg-slate-100';
+													? 'text-rose-700 bg-rose-50'
+													: 'text-slate-700 bg-slate-100';
 
 										return (
 											<tr key={i} className="hover:bg-slate-50/50">

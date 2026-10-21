@@ -21,7 +21,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host,
       port,
-      open: false,
+      open: true,
       proxy: {
         '/api': {
           target: proxyTarget,

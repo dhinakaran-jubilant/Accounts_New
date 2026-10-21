@@ -17,7 +17,42 @@ import {
 	getPrimaryTagColor,
 	isAccountMatch,
 	formatLoanDate,
+	EditableDateCell,
+	getOffsetDateDDMMYYYY,
+	getTodayDDMMYYYY,
+	isDateBefore,
+	parseDDMMYYYY,
 } from './JointLoan';
+
+// Helper to match a user against a username, name, employee_code, email, or formatted string "Name (Code)"
+export const isMatchUser = (user, val) => {
+	if (!user || !val) return false;
+	const clean = (s) => String(s || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
+	const cVal = clean(val);
+	if (!cVal) return false;
+	const curName = clean(user.name);
+	const curCode = clean(user.employee_code);
+	const curUsername = clean(user.username);
+	const curEmail = clean(user.email);
+
+	// Formatted strings like "Name (Code)" or "Code (Name)"
+	const raw = String(val).trim();
+	const parenMatch = raw.match(/^(.*?)\s*\((.*?)\)$/);
+	if (parenMatch) {
+		const part1 = clean(parenMatch[1]);
+		const part2 = clean(parenMatch[2]);
+		if (curCode && (part1 === curCode || part2 === curCode)) return true;
+		if (curName && (part1 === curName || part2 === curName)) return true;
+		if (curUsername && (part1 === curUsername || part2 === curUsername)) return true;
+		if (curEmail && (part1 === curEmail || part2 === curEmail)) return true;
+	}
+
+	if (curCode && cVal === curCode) return true;
+	if (curName && cVal === curName) return true;
+	if (curUsername && cVal === curUsername) return true;
+	if (curEmail && cVal === curEmail) return true;
+	return false;
+};
 
 // Helper to determine if a loan was created/initiated by a specific user (exact match only)
 export const didUserCreateLoan = (loan, user, accountObjects = []) => {
@@ -376,12 +411,12 @@ export const getLoanSignOffDetails = (loan) => {
 			code: code,
 			timestamp: formatSignOffTimestamp(
 				adminEntry.timestamp ||
-					adminEntry.isoDate ||
-					loan.actioned_at ||
-					loan.actionedAt ||
-					loan.approved_at ||
-					loan.approvedAt ||
-					''
+				adminEntry.isoDate ||
+				loan.actioned_at ||
+				loan.actionedAt ||
+				loan.approved_at ||
+				loan.approvedAt ||
+				''
 			),
 		};
 	} else if (loan.actioned_by || loan.actionedBy || loan.approved_by || loan.approvedBy) {
@@ -474,8 +509,33 @@ export const isUserPendingLoan = (loan, user, accountObjects = [], meta = null) 
 	return false;
 };
 
-// Helper to determine if a loan has a secondary partner payout approval pending for the logged-in user
-export const isUserPayoutPendingLoan = (loan, user, accountObjects = []) => {
+// Helper to determine if an installment, sub-installment, or loan has a filled, non-empty payout date
+export const hasValidPayoutDate = (item) => {
+	if (!item) return false;
+	let d = item.payment_date || item.paymentDate || item.payoutDate || item.payout_date;
+	if (!d) {
+		if (item.dueDate && (!item.date || item.dueDate !== item.date)) {
+			d = item.dueDate;
+		}
+	}
+	if (!d) return false;
+	const s = String(d).trim();
+	if (
+		s === '' ||
+		s === '-' ||
+		s === '—' ||
+		s === '–' ||
+		s.toLowerCase() === 'null' ||
+		s.toLowerCase() === 'none' ||
+		s.toLowerCase() === 'undefined'
+	) {
+		return false;
+	}
+	return true;
+};
+
+/// Helper to determine if a loan has a secondary partner payout approval pending for the logged-in user
+export const isUserPayoutPendingLoan = (loan, user, accountObjects = [], updatedKeys = null) => {
 	if (!loan || !user) return false;
 	if (loan.is_deleted) return false;
 
@@ -488,64 +548,87 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = []) => {
 		return false;
 	}
 
-	// 1. Check top-level loan status
-	const loanStatus = (loan.status || '').toLowerCase();
-	const approvalStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
-	const hasTopLevelPayoutPending =
-		loanStatus === 'pending payout approval' ||
-		loanStatus === 'payout pending' ||
-		approvalStatus === 'PENDING_PAYOUT';
+	const loanKey = getLoanUniqueId(loan);
 
-	// 2. Check repayment schedule installments and subInstallments
+	// Extract loan history to find editor info if needed
+	let historyList = loan.history;
+	if (typeof historyList === 'string') {
+		try {
+			historyList = JSON.parse(historyList);
+		} catch (e) {
+			historyList = [];
+		}
+	}
+	const histArr = Array.isArray(historyList) ? historyList : [];
+
+	// 1. Check repayment schedule installments and subInstallments
 	const schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
 	let hasPendingInstallment = false;
 
 	if (Array.isArray(schedule)) {
-		for (const inst of schedule) {
+		for (let idx = 0; idx < schedule.length; idx++) {
+			const inst = schedule[idx];
 			if (!inst) continue;
+			const sNo = inst.sNo || inst.installmentNumber || idx + 1;
 			const pStatus = (inst.payout_approval_status || inst.payoutApprovalStatus || '').toUpperCase();
 			const instStatus = (inst.status || '').toLowerCase();
-			const isInstPending = pStatus === 'PENDING' || instStatus === 'pending payout approval';
+			const isMainPending = pStatus === 'PENDING' || instStatus === 'pending payout approval';
 
-			if (isInstPending) {
-				if (isAdmin) {
-					hasPendingInstallment = true;
-					break;
-				}
-				const targetRole = (
-					inst.payout_approval_target ||
-					inst.payoutApprovalTarget ||
-					(inst.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
-				).toUpperCase();
-
-				if (targetRole === 'PRIMARY' && isUserPri) {
-					hasPendingInstallment = true;
-					break;
-				} else if (targetRole === 'SECONDARY' && isUserSec) {
-					hasPendingInstallment = true;
-					break;
-				} else if (!targetRole && (isUserPri || isUserSec)) {
-					hasPendingInstallment = true;
-					break;
-				}
-			}
-
-			// Also check subInstallments if any
-			if (Array.isArray(inst.subInstallments)) {
+			// Check subInstallments if partial
+			if (inst.isPartial && Array.isArray(inst.subInstallments)) {
 				for (const sub of inst.subInstallments) {
 					if (!sub) continue;
+					const subSNo = sub.sNo || `${sNo}${sub.subType === 'paid' ? 'A' : 'B'}`;
+					const subKey = `${loanKey}_${subSNo}`;
+					const parentKey = `${loanKey}_${sNo}`;
+					if (updatedKeys && (updatedKeys.has(subKey) || updatedKeys.has(parentKey))) {
+						continue;
+					}
+
+					// Payout date field must be filled and waiting for approval
+					if (!hasValidPayoutDate(sub)) {
+						continue;
+					}
+
 					const subPStatus = (sub.payout_approval_status || sub.payoutApprovalStatus || '').toUpperCase();
 					const subStatus = (sub.status || '').toLowerCase();
 					if (subPStatus === 'PENDING' || subStatus === 'pending payout approval') {
+						const subHistMatch = histArr
+							.filter(
+								(h) =>
+									h &&
+									(h.type === 'payout_date_update' || h.type === 'payout_approval_request') &&
+									(String(h.emiNo) === String(subSNo) || Number(h.emiNo) === Number(sNo))
+							)
+							.slice(-1)[0];
+
+						const subUpdatedBy =
+							sub.payout_requested_by ||
+							sub.payoutRequestedBy ||
+							subHistMatch?.userName;
+
+						if (isMatchUser(user, subUpdatedBy)) {
+							continue;
+						}
+
+						const subEditorRole = (
+							sub.payout_editor_role ||
+							sub.payoutEditorRole ||
+							sub.payout_requested_role ||
+							sub.payoutRequestedRole ||
+							(sub.payout_approval_target === 'PRIMARY' ? 'SECONDARY' : 'PRIMARY')
+						).toUpperCase();
+
+						const targetRole = (
+							sub.payout_approval_target ||
+							sub.payoutApprovalTarget ||
+							(subEditorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
+						).toUpperCase();
+
 						if (isAdmin) {
 							hasPendingInstallment = true;
 							break;
 						}
-						const targetRole = (
-							sub.payout_approval_target ||
-							sub.payoutApprovalTarget ||
-							(sub.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
-						).toUpperCase();
 						if (targetRole === 'PRIMARY' && isUserPri) {
 							hasPendingInstallment = true;
 							break;
@@ -559,16 +642,105 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = []) => {
 					}
 				}
 				if (hasPendingInstallment) break;
+				continue;
+			}
+
+			// Main installment
+			const itemKey = `${loanKey}_${sNo}`;
+			if (updatedKeys && updatedKeys.has(itemKey)) {
+				continue;
+			}
+
+			// Payout date field must be filled and waiting for approval
+			if (!hasValidPayoutDate(inst)) {
+				continue;
+			}
+
+			if (isMainPending) {
+				const histMatch = histArr
+					.filter(
+						(h) =>
+							h &&
+							(h.type === 'payout_date_update' || h.type === 'payout_approval_request') &&
+							(h.emiNo === sNo || Number(h.emiNo) === Number(sNo))
+					)
+					.slice(-1)[0];
+
+				const updatedBy =
+					inst.payout_requested_by ||
+					inst.payoutRequestedBy ||
+					histMatch?.userName;
+
+				if (isMatchUser(user, updatedBy)) {
+					continue;
+				}
+
+				const editorRole = (
+					inst.payout_editor_role ||
+					inst.payoutEditorRole ||
+					inst.payout_requested_role ||
+					inst.payoutRequestedRole ||
+					(inst.payout_approval_target === 'PRIMARY' ? 'SECONDARY' : 'PRIMARY')
+				).toUpperCase();
+
+				const targetRole = (
+					inst.payout_approval_target ||
+					inst.payoutApprovalTarget ||
+					(editorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
+				).toUpperCase();
+
+				if (isAdmin) {
+					hasPendingInstallment = true;
+					break;
+				}
+				if (targetRole === 'PRIMARY' && isUserPri) {
+					hasPendingInstallment = true;
+					break;
+				} else if (targetRole === 'SECONDARY' && isUserSec) {
+					hasPendingInstallment = true;
+					break;
+				} else if (!targetRole && (isUserPri || isUserSec)) {
+					hasPendingInstallment = true;
+					break;
+				}
 			}
 		}
 	}
 
-	return hasTopLevelPayoutPending || hasPendingInstallment;
+	// 2. Check top-level loan status (facility payout)
+	if (!hasPendingInstallment) {
+		const loanStatus = (loan.status || '').toLowerCase();
+		const approvalStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
+		const hasTopLevelPayoutPending =
+			loanStatus === 'pending payout approval' ||
+			loanStatus === 'payout pending' ||
+			approvalStatus === 'PENDING_PAYOUT';
+
+		if (hasTopLevelPayoutPending && hasValidPayoutDate(loan)) {
+			const topKey = `${loanKey}_All`;
+			const topUpdatedBy = loan.requester_name || loan.created_by;
+			if (!(updatedKeys && updatedKeys.has(topKey)) && !isMatchUser(user, topUpdatedBy)) {
+				if (isAdmin || isUserPri) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	return hasPendingInstallment;
 };
 
 // Helper to extract all pending payout EMIs for a loan, including who updated the payout date and who approves it
-export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = [], allUsers = []) => {
+export const getLoanPendingPayoutItems = (
+	loan,
+	currentUser,
+	accountObjects = [],
+	allUsers = [],
+	updatedKeys = null
+) => {
 	if (!loan) return [];
+	const loanKey = getLoanUniqueId(loan);
 	const schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
 	const pendingItems = [];
 
@@ -605,6 +777,7 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 				inst.subInstallments.some(
 					(s) =>
 						s &&
+						hasValidPayoutDate(s) &&
 						((s.payout_approval_status || s.payoutApprovalStatus || '').toUpperCase() === 'PENDING' ||
 							(s.status || '').toLowerCase() === 'pending payout approval')
 				);
@@ -613,11 +786,18 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 			if (hasPendingSub) {
 				inst.subInstallments.forEach((sub) => {
 					if (!sub) return;
+					if (!hasValidPayoutDate(sub)) return;
 					const subPStatus = (sub.payout_approval_status || sub.payoutApprovalStatus || '').toUpperCase();
 					const subInstStatus = (sub.status || '').toLowerCase();
 					if (subPStatus !== 'PENDING' && subInstStatus !== 'pending payout approval') return;
 
 					const subSNo = sub.sNo || `${sNo}${sub.subType === 'paid' ? 'A' : 'B'}`;
+					const subKey = `${loanKey}_${subSNo}`;
+					const parentKey = `${loanKey}_${sNo}`;
+					if (updatedKeys && (updatedKeys.has(subKey) || updatedKeys.has(parentKey))) {
+						return;
+					}
+
 					const subEditorRole = (
 						sub.payout_editor_role ||
 						sub.payoutEditorRole ||
@@ -641,6 +821,10 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 						histMatch?.userName ||
 						(subEditorRole === 'SECONDARY' ? 'Secondary Partner' : 'Primary Partner');
 
+					if (isMatchUser(currentUser, subUpdatedBy)) {
+						return;
+					}
+
 					const subUpdatedAt =
 						sub.payout_requested_at ||
 						sub.payoutRequestedAt ||
@@ -661,18 +845,41 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 						(subTargetRole === 'PRIMARY' && isUserPri) ||
 						(subTargetRole === 'SECONDARY' && isUserSec);
 
-					const isCurrentUserEditor = Boolean(
-						(currentUser?.name && subUpdatedBy && String(currentUser.name).trim().toLowerCase() === String(subUpdatedBy).trim().toLowerCase()) ||
-						(currentUser?.employee_code && subUpdatedBy && String(currentUser.employee_code).trim().toLowerCase() === String(subUpdatedBy).trim().toLowerCase())
-					);
+					const isCurrentUserEditor = isMatchUser(currentUser, subUpdatedBy);
+
+					const subTotalAmount = Number(sub.amount || 0);
+					const priShare =
+						loan?.primary_share != null
+							? Number(loan.primary_share)
+							: loan?.primaryShare != null
+								? Number(loan.primaryShare)
+								: 50;
+
+					let subSecAmount = null;
+					if (Array.isArray(sub.secAccounts) && sub.secAccounts.length > 0) {
+						subSecAmount = sub.secAccounts.reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
+					} else if (sub.secAmount != null && !isNaN(Number(sub.secAmount))) {
+						subSecAmount = Number(sub.secAmount);
+					} else if (sub.sec_amount != null && !isNaN(Number(sub.sec_amount))) {
+						subSecAmount = Number(sub.sec_amount);
+					} else {
+						const priAmt =
+							sub.priAmount != null
+								? Number(sub.priAmount)
+								: sub.primaryAmount != null
+									? Number(sub.primaryAmount)
+									: Math.round((subTotalAmount * priShare) / 100);
+						subSecAmount = Math.max(0, subTotalAmount - priAmt);
+					}
 
 					pendingItems.push({
 						sNo: subSNo,
 						parentSNo: sNo,
 						label: `EMI #${subSNo}`,
 						amount: sub.amount || 0,
-						dueDate: sub.dueDate || inst.date || '-',
-						payoutDate: sub.dueDate || sub.paymentDate || '-',
+						secAmount: subSecAmount,
+						dueDate: sub.date || inst.date || sub.dueDate || '-',
+						payoutDate: sub.paymentDate || sub.payment_date || sub.dueDate || sub.payoutDate || '-',
 						recdDate: sub.receivedDate || '-',
 						updatedBy: subUpdatedBy,
 						updatedRole: subEditorRole === 'SECONDARY' ? 'Secondary Partner' : 'Primary Partner',
@@ -694,8 +901,13 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 				return;
 			}
 
-			// If main installment is pending
-			if (isMainPending) {
+			// If main installment is pending and payout date field is filled
+			if (isMainPending && hasValidPayoutDate(inst)) {
+				const itemKey = `${loanKey}_${sNo}`;
+				if (updatedKeys && updatedKeys.has(itemKey)) {
+					return;
+				}
+
 				const editorRole = (
 					inst.payout_editor_role ||
 					inst.payoutEditorRole ||
@@ -719,6 +931,10 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 					histMatch?.userName ||
 					(editorRole === 'SECONDARY' ? 'Secondary Partner' : 'Primary Partner');
 
+				if (isMatchUser(currentUser, updatedBy)) {
+					return;
+				}
+
 				const updatedAt =
 					inst.payout_requested_at ||
 					inst.payoutRequestedAt ||
@@ -740,18 +956,41 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 					(targetRole === 'SECONDARY' && isUserSec) ||
 					(!targetRole && (isUserPri || isUserSec));
 
-				const isCurrentUserEditor = Boolean(
-					(currentUser?.name && updatedBy && String(currentUser.name).trim().toLowerCase() === String(updatedBy).trim().toLowerCase()) ||
-					(currentUser?.employee_code && updatedBy && String(currentUser.employee_code).trim().toLowerCase() === String(updatedBy).trim().toLowerCase())
-				);
+				const isCurrentUserEditor = isMatchUser(currentUser, updatedBy);
+
+				const instTotalAmount = Number(inst.amount || 0);
+				const priShare =
+					loan?.primary_share != null
+						? Number(loan.primary_share)
+						: loan?.primaryShare != null
+							? Number(loan.primaryShare)
+							: 50;
+
+				let instSecAmount = null;
+				if (Array.isArray(inst.secAccounts) && inst.secAccounts.length > 0) {
+					instSecAmount = inst.secAccounts.reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
+				} else if (inst.secAmount != null && !isNaN(Number(inst.secAmount))) {
+					instSecAmount = Number(inst.secAmount);
+				} else if (inst.sec_amount != null && !isNaN(Number(inst.sec_amount))) {
+					instSecAmount = Number(inst.sec_amount);
+				} else {
+					const priAmt =
+						inst.priAmount != null
+							? Number(inst.priAmount)
+							: inst.primaryAmount != null
+								? Number(inst.primaryAmount)
+								: Math.round((instTotalAmount * priShare) / 100);
+					instSecAmount = Math.max(0, instTotalAmount - priAmt);
+				}
 
 				pendingItems.push({
 					sNo,
 					parentSNo: sNo,
 					label: `EMI #${sNo}`,
 					amount: inst.amount || 0,
+					secAmount: instSecAmount,
 					dueDate: inst.date || '-',
-					payoutDate: inst.payment_date || inst.paymentDate || inst.dueDate || '-',
+					payoutDate: inst.payment_date || inst.paymentDate || inst.dueDate || inst.payoutDate || '-',
 					recdDate: inst.receivedDate || inst.recdDate || '-',
 					updatedBy,
 					updatedRole: editorRole === 'SECONDARY' ? 'Secondary Partner' : 'Primary Partner',
@@ -778,38 +1017,87 @@ export const getLoanPendingPayoutItems = (loan, currentUser, accountObjects = []
 		const loanStatus = (loan.status || '').toLowerCase();
 		const appStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
 		if (
-			loanStatus === 'pending payout approval' ||
+			(loanStatus === 'pending payout approval' ||
 			loanStatus === 'payout pending' ||
-			appStatus === 'PENDING_PAYOUT'
+			appStatus === 'PENDING_PAYOUT') &&
+			hasValidPayoutDate(loan)
 		) {
-			const targetRole = 'Primary Partner';
-			const targetUserNames = priUsers.map((u) => u.name || u.employee_code).filter(Boolean);
-			pendingItems.push({
-				sNo: 'All',
-				parentSNo: 1,
-				label: 'Facility Payout',
-				amount: loan.loan_amount || loan.amount || 0,
-				dueDate: loan.loan_date || '-',
-				payoutDate: '-',
-				recdDate: '-',
-				updatedBy: loan.requester_name || loan.created_by || 'Partner Manager',
-				updatedRole: 'Secondary Partner',
-				updatedAt: loan.created_at || '',
-				targetRole,
-				targetUserNames,
-				approverDisplay:
-					targetUserNames.length > 0
-						? `Primary Partner (${targetUserNames.join(', ')})`
-						: 'Primary Partner Manager',
-				canCurrentUserApprove: isAdmin || isUserPri,
-				isCurrentUserEditor: false,
-				notes: '',
-				rawInst: null,
-			});
+			const topKey = `${loanKey}_All`;
+			const topUpdatedBy = loan.requester_name || loan.created_by;
+			if (!(updatedKeys && updatedKeys.has(topKey)) && !isMatchUser(currentUser, topUpdatedBy)) {
+				const targetRole = 'Primary Partner';
+				const targetUserNames = priUsers.map((u) => u.name || u.employee_code).filter(Boolean);
+				const fallbackTotal = Number(loan.loan_amount || loan.amount || 0);
+				const priShare =
+					loan?.primary_share != null
+						? Number(loan.primary_share)
+						: loan?.primaryShare != null
+							? Number(loan.primaryShare)
+							: 50;
+				const fallbackSecAmt = Math.max(0, fallbackTotal - Math.round((fallbackTotal * priShare) / 100));
+
+				pendingItems.push({
+					sNo: 'All',
+					parentSNo: 1,
+					label: 'Facility Payout',
+					amount: loan.loan_amount || loan.amount || 0,
+					secAmount: fallbackSecAmt,
+					dueDate: loan.loan_date || '-',
+					payoutDate: '-',
+					recdDate: '-',
+					updatedBy: topUpdatedBy || 'Partner Manager',
+					updatedRole: 'Secondary Partner',
+					updatedAt: loan.created_at || '',
+					targetRole,
+					targetUserNames,
+					approverDisplay:
+						targetUserNames.length > 0
+							? `Primary Partner (${targetUserNames.join(', ')})`
+							: 'Primary Partner Manager',
+					canCurrentUserApprove: isAdmin || isUserPri,
+					isCurrentUserEditor: false,
+					notes: '',
+					rawInst: null,
+				});
+			}
 		}
 	}
 
 	return pendingItems;
+};
+
+// Calculate secondary account remittance amount for a payout item
+export const getPayoutItemSecondaryAmount = (item, loan) => {
+	if (!item) return 0;
+	if (item.secAmount != null && !isNaN(Number(item.secAmount)) && Number(item.secAmount) > 0) {
+		return Number(item.secAmount);
+	}
+	const raw = item.rawInst || {};
+	if (Array.isArray(raw.secAccounts) && raw.secAccounts.length > 0) {
+		const total = raw.secAccounts.reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
+		if (total > 0) return total;
+	}
+	if (raw.secAmount != null && !isNaN(Number(raw.secAmount)) && Number(raw.secAmount) > 0) {
+		return Number(raw.secAmount);
+	}
+	if (raw.sec_amount != null && !isNaN(Number(raw.sec_amount)) && Number(raw.sec_amount) > 0) {
+		return Number(raw.sec_amount);
+	}
+	const totalAmount = Number(item.amount || raw.amount || 0);
+	const priShare =
+		loan?.primary_share != null
+			? Number(loan.primary_share)
+			: loan?.primaryShare != null
+				? Number(loan.primaryShare)
+				: 50;
+	const priAmount =
+		raw.priAmount != null
+			? Number(raw.priAmount)
+			: raw.primaryAmount != null
+				? Number(raw.primaryAmount)
+				: Math.round((totalAmount * priShare) / 100);
+
+	return Math.max(0, totalAmount - priAmount);
 };
 
 // Helper to determine if a loan was submitted/created by the logged-in user
@@ -1170,10 +1458,10 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 				aria-haspopup="listbox"
 				aria-expanded={isOpen}
 				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${isOpen
-						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
-						: isFiltered
-							? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
-							: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+					? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+					: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
 					}`}
 			>
 				<span className="max-w-[130px] sm:max-w-[150px] truncate text-left">
@@ -1182,9 +1470,9 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 
 				{selectedOption.count !== undefined && (
 					<span
-						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${isFiltered
-								? 'bg-primary text-white'
-								: 'bg-slate-200/90 text-slate-700'
+						className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${isFiltered
+							? 'bg-primary text-white'
+							: 'bg-slate-200/90 text-slate-700'
 							}`}
 					>
 						{selectedOption.count}
@@ -1251,8 +1539,8 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 										aria-selected={isSelected}
 										onClick={() => handleSelect(opt.id)}
 										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${isSelected
-												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
-												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+											? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+											: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
 											}`}
 									>
 										<div className="flex items-center gap-2 min-w-0 pr-2">
@@ -1268,10 +1556,10 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 											{opt.count !== undefined && (
 												<span
 													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${isSelected
-															? 'bg-primary text-white'
-															: opt.count > 0
-																? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
-																: 'bg-slate-50 text-slate-400'
+														? 'bg-primary text-white'
+														: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
 														}`}
 												>
 													{opt.count}
@@ -1312,6 +1600,15 @@ export default function Requests({
 			return null;
 		}
 	}, [propCurrentUser]);
+
+	// Current user role flags
+	const isAdmin = useMemo(() => {
+		return (
+			['admin', 'super admin'].includes((currentUser?.role || '').toLowerCase()) ||
+			['admin', 'jc0033'].includes((currentUser?.employee_code || '').toLowerCase())
+		);
+	}, [currentUser]);
+
 	const [loans, setLoans] = useState([]);
 	const [availableAccountObjects, setAvailableAccountObjects] = useState([]);
 	const [allUsers, setAllUsers] = useState([]);
@@ -1334,6 +1631,34 @@ export default function Requests({
 	const [isPayoutRejectModalOpen, setIsPayoutRejectModalOpen] = useState(false);
 	const [payoutRejectReason, setPayoutRejectReason] = useState('');
 
+	// Payout Pending expandable dropdown states
+	const [expandedPayoutLoanMap, setExpandedPayoutLoanMap] = useState({});
+	const [showAllScheduleMap, setShowAllScheduleMap] = useState({});
+	const [payoutDateOverrides, setPayoutDateOverrides] = useState({});
+	const [updatedPayoutKeys, setUpdatedPayoutKeys] = useState(() => new Set());
+	const committedDatesRef = useRef({});
+
+	// Payout Pending batch selection states
+	const [selectedPayoutItemKeys, setSelectedPayoutItemKeys] = useState([]);
+	const [isBatchPayoutApproveOpen, setIsBatchPayoutApproveOpen] = useState(false);
+	const [isBatchPayoutRejectOpen, setIsBatchPayoutRejectOpen] = useState(false);
+	const [batchPayoutRejectReason, setBatchPayoutRejectReason] = useState('');
+	const [isBatchPayoutSubmitting, setIsBatchPayoutSubmitting] = useState(false);
+
+	const handleToggleExpandPayout = (loanKey, currentExpandedState) => {
+		setExpandedPayoutLoanMap((prev) => ({
+			...prev,
+			[loanKey]: currentExpandedState !== undefined ? !currentExpandedState : !prev[loanKey],
+		}));
+	};
+
+	const toggleShowAllSchedule = (loanKey) => {
+		setShowAllScheduleMap((prev) => ({
+			...prev,
+			[loanKey]: !prev[loanKey],
+		}));
+	};
+
 	// Batch selection states for pending tab
 	const [selectedLoanIds, setSelectedLoanIds] = useState([]);
 	const [isBatchRejectModalOpen, setIsBatchRejectModalOpen] = useState(false);
@@ -1343,9 +1668,9 @@ export default function Requests({
 	const masterCheckboxRef = useRef(null);
 
 	// Load loans, account names, and users
-	const loadData = useCallback(async () => {
+	const loadData = useCallback(async (silent = false) => {
 		try {
-			setIsLoading(true);
+			if (!silent) setIsLoading(true);
 			const [loansRes, accsRes, usersRes] = await Promise.allSettled([
 				api.getJointLoans(),
 				api.getAccountNames(),
@@ -1364,22 +1689,203 @@ export default function Requests({
 		} catch (err) {
 			console.warn('Error loading requests data:', err);
 		} finally {
-			setIsLoading(false);
+			if (!silent) setIsLoading(false);
 			setIsSyncing(false);
 		}
 	}, []);
 
 	useEffect(() => {
 		loadData();
+		const handleRefresh = () => loadData(true);
+		window.addEventListener('loanDesk_notifications_updated', handleRefresh);
+		window.addEventListener('loanDesk_loans_updated', handleRefresh);
+		window.addEventListener('loan_updated', handleRefresh);
+		window.addEventListener('loan_approved', handleRefresh);
+		return () => {
+			window.removeEventListener('loanDesk_notifications_updated', handleRefresh);
+			window.removeEventListener('loanDesk_loans_updated', handleRefresh);
+			window.removeEventListener('loan_updated', handleRefresh);
+			window.removeEventListener('loan_approved', handleRefresh);
+		};
 	}, [loadData]);
 
-	// Current user role flags
-	const isAdmin = useMemo(() => {
-		return (
-			['admin', 'super admin'].includes((currentUser?.role || '').toLowerCase()) ||
-			['admin', 'jc0033'].includes((currentUser?.employee_code || '').toLowerCase())
-		);
-	}, [currentUser]);
+	// Helper to focus date input
+	const focusScheduleInput = useCallback((id) => {
+		setTimeout(() => {
+			const el = document.getElementById(id);
+			if (el) {
+				el.focus();
+				if (el.select) el.select();
+			}
+		}, 60);
+	}, []);
+
+	// Move cursor to next EMI Payout Date on Enter
+	const handlePayoutDateEnter = useCallback((pIdx, pendingPayouts, loanKey) => {
+		if (pIdx < pendingPayouts.length - 1) {
+			const nextItem = pendingPayouts[pIdx + 1];
+			focusScheduleInput(`req-payout-${loanKey}-${nextItem.sNo}`);
+		}
+	}, [focusScheduleInput]);
+
+	// Handle payout date change and auto-save override to backend
+	const handlePayoutDateChange = useCallback(
+		async (loan, item, newVal) => {
+			const loanId = loan.db_id || loan.id;
+			const loanKey = getLoanUniqueId(loan);
+			const itemKey = `${loanKey}_${item.sNo}`;
+
+			let finalVal = newVal;
+			const raw = item.rawInst || {};
+			const recdDate = item.recdDate && item.recdDate !== '-' ? item.recdDate : (raw.receivedDate || '-');
+			const emiDate = raw.date || raw.dueDate || item.dueDate || '-';
+			const effectiveMinDate = (recdDate && recdDate !== '-') ? recdDate : (emiDate && emiDate !== '-' ? emiDate : '');
+
+			// Auto-correct if complete date is typed and is before minDate
+			if (finalVal && finalVal.length === 10 && parseDDMMYYYY(finalVal)) {
+				if (effectiveMinDate && parseDDMMYYYY(effectiveMinDate) && isDateBefore(finalVal, effectiveMinDate)) {
+					finalVal = effectiveMinDate;
+				}
+			}
+
+			setPayoutDateOverrides((prev) => ({
+				...prev,
+				[itemKey]: finalVal,
+			}));
+
+			const isCompleteDate = Boolean(finalVal && finalVal.length === 10 && parseDDMMYYYY(finalVal) !== null);
+			const isExplicitlyCleared = !finalVal || finalVal === '-' || finalVal === '';
+			const isFullyChanged = isCompleteDate || isExplicitlyCleared;
+
+			if (committedDatesRef.current[itemKey] === undefined) {
+				const origVal = item.payoutDate || '';
+				committedDatesRef.current[itemKey] = (origVal && origVal !== '-') ? origVal : '';
+			}
+			const baselineVal = committedDatesRef.current[itemKey];
+
+			if (isFullyChanged && finalVal !== baselineVal) {
+				committedDatesRef.current[itemKey] = finalVal;
+
+				const isUserSec = checkUserHasPrimaryAccessForLoanSecondary(currentUser, loan, availableAccountObjects);
+				const isSecEditor = !isAdmin && Boolean(isUserSec);
+				const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
+				const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
+				const editorName = currentUser?.name || currentUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
+				const nowStr = getFormattedNow();
+				const isValFilled = Boolean(finalVal && finalVal !== '-' && finalVal !== '');
+
+				if (isValFilled) {
+					// Immediately exclude this updated EMI from the Payout Pending table for this user
+					setUpdatedPayoutKeys((prev) => new Set(prev).add(itemKey));
+					setSelectedPayoutItemKeys((prev) => prev.filter((k) => k !== itemKey));
+				}
+
+				const payload = {
+					sNo: item.sNo,
+					field: 'dueDate',
+					value: finalVal || '-',
+					payout_approval_status: isValFilled ? 'PENDING' : null,
+					payoutApprovalStatus: isValFilled ? 'PENDING' : null,
+					payout_approval_target: isValFilled ? targetRole : null,
+					payoutApprovalTarget: isValFilled ? targetRole : null,
+					payout_editor_role: isValFilled ? editorRole : null,
+					payoutEditorRole: isValFilled ? editorRole : null,
+					payout_requested_role: isValFilled ? editorRole : null,
+					payoutRequestedRole: isValFilled ? editorRole : null,
+					payout_requested_by: isValFilled ? editorName : null,
+					payout_requested_at: isValFilled ? nowStr : null,
+					payout_approved_by: null,
+					payout_approved_at: null,
+					payout_notes: null,
+				};
+
+				try {
+					await api.saveScheduleOverride(loanId, payload);
+					// Update loans state locally so client card reflection is immediate
+					setLoans((prevLoans) =>
+						prevLoans.map((l) => {
+							const currentId = l.db_id || l.id;
+							if (String(currentId) !== String(loanId)) return l;
+							const schedule = [...(l.repaymentSchedule || l.repayment_schedule || [])];
+							const updatedSchedule = schedule.map((inst, idx) => {
+								const sNoStr = String(inst.sNo || inst.installmentNumber || idx + 1);
+								const targetSNo = String(item.sNo);
+								if (sNoStr === targetSNo || targetSNo.startsWith(sNoStr)) {
+									if (inst.isPartial && Array.isArray(inst.subInstallments)) {
+										const updatedSubs = inst.subInstallments.map((sub) => {
+											if (String(sub.sNo) === targetSNo) {
+												return {
+													...sub,
+													dueDate: finalVal,
+													paymentDate: finalVal,
+													payout_approval_status: isValFilled ? 'PENDING' : null,
+													payoutApprovalStatus: isValFilled ? 'PENDING' : null,
+													payout_approval_target: isValFilled ? targetRole : null,
+													payoutApprovalTarget: isValFilled ? targetRole : null,
+													payout_editor_role: isValFilled ? editorRole : null,
+													payoutEditorRole: isValFilled ? editorRole : null,
+													payout_requested_role: isValFilled ? editorRole : null,
+													payoutRequestedRole: isValFilled ? editorRole : null,
+													payout_requested_by: isValFilled ? editorName : null,
+													payout_requested_at: isValFilled ? nowStr : null,
+												};
+											}
+											return sub;
+										});
+										return { ...inst, subInstallments: updatedSubs };
+									}
+									return {
+										...inst,
+										dueDate: finalVal,
+										paymentDate: finalVal,
+										payment_date: finalVal,
+										payout_approval_status: isValFilled ? 'PENDING' : null,
+										payoutApprovalStatus: isValFilled ? 'PENDING' : null,
+										payout_approval_target: isValFilled ? targetRole : null,
+										payoutApprovalTarget: isValFilled ? targetRole : null,
+										payout_editor_role: isValFilled ? editorRole : null,
+										payoutEditorRole: isValFilled ? editorRole : null,
+										payout_requested_role: isValFilled ? editorRole : null,
+										payoutRequestedRole: isValFilled ? editorRole : null,
+										payout_requested_by: isValFilled ? editorName : null,
+										payout_requested_at: isValFilled ? nowStr : null,
+									};
+								}
+								return inst;
+							});
+							return {
+								...l,
+								repaymentSchedule: updatedSchedule,
+								repayment_schedule: updatedSchedule,
+							};
+						})
+					);
+					if (isValFilled) {
+						setFeedbackMsg({
+							type: 'success',
+							text: `Payout date updated for ${item.label}. It has been submitted for partner authorization.`,
+						});
+					}
+					window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+					window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+				} catch (err) {
+					console.error('Failed to save payout date override:', err);
+					if (isValFilled) {
+						setUpdatedPayoutKeys((prev) => {
+							const next = new Set(prev);
+							next.delete(itemKey);
+							return next;
+						});
+					}
+					setFeedbackMsg({
+						type: 'error',
+						text: `Failed to save payout date: ${err.message || 'Server error'}`,
+					});
+				}
+			}
+		},
+		[currentUser, availableAccountObjects, isAdmin]
+	);
 
 	// Helper to determine approval stage and whether current user has action
 	const getLoanApprovalMeta = useCallback(
@@ -1394,8 +1900,8 @@ export default function Requests({
 			const isPendingSecondary =
 				!isPayoutPendingLoan &&
 				(status === 'PENDING_SECONDARY' ||
-				(status === 'PENDING' && !loan.verified_by) ||
-				(!loan.approval_status && loan.status === 'Pending'));
+					(status === 'PENDING' && !loan.verified_by) ||
+					(!loan.approval_status && loan.status === 'Pending'));
 			const isPendingAdmin = !isPayoutPendingLoan && (status === 'PENDING_ADMIN' || status === 'VERIFIED');
 			const isApproved = status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed';
 			const isRejected = status === 'REJECTED' || loan.status === 'Rejected';
@@ -1451,8 +1957,9 @@ export default function Requests({
 			if (isUserApprovedLoan(l, currentUser, availableAccountObjects)) {
 				approvedCount += 1;
 			}
-			if (isUserPayoutPendingLoan(l, currentUser, availableAccountObjects)) {
-				payoutPendingCount += 1;
+			if (isUserPayoutPendingLoan(l, currentUser, availableAccountObjects, updatedPayoutKeys)) {
+				const pendingItems = getLoanPendingPayoutItems(l, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys);
+				payoutPendingCount += pendingItems.length;
 			}
 		});
 
@@ -1464,7 +1971,7 @@ export default function Requests({
 			payoutPendingCount,
 			totalWaiting: pendingCount + othersApprovalCount + payoutPendingCount,
 		};
-	}, [loans, getLoanApprovalMeta, currentUser, availableAccountObjects]);
+	}, [loans, getLoanApprovalMeta, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys]);
 
 
 	// Normalize filterAccount to canonical name if set to an acronym or non-canonical casing
@@ -1508,7 +2015,11 @@ export default function Requests({
 			}
 			// Tab 3: Payout Pending (loans awaiting secondary payout approval)
 			else if (activeTab === 'payout-pending') {
-				if (!isUserPayoutPendingLoan(loan, currentUser, availableAccountObjects)) {
+				if (!isUserPayoutPendingLoan(loan, currentUser, availableAccountObjects, updatedPayoutKeys)) {
+					return false;
+				}
+				const pendingItems = getLoanPendingPayoutItems(loan, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys);
+				if (pendingItems.length === 0) {
 					return false;
 				}
 			}
@@ -1546,7 +2057,7 @@ export default function Requests({
 
 			return true;
 		});
-	}, [loans, activeTab, filterAccount, effectiveSearch, getLoanApprovalMeta, currentUser, availableAccountObjects]);
+	}, [loans, activeTab, filterAccount, effectiveSearch, getLoanApprovalMeta, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys]);
 
 	const isPendingTab = activeTab === 'pending' || activeTab === 'my-approval';
 
@@ -1593,9 +2104,11 @@ export default function Requests({
 		return pages;
 	};
 
-	// Clear selection on tab change
+	// Clear selection and close any open modal on tab change
 	useEffect(() => {
 		setSelectedLoanIds([]);
+		setSelectedPayoutItemKeys([]);
+		setSelectedLoan(null);
 	}, [activeTab]);
 
 	// Prune selection if items are filtered out
@@ -1663,6 +2176,91 @@ export default function Requests({
 		setSelectedLoanIds([]);
 	}, []);
 
+	// Payout Pending: visible dues and selection
+	const visiblePayoutItems = useMemo(() => {
+		if (activeTab !== 'payout-pending') return [];
+		const list = [];
+		paginatedLoans.forEach((loan) => {
+			const items = getLoanPendingPayoutItems(loan, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys);
+			items.forEach((item) => {
+				const loanKey = getLoanUniqueId(loan);
+				const itemKey = `${loanKey}_${item.sNo}`;
+				list.push({
+					key: itemKey,
+					loanKey,
+					loan,
+					item,
+					canApprove: Boolean(item.canCurrentUserApprove),
+				});
+			});
+		});
+		return list;
+	}, [activeTab, paginatedLoans, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys]);
+
+	const selectedPayoutDues = useMemo(() => {
+		if (activeTab !== 'payout-pending' || selectedPayoutItemKeys.length === 0) return [];
+		const keySet = new Set(selectedPayoutItemKeys);
+		return visiblePayoutItems.filter((entry) => keySet.has(entry.key) && entry.canApprove);
+	}, [activeTab, selectedPayoutItemKeys, visiblePayoutItems]);
+
+	const selectedPayoutTotalAmount = useMemo(() => {
+		return selectedPayoutDues.reduce(
+			(sum, entry) => sum + getPayoutItemSecondaryAmount(entry.item, entry.loan),
+			0
+		);
+	}, [selectedPayoutDues]);
+
+	const totalApprovablePayoutCount = useMemo(() => {
+		return visiblePayoutItems.filter((e) => e.canApprove).length;
+	}, [visiblePayoutItems]);
+
+	const isAllPayoutVisibleSelected = useMemo(() => {
+		const approvable = visiblePayoutItems.filter((e) => e.canApprove);
+		if (approvable.length === 0) return false;
+		const keySet = new Set(selectedPayoutItemKeys);
+		return approvable.every((e) => keySet.has(e.key));
+	}, [visiblePayoutItems, selectedPayoutItemKeys]);
+
+	const isSomePayoutVisibleSelected = useMemo(() => {
+		const approvable = visiblePayoutItems.filter((e) => e.canApprove);
+		if (approvable.length === 0) return false;
+		const keySet = new Set(selectedPayoutItemKeys);
+		return approvable.some((e) => keySet.has(e.key)) && !isAllPayoutVisibleSelected;
+	}, [visiblePayoutItems, selectedPayoutItemKeys, isAllPayoutVisibleSelected]);
+
+	const handleTogglePayoutItemSelect = useCallback((key) => {
+		setSelectedPayoutItemKeys((prev) =>
+			prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+		);
+	}, []);
+
+	const handleToggleLoanPayoutSelect = useCallback(
+		(loan) => {
+			const loanKey = getLoanUniqueId(loan);
+			const loanApprovableKeys = visiblePayoutItems
+				.filter((e) => e.loanKey === loanKey && e.canApprove)
+				.map((e) => e.key);
+			if (loanApprovableKeys.length === 0) return;
+
+			const allSelected = loanApprovableKeys.every((k) => selectedPayoutItemKeys.includes(k));
+			if (allSelected) {
+				setSelectedPayoutItemKeys((prev) => prev.filter((k) => !loanApprovableKeys.includes(k)));
+			} else {
+				setSelectedPayoutItemKeys((prev) => Array.from(new Set([...prev, ...loanApprovableKeys])));
+			}
+		},
+		[visiblePayoutItems, selectedPayoutItemKeys]
+	);
+
+	const handleToggleSelectAllPayouts = useCallback(() => {
+		const approvableKeys = visiblePayoutItems.filter((e) => e.canApprove).map((e) => e.key);
+		if (isAllPayoutVisibleSelected) {
+			setSelectedPayoutItemKeys((prev) => prev.filter((k) => !approvableKeys.includes(k)));
+		} else {
+			setSelectedPayoutItemKeys((prev) => Array.from(new Set([...prev, ...approvableKeys])));
+		}
+	}, [visiblePayoutItems, isAllPayoutVisibleSelected]);
+
 	// Handle Secondary Approval
 	const handleApproveSecondary = async (loan) => {
 		if (isSubmitting) return;
@@ -1706,6 +2304,9 @@ export default function Requests({
 				setSelectedLoan(null);
 			}
 			setSelectedLoanIds((prev) => prev.filter((id) => id !== getLoanUniqueId(loan)));
+
+			window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 
 			setFeedbackMsg({
 				type: 'success',
@@ -1761,6 +2362,9 @@ export default function Requests({
 				setSelectedLoan(null);
 			}
 			setSelectedLoanIds((prev) => prev.filter((id) => id !== getLoanUniqueId(loan)));
+
+			window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 
 			setFeedbackMsg({
 				type: 'success',
@@ -1824,6 +2428,8 @@ export default function Requests({
 			setLoanToReject(null);
 			setSelectedLoan(null);
 			setSelectedLoanIds((prev) => prev.filter((id) => id !== getLoanUniqueId(loanToReject)));
+			window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 			setFeedbackMsg({
 				type: 'success',
 				text: `Loan application ${loanToReject.loan_ref_id || loanToReject.id} has been rejected.`,
@@ -1918,6 +2524,11 @@ export default function Requests({
 		setIsBatchConfirmApproveOpen(false);
 		setIsBatchSubmitting(false);
 
+		if (successCount > 0) {
+			window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+		}
+
 		if (successCount > 0 && failCount === 0) {
 			setFeedbackMsg({
 				type: 'success',
@@ -1989,6 +2600,11 @@ export default function Requests({
 		setBatchRejectReason('');
 		setIsBatchSubmitting(false);
 
+		if (successCount > 0) {
+			window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+		}
+
 		if (successCount > 0 && failCount === 0) {
 			setFeedbackMsg({
 				type: 'success',
@@ -2033,6 +2649,18 @@ export default function Requests({
 					text: `Successfully approved payout date for ${item.label} of loan ${loan.loan_ref_id || loan.id}.`,
 				});
 				await loadData();
+				const loanKey = getLoanUniqueId(loan);
+				const itemKey = `${loanKey}_${item.sNo}`;
+				setPayoutDateOverrides((prev) => {
+					const next = { ...prev };
+					delete next[itemKey];
+					return next;
+				});
+				if (committedDatesRef.current) {
+					delete committedDatesRef.current[itemKey];
+				}
+				window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+				window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 				setSelectedLoan(null);
 			} else {
 				setFeedbackMsg({
@@ -2088,6 +2716,18 @@ export default function Requests({
 				setPayoutToReject(null);
 				setPayoutRejectReason('');
 				await loadData();
+				const loanKey = getLoanUniqueId(loan);
+				const itemKey = `${loanKey}_${item.sNo}`;
+				setPayoutDateOverrides((prev) => {
+					const next = { ...prev };
+					delete next[itemKey];
+					return next;
+				});
+				if (committedDatesRef.current) {
+					delete committedDatesRef.current[itemKey];
+				}
+				window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+				window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 				setSelectedLoan(null);
 			} else {
 				setFeedbackMsg({
@@ -2106,6 +2746,154 @@ export default function Requests({
 		}
 	};
 
+	// Handle Batch Payout Approval
+	const handleBatchPayoutApprove = async () => {
+		if (isBatchPayoutSubmitting || selectedPayoutDues.length === 0) return;
+		setIsBatchPayoutSubmitting(true);
+		setFeedbackMsg(null);
+
+		const approverName = currentUser?.name || currentUser?.employee_code || 'Manager';
+		const approverCode = currentUser?.employee_code || '';
+		let successCount = 0;
+		let failCount = 0;
+
+		for (const { loan, item } of selectedPayoutDues) {
+			const loanId = loan.db_id || loan.id;
+			const sNo = item.parentSNo || item.sNo;
+			const targetRole = item.targetRole === 'Primary Partner' ? 'PRIMARY' : 'SECONDARY';
+			const payload = {
+				approver_name: approverName,
+				approver_employee_code: approverCode,
+				approver_role: targetRole,
+				notes: 'Confirmed secondary remittance and approved payout date',
+			};
+
+			try {
+				const res = await api.approvePayoutDate(loanId, sNo, payload);
+				if (res && (res.success || !res.error)) {
+					successCount++;
+				} else {
+					failCount++;
+				}
+			} catch (err) {
+				console.error(`Failed to approve payout for loan ${loanId} sNo ${sNo}:`, err);
+				failCount++;
+			}
+		}
+
+		setIsBatchPayoutApproveOpen(false);
+		setIsBatchPayoutSubmitting(false);
+
+		// Clear local overrides and selection for actioned items
+		setPayoutDateOverrides((prev) => {
+			const next = { ...prev };
+			selectedPayoutDues.forEach(({ loan, item }) => {
+				const loanKey = getLoanUniqueId(loan);
+				const key = `${loanKey}_${item.sNo}`;
+				delete next[key];
+				if (committedDatesRef.current) delete committedDatesRef.current[key];
+			});
+			return next;
+		});
+		setSelectedPayoutItemKeys([]);
+
+		await loadData();
+		window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+		window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+
+		if (successCount > 0 && failCount === 0) {
+			setFeedbackMsg({
+				type: 'success',
+				text: `Successfully approved ${successCount} payout remittance${successCount > 1 ? 's' : ''}!`,
+			});
+		} else if (successCount > 0 && failCount > 0) {
+			setFeedbackMsg({
+				type: 'warning',
+				text: `Approved ${successCount} payout remittance${successCount > 1 ? 's' : ''}, but ${failCount} encountered an error.`,
+			});
+		} else {
+			setFeedbackMsg({
+				type: 'error',
+				text: 'Batch payout approval failed. Please try again.',
+			});
+		}
+	};
+
+	// Handle Batch Payout Rejection
+	const handleBatchPayoutReject = async () => {
+		if (isBatchPayoutSubmitting || selectedPayoutDues.length === 0) return;
+		setIsBatchPayoutSubmitting(true);
+		setFeedbackMsg(null);
+
+		const approverName = currentUser?.name || currentUser?.employee_code || 'Manager';
+		const approverCode = currentUser?.employee_code || '';
+		const notes = batchPayoutRejectReason.trim() || 'Payout date rejected due to remittance discrepancy';
+		let successCount = 0;
+		let failCount = 0;
+
+		for (const { loan, item } of selectedPayoutDues) {
+			const loanId = loan.db_id || loan.id;
+			const sNo = item.parentSNo || item.sNo;
+			const targetRole = item.targetRole === 'Primary Partner' ? 'PRIMARY' : 'SECONDARY';
+			const payload = {
+				approver_name: approverName,
+				approver_employee_code: approverCode,
+				approver_role: targetRole,
+				notes,
+			};
+
+			try {
+				const res = await api.rejectPayoutDate(loanId, sNo, payload);
+				if (res && (res.success || !res.error)) {
+					successCount++;
+				} else {
+					failCount++;
+				}
+			} catch (err) {
+				console.error(`Failed to reject payout for loan ${loanId} sNo ${sNo}:`, err);
+				failCount++;
+			}
+		}
+
+		setIsBatchPayoutRejectOpen(false);
+		setIsBatchPayoutSubmitting(false);
+		setBatchPayoutRejectReason('');
+
+		// Clear local overrides and selection for actioned items
+		setPayoutDateOverrides((prev) => {
+			const next = { ...prev };
+			selectedPayoutDues.forEach(({ loan, item }) => {
+				const loanKey = getLoanUniqueId(loan);
+				const key = `${loanKey}_${item.sNo}`;
+				delete next[key];
+				if (committedDatesRef.current) delete committedDatesRef.current[key];
+			});
+			return next;
+		});
+		setSelectedPayoutItemKeys([]);
+
+		await loadData();
+		window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
+		window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+
+		if (successCount > 0 && failCount === 0) {
+			setFeedbackMsg({
+				type: 'success',
+				text: `Flagged discrepancy & rejected ${successCount} payout remittance${successCount > 1 ? 's' : ''}.`,
+			});
+		} else if (successCount > 0 && failCount > 0) {
+			setFeedbackMsg({
+				type: 'warning',
+				text: `Rejected ${successCount} payout remittance${successCount > 1 ? 's' : ''}, but ${failCount} encountered an error.`,
+			});
+		} else {
+			setFeedbackMsg({
+				type: 'error',
+				text: 'Batch payout rejection failed. Please try again.',
+			});
+		}
+	};
+
 	// Relevant loans for the active tab (before account and search filters are applied)
 	const tabLoans = useMemo(() => {
 		return loans.filter((loan) => {
@@ -2115,13 +2903,17 @@ export default function Requests({
 			} else if (activeTab === 'approved') {
 				return isUserApprovedLoan(loan, currentUser, availableAccountObjects);
 			} else if (activeTab === 'payout-pending') {
-				return isUserPayoutPendingLoan(loan, currentUser, availableAccountObjects);
+				if (!isUserPayoutPendingLoan(loan, currentUser, availableAccountObjects, updatedPayoutKeys)) {
+					return false;
+				}
+				const pendingItems = getLoanPendingPayoutItems(loan, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys);
+				return pendingItems.length > 0;
 			} else if (activeTab === 'others-approval') {
 				return isUserSubmissionLoan(loan, currentUser, availableAccountObjects, meta);
 			}
 			return true;
 		});
-	}, [loans, activeTab, getLoanApprovalMeta, currentUser, availableAccountObjects]);
+	}, [loans, activeTab, getLoanApprovalMeta, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys]);
 
 	// Dynamic account filter options with live loan counts for active tab
 	// Strictly deduplicates accounts and eliminates standalone acronym values
@@ -2207,6 +2999,118 @@ export default function Requests({
 		];
 	}, [availableAccountObjects, loans, tabLoans]);
 
+	// Shared pagination controls for table and card views
+	const renderPagination = (isTableFooter = false) => (
+		<div
+			className={`px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 select-none ${
+				isTableFooter
+					? 'border-t border-slate-100 rounded-b-2xl'
+					: 'rounded-2xl border border-slate-200 bg-white shadow-2xs'
+			}`}
+		>
+			{/* Left: Summary Count */}
+			<div className="flex items-center gap-2 text-slate-500 font-medium text-center sm:text-left">
+				<span>
+					Showing{' '}
+					<span className="font-bold text-slate-900">
+						{totalItems === 0 ? 0 : startIndex + 1}
+					</span>{' '}
+					to <span className="font-bold text-slate-900">{endIndex}</span> of{' '}
+					<span className="font-bold text-slate-900">{totalItems}</span> loans
+				</span>
+				{totalItems !== tabLoans.length && (
+					<span className="text-[11px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full ring-1 ring-slate-200/70">
+						{tabLoans.length} total
+					</span>
+				)}
+			</div>
+
+			{/* Right: Page Navigation Buttons */}
+			<div className="flex items-center gap-1">
+				{/* First Page */}
+				<button
+					type="button"
+					onClick={() => setCurrentPage(1)}
+					disabled={currentPage === 1}
+					className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+					title="First page"
+					aria-label="First page"
+				>
+					<span className="material-symbols-outlined text-[18px]">first_page</span>
+				</button>
+
+				{/* Previous Page */}
+				<button
+					type="button"
+					onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+					disabled={currentPage === 1}
+					className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+					title="Previous page"
+					aria-label="Previous page"
+				>
+					<span className="material-symbols-outlined text-[18px]">chevron_left</span>
+				</button>
+
+				{/* Numeric Page Buttons */}
+				<div className="flex items-center gap-1 mx-0.5">
+					{getPageNumbers().map((page, pIdx) => {
+						if (page === '...') {
+							return (
+								<span
+									key={`ellipsis-${pIdx}`}
+									className="h-8 w-6 flex items-center justify-center text-slate-400 font-bold text-[12px]"
+								>
+									…
+								</span>
+							);
+						}
+						const isCurrent = page === currentPage;
+						return (
+							<button
+								key={page}
+								type="button"
+								onClick={() => setCurrentPage(page)}
+								aria-label={`Page ${page}`}
+								aria-current={isCurrent ? 'page' : undefined}
+								className={`h-8 min-w-[32px] px-2 flex items-center justify-center rounded-xl text-[12px] font-bold transition-all active:scale-95 cursor-pointer ${
+									isCurrent
+										? 'bg-primary text-white shadow-xs'
+										: 'text-slate-700 hover:text-slate-900 hover:bg-white'
+								}`}
+							>
+								{page}
+							</button>
+						);
+					})}
+				</div>
+
+				{/* Next Page */}
+				<button
+					type="button"
+					onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+					disabled={currentPage === totalPages || totalItems === 0}
+					className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+					title="Next page"
+					aria-label="Next page"
+				>
+					<span className="material-symbols-outlined text-[18px]">chevron_right</span>
+				</button>
+
+				{/* Last Page */}
+				<button
+					type="button"
+					onClick={() => setCurrentPage(totalPages)}
+					disabled={currentPage === totalPages || totalItems === 0}
+					className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+					title="Last page"
+					aria-label="Last page"
+				>
+					<span className="material-symbols-outlined text-[18px]">last_page</span>
+				</button>
+			</div>
+		</div>
+	);
+
 	return (
 		<div className="flex flex-col gap-6 font-sans">
 			{/* Top Header Strip matching Matchup styling */}
@@ -2238,35 +3142,8 @@ export default function Requests({
 				</div>
 			</div>
 
-			{/* Alert / Feedback Notification */}
-			{feedbackMsg && (
-				<div
-					className={`px-4 py-2 rounded-2xl border flex items-center justify-between gap-3 text-xs font-semibold animate-fadeIn ${feedbackMsg.type === 'success'
-							? 'bg-emerald-50 text-emerald-800 border-emerald-200/80'
-							: 'bg-rose-50 text-rose-800 border-rose-200/80'
-						}`}
-				>
-					<div className="flex items-center gap-2.5">
-						<span
-							className={`material-symbols-outlined text-[20px] ${feedbackMsg.type === 'success' ? 'text-emerald-600' : 'text-rose-600'
-								}`}
-						>
-							{feedbackMsg.type === 'success' ? 'check_circle' : 'error'}
-						</span>
-						<span>{feedbackMsg.text}</span>
-					</div>
-					<button
-						type="button"
-						onClick={() => setFeedbackMsg(null)}
-						className="h-7 w-7 flex items-center justify-center hover:bg-black/5 rounded-lg text-slate-500 transition-colors"
-					>
-						<span className="material-symbols-outlined text-[16px]">close</span>
-					</button>
-				</div>
-			)}
-
 			{/* Main Card: Controls & Filter Navigation */}
-			<div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm ring-1 ring-slate-200/80 flex flex-col gap-5">
+			<div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm ring-1 ring-slate-200/80 flex flex-col gap-2">
 				{/* Top Controls: Tabs and Search */}
 				<div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
 					{/* Category Tabs: Grouped [Pending | Approved] & [Payout Pending] & [My Submissions] */}
@@ -2276,11 +3153,10 @@ export default function Requests({
 							<button
 								type="button"
 								onClick={() => setActiveTab('pending')}
-								className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-									activeTab === 'pending' || activeTab === 'my-approval'
+								className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'pending' || activeTab === 'my-approval'
 										? 'bg-amber-600 text-white shadow-xs'
 										: 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-								}`}
+									}`}
 							>
 								<span className="material-symbols-outlined text-[17px]">
 									pending_actions
@@ -2288,11 +3164,10 @@ export default function Requests({
 								<span>Pending</span>
 								{metrics.pendingCount > 0 && (
 									<span
-										className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-											activeTab === 'pending' || activeTab === 'my-approval'
+										className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${activeTab === 'pending' || activeTab === 'my-approval'
 												? 'bg-white text-amber-700'
 												: 'bg-amber-500 text-white'
-										}`}
+											}`}
 									>
 										{metrics.pendingCount}
 									</span>
@@ -2302,11 +3177,10 @@ export default function Requests({
 							<button
 								type="button"
 								onClick={() => setActiveTab('approved')}
-								className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-									activeTab === 'approved'
+								className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'approved'
 										? 'bg-emerald-600 text-white shadow-xs'
 										: 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-								}`}
+									}`}
 							>
 								<span className="material-symbols-outlined text-[17px]">
 									task_alt
@@ -2314,11 +3188,10 @@ export default function Requests({
 								<span>Approved</span>
 								{metrics.approvedCount > 0 && (
 									<span
-										className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-											activeTab === 'approved'
+										className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${activeTab === 'approved'
 												? 'bg-white text-emerald-700'
 												: 'bg-emerald-600 text-white'
-										}`}
+											}`}
 									>
 										{metrics.approvedCount}
 									</span>
@@ -2330,11 +3203,10 @@ export default function Requests({
 						<button
 							type="button"
 							onClick={() => setActiveTab('payout-pending')}
-							className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
-								activeTab === 'payout-pending'
+							className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${activeTab === 'payout-pending'
 									? 'bg-blue-600 text-white shadow-xs'
 									: 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border border-slate-200/70'
-							}`}
+								}`}
 						>
 							<span className="material-symbols-outlined text-[17px]">
 								payments
@@ -2342,11 +3214,10 @@ export default function Requests({
 							<span>Payout Pending</span>
 							{metrics.payoutPendingCount > 0 && (
 								<span
-									className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-										activeTab === 'payout-pending'
+									className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${activeTab === 'payout-pending'
 											? 'bg-white text-blue-700'
 											: 'bg-blue-600 text-white'
-									}`}
+										}`}
 								>
 									{metrics.payoutPendingCount}
 								</span>
@@ -2357,11 +3228,10 @@ export default function Requests({
 						<button
 							type="button"
 							onClick={() => setActiveTab('others-approval')}
-							className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
-								activeTab === 'others-approval'
+							className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${activeTab === 'others-approval'
 									? 'bg-slate-900 text-white shadow-xs'
 									: 'bg-slate-100/90 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 border border-slate-200/70'
-							}`}
+								}`}
 						>
 							<span className="material-symbols-outlined text-[17px]">
 								outbox
@@ -2369,11 +3239,10 @@ export default function Requests({
 							<span>My Submissions</span>
 							{metrics.othersApprovalCount > 0 && (
 								<span
-									className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-										activeTab === 'others-approval'
+									className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold leading-none shrink-0 ${activeTab === 'others-approval'
 											? 'bg-white text-slate-900'
 											: 'bg-slate-200 text-slate-700'
-									}`}
+										}`}
 								>
 									{metrics.othersApprovalCount}
 								</span>
@@ -2465,6 +3334,365 @@ export default function Requests({
 							</button>
 						)}
 					</div>
+				) : activeTab === 'payout-pending' ? (
+					<div className="space-y-3">
+						{totalApprovablePayoutCount > 0 && (
+							<div className="flex items-center justify-between px-4 py-2.5 text-xs">
+								<label className="inline-flex items-center gap-2.5 cursor-pointer select-none font-bold text-slate-700">
+									<input
+										type="checkbox"
+										checked={isAllPayoutVisibleSelected}
+										ref={(el) => {
+											if (el) el.indeterminate = isSomePayoutVisibleSelected;
+										}}
+										onChange={handleToggleSelectAllPayouts}
+										className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+									/>
+									<span>Select All ({totalApprovablePayoutCount} {totalApprovablePayoutCount === 1 ? 'Due' : 'Dues'})</span>
+								</label>
+								{selectedPayoutDues.length > 0 && (
+									<div className="flex items-center gap-2">
+										<button
+											type="button"
+											onClick={() => setSelectedPayoutItemKeys([])}
+											className="text-[11px] font-bold text-slate-400 hover:text-slate-700 underline cursor-pointer"
+										>
+											Clear
+										</button>
+									</div>
+								)}
+							</div>
+						)}
+						{paginatedLoans.map((loan, loanIdx) => {
+							const loanKey = getLoanUniqueId(loan);
+							const clientName =
+								loan.client_account_name ||
+								loan.borrower?.name ||
+								loan.clientName ||
+								'Borrower';
+							const loanId = loan.loan_ref_id || loan.id || `JL-${loan.db_id}`;
+							const isExpanded = expandedPayoutLoanMap[loanKey] !== undefined
+								? Boolean(expandedPayoutLoanMap[loanKey])
+								: loanIdx === 0;
+							const pendingPayouts = getLoanPendingPayoutItems(
+								loan,
+								currentUser,
+								availableAccountObjects,
+								allUsers,
+								updatedPayoutKeys
+							);
+							if (pendingPayouts.length === 0) return null;
+							const firstPending = pendingPayouts[0];
+							const primaryRaw = loan.primaryAccountName || loan.primary || loan.primary_account_name || 'Primary';
+							const priAcronym = getAccountAcronym(primaryRaw, availableAccountObjects) || 'AS';
+							const secAccountsRaw = getLoanSecondaryAccounts(loan);
+							const secAcronym = secAccountsRaw.length > 0 ? (getAccountAcronym(secAccountsRaw[0], availableAccountObjects) || 'SCS') : 'SCS';
+							const priShare =
+								loan.primary_share != null
+									? Number(loan.primary_share)
+									: loan.primaryShare != null
+										? Number(loan.primaryShare)
+										: 50;
+
+							const loanApprovableKeys = pendingPayouts
+								.filter((item) => item.canCurrentUserApprove)
+								.map((item) => `${loanKey}_${item.sNo}`);
+							const hasApprovableDues = loanApprovableKeys.length > 0;
+							const isLoanAllSelected = hasApprovableDues && loanApprovableKeys.every((k) => selectedPayoutItemKeys.includes(k));
+							const isLoanSomeSelected = hasApprovableDues && loanApprovableKeys.some((k) => selectedPayoutItemKeys.includes(k)) && !isLoanAllSelected;
+
+							return (
+								<div
+									key={loanKey}
+									className={`rounded-2xl border transition-all duration-200 overflow-hidden ${
+										isExpanded
+											? 'bg-white border-blue-300 ring-2 ring-blue-100 shadow-md'
+											: 'bg-white border-slate-200 hover:border-blue-200 hover:shadow-xs'
+									}`}
+								>
+									{/* Header Row: Displays strictly Client Name, Loan ID, with who updated payout date */}
+									<div
+										onClick={() => handleToggleExpandPayout(loanKey, isExpanded)}
+										className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none group"
+										title={isExpanded ? 'Click to collapse repayment schedule' : 'Click to view repayment schedule'}
+									>
+										{/* Client Name & Loan ID */}
+										<div className="flex items-center gap-3 min-w-0">
+											<div
+												onClick={(e) => {
+													e.stopPropagation();
+													handleToggleLoanPayoutSelect(loan);
+												}}
+												className="flex items-center justify-center p-0.5"
+												title={isLoanAllSelected ? 'Deselect all dues for this loan' : 'Select all approvable dues for this loan'}
+											>
+												<input
+													type="checkbox"
+													checked={isLoanAllSelected}
+													ref={(el) => {
+														if (el) el.indeterminate = isLoanSomeSelected;
+													}}
+													disabled={!hasApprovableDues}
+													onChange={() => handleToggleLoanPayoutSelect(loan)}
+													className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+												/>
+											</div>
+
+											<div className="min-w-0">
+												<div className="flex items-center gap-2 flex-wrap">
+													<h3 className="text-[12px] font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors truncate">
+														{clientName}
+													</h3>
+													<span className="font-mono text-[10px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200 shrink-0">
+														{loanId}
+													</span>
+													{pendingPayouts.length > 0 && (
+														<span
+															className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200 shrink-0"
+															title={`${pendingPayouts.length} payout pending ${pendingPayouts.length === 1 ? 'EMI' : 'EMIs'}`}
+														>
+															<span>{pendingPayouts.length} Approval Pending</span>
+														</span>
+													)}
+												</div>
+											</div>
+										</div>
+
+										{/* Who Updated Payout Date & Expand Indicator */}
+										<div className="flex items-center sm:justify-end gap-3 pl-12 sm:pl-0 flex-wrap">
+											{firstPending ? (
+												<div className="flex flex-col sm:items-end gap-1">
+													<div className="flex items-center gap-1.5 flex-wrap">
+														<div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 px-2.5 py-1 rounded-lg">
+															<span className="material-symbols-outlined text-blue-600" style={{fontSize: "18px"}}>person</span>
+															<span className="text-[12px] font-bold text-slate-800">{firstPending.updatedBy}</span>
+															{firstPending.isCurrentUserEditor && (
+																<span className="text-[10px] text-blue-700 font-extrabold bg-blue-100 px-1.5 py-0.2 rounded">
+																	You
+																</span>
+															)}
+														</div>
+													</div>
+												</div>
+											) : (
+												<span className="text-xs text-slate-400 italic">Payout date updated</span>
+											)}
+											<span
+												className={`material-symbols-outlined text-slate-400 text-[20px] transition-transform duration-200 shrink-0 ${
+													isExpanded ? 'rotate-180 text-blue-600' : 'group-hover:text-slate-600'
+												}`}
+											>
+												expand_more
+											</span>
+										</div>
+									</div>
+
+									{/* Expandable Dropdown: Repayment Schedule of Pending Payout Date EMIs */}
+									{isExpanded && (
+										<div className="border-t border-blue-100 bg-gradient-to-b from-blue-50/30 via-white to-slate-50/50 p-4 sm:p-5 space-y-4 animate-in fade-in-50 duration-200">
+
+											{/* Repayment Schedule Table */}
+											<div className="bg-white rounded-2xl border border-slate-200 overflow-x-auto min-h-[80px] shadow-2xs">
+													<table className="w-full text-left text-xs border-collapse">
+														<thead>
+															<tr className="bg-slate-100/80 text-[10.5px] font-bold uppercase tracking-wider text-slate-600 border-b border-slate-200">
+																<th className="py-2.5 px-3 text-center whitespace-nowrap w-8"></th>
+																<th className="py-2.5 px-3 text-center whitespace-nowrap">EMI</th>
+																<th className="py-2.5 px-3 whitespace-nowrap">Date</th>
+																<th className="py-2.5 px-3 text-right whitespace-nowrap">Amount</th>
+																<th className="py-2.5 px-3 whitespace-nowrap">Recd Date</th>
+																<th className="py-2.5 px-3 text-right whitespace-nowrap">{priAcronym}</th>
+																<th className="py-2.5 px-3 text-center min-w-[155px] whitespace-nowrap">Payout Date</th>
+																<th className="py-2.5 px-3 text-right whitespace-nowrap">{secAcronym}</th>
+																<th className="py-2.5 px-3 text-center whitespace-nowrap">{secAcronym} TDS</th>
+																<th className="py-2.5 px-3 whitespace-nowrap text-center">Action</th>
+															</tr>
+														</thead>
+														<tbody className="divide-y divide-slate-100">
+															{pendingPayouts.map((item, pIdx) => {
+																const raw = item.rawInst || {};
+																const totalAmount = Number(item.amount || raw.amount || 0);
+																const priAmount =
+																	raw.priAmount != null
+																		? Number(raw.priAmount)
+																		: raw.primaryAmount != null
+																			? Number(raw.primaryAmount)
+																			: Math.round((totalAmount * priShare) / 100);
+
+																const firstSecAcc = Array.isArray(raw.secAccounts) ? raw.secAccounts[0] : null;
+																const secAmount = getPayoutItemSecondaryAmount(item, loan);
+
+																const tdsAmount =
+																	firstSecAcc?.tds != null
+																		? Number(firstSecAcc.tds)
+																		: raw.tds != null
+																			? Number(raw.tds)
+																			: 0;
+
+																const recdDate = item.recdDate && item.recdDate !== '-' ? item.recdDate : (raw.receivedDate || '-');
+																const emiDate = raw.date || raw.dueDate || item.dueDate || '-';
+																const sNoDisplay = item.sNo != null ? item.sNo : (raw.sNo || pIdx + 1);
+																const effectiveMinDate = (recdDate && recdDate !== '-') ? recdDate : (emiDate && emiDate !== '-' ? emiDate : '');
+
+																const itemKey = `${loanKey}_${item.sNo}`;
+																const isSelected = selectedPayoutItemKeys.includes(itemKey);
+																const canApprove = Boolean(item.canCurrentUserApprove);
+																const currentPayoutDate = payoutDateOverrides[itemKey] !== undefined
+																	? payoutDateOverrides[itemKey]
+																	: (item.payoutDate && item.payoutDate !== '-' ? item.payoutDate : '');
+
+																const isUserPri = checkUserHasPrimaryAccessForLoanPrimary(currentUser, loan, availableAccountObjects);
+																const isUserSec = checkUserHasPrimaryAccessForLoanSecondary(currentUser, loan, availableAccountObjects);
+																const canEditPayoutDate = Boolean(isAdmin || isUserPri || isUserSec || item.canCurrentUserApprove || item.isCurrentUserEditor);
+
+																const sameDay = getOffsetDateDDMMYYYY(effectiveMinDate, 0);
+																const nextDay = getOffsetDateDDMMYYYY(effectiveMinDate, 1);
+																const todayDate = getTodayDDMMYYYY();
+																const isTodayPastOfRecd = isDateBefore(todayDate, effectiveMinDate);
+
+																const payoutSuggestions =
+																	canEditPayoutDate && effectiveMinDate && parseDDMMYYYY(effectiveMinDate)
+																		? [
+																			{
+																				date: sameDay,
+																				label: 'Same Day',
+																				badgeClass: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
+																			},
+																			{
+																				date: nextDay,
+																				label: 'Next Day',
+																				badgeClass: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200',
+																			},
+																			{
+																				date: todayDate,
+																				label: 'Today',
+																				badgeClass: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200',
+																				disabled: isTodayPastOfRecd,
+																				tooltip: isTodayPastOfRecd
+																					? `Today (${todayDate}) is earlier than Recd Date (${effectiveMinDate})`
+																					: '',
+																			},
+																		]
+																		: null;
+
+																return (
+																	<tr key={pIdx} className={`transition-colors ${isSelected ? 'bg-blue-50/70' : 'hover:bg-blue-50/30'}`}>
+																		<td className="py-2.5 px-3 whitespace-nowrap text-center" onClick={(e) => e.stopPropagation()}>
+																			<input
+																				type="checkbox"
+																				checked={isSelected}
+																				disabled={!canApprove}
+																				onChange={() => handleTogglePayoutItemSelect(itemKey)}
+																				className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+																				title={canApprove ? 'Select for batch approval/rejection' : 'Awaiting partner authorization'}
+																			/>
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap text-center">
+																			<span className="font-extrabold text-[11px] px-2 py-0.5 rounded-md text-slate-400">
+																				#{sNoDisplay}
+																			</span>
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap font-medium text-slate-600">
+																			{emiDate}
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap font-extrabold text-slate-900 font-mono text-right">
+																			{formatCurrency(totalAmount)}
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap font-medium text-slate-600">
+																			{recdDate}
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap font-bold text-blue-900 font-mono text-right">
+																			{formatCurrency(priAmount)}
+																		</td>
+																		<td className="py-2 px-3 whitespace-nowrap text-center">
+																			<div className="inline-flex flex-col items-center justify-center">
+																				<EditableDateCell
+																					id={`req-payout-${loanKey}-${item.sNo}`}
+																					value={currentPayoutDate}
+																					minDate={effectiveMinDate}
+																					minDateLabel="Recd Date"
+																					disabled={!canEditPayoutDate}
+																					tooltip={
+																						!canEditPayoutDate
+																							? 'You do not have permission to edit this payout date'
+																							: (effectiveMinDate && effectiveMinDate !== '-'
+																								? `Payout date cannot be earlier than client receipt date (${effectiveMinDate})`
+																								: 'Edit payout date')
+																					}
+																					suggestions={payoutSuggestions}
+																					openUpward="auto"
+																					align="right"
+																					onChange={(newVal) => handlePayoutDateChange(loan, item, newVal)}
+																					onEnter={() => handlePayoutDateEnter(pIdx, pendingPayouts, loanKey)}
+																					placeholder="dd-mm-yyyy"
+																				/>
+																			</div>
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap font-bold text-purple-900 font-mono text-right">
+																			{formatCurrency(secAmount)}
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap text-center font-mono">
+																			{tdsAmount > 0 ? (
+																				<span className="font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded ring-1 ring-amber-200/70 text-[11px]">
+																					{formatCurrency(tdsAmount)}
+																				</span>
+																			) : (
+																				<span className="text-slate-400 text-xs">-</span>
+																			)}
+																		</td>
+																		<td className="py-2.5 px-3 whitespace-nowrap text-center">
+																			{item.canCurrentUserApprove ? (
+																				<div className="flex items-center justify-center gap-1.5">
+																					<button
+																						type="button"
+																						disabled={isSubmittingPayout}
+																						onClick={(e) => {
+																							e.stopPropagation();
+																							handleDirectApprovePayout(loan, item);
+																						}}
+																						className="inline-flex items-center gap-1 p-1 rounded-lg text-xs font-bold text-emerald-600 bg-emerald-100 hover:bg-emerald-200 ring-1 ring-emerald-600 shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+																						title="Confirm remittance and approve payout date"
+																					>
+																						{isSubmittingPayout && submittingPayoutSNo === item.sNo ? (
+																							<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+																						) : (
+																							<span className="material-symbols-outlined" style={{fontSize: "16px"}}>check</span>
+																						)}
+																					</button>
+																					<button
+																						type="button"
+																						disabled={isSubmittingPayout}
+																						onClick={(e) => {
+																							e.stopPropagation();
+																							handleOpenRejectPayoutModal(loan, item);
+																						}}
+																						className="inline-flex items-center gap-1 p-1 rounded-lg text-xs font-bold text-rose-600 bg-rose-100 hover:bg-rose-200 ring-1 ring-rose-600 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+																						title="Flag discrepancy / reject payout date"
+																					>
+																						<span className="material-symbols-outlined" style={{fontSize: "16px"}}>close</span>
+																					</button>
+																				</div>
+																			) : (
+																				<span className="text-[11px] text-slate-400 font-medium italic">
+																					Awaiting {item.targetRole}
+																				</span>
+																			)}
+																		</td>
+																	</tr>
+																);
+															})}
+														</tbody>
+													</table>
+												</div>
+										</div>
+									)}
+								</div>
+							);
+						})}
+
+						{/* Pagination Controls for Payout Pending */}
+						{renderPagination(false)}
+					</div>
 				) : (
 					<div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-2xs">
 						<table className="w-full text-left border-collapse">
@@ -2485,29 +3713,15 @@ export default function Requests({
 										</th>
 									)}
 									<th className="py-3.5 px-4 whitespace-nowrap w-14 text-center">S.No</th>
-									{activeTab === 'payout-pending' ? (
-										<>
-											<th className="py-3.5 px-4 whitespace-nowrap">Loan ID</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Client Name</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Pending EMI(s)</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Updated Payout Date By</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Awaiting Approval From</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Primary</th>
-											<th className="py-3.5 px-4 whitespace-nowrap text-center">Action</th>
-										</>
-									) : (
-										<>
-											<th className="py-3.5 px-4 whitespace-nowrap">Loan Date</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Loan ID</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Client Name</th>
-											{activeTab !== 'others-approval' && (
-												<th className="py-3.5 px-4 whitespace-nowrap">Requester</th>
-											)}
-											<th className="py-3.5 px-4 whitespace-nowrap">Amount</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Primary</th>
-											<th className="py-3.5 px-4 whitespace-nowrap">Status</th>
-										</>
+									<th className="py-3.5 px-4 whitespace-nowrap">Loan Date</th>
+									<th className="py-3.5 px-4 whitespace-nowrap">Loan ID</th>
+									<th className="py-3.5 px-4 whitespace-nowrap">Client Name</th>
+									{activeTab !== 'others-approval' && (
+										<th className="py-3.5 px-4 whitespace-nowrap">Requester</th>
 									)}
+									<th className="py-3.5 px-4 whitespace-nowrap">Amount</th>
+									<th className="py-3.5 px-4 whitespace-nowrap">Primary</th>
+									<th className="py-3.5 px-4 whitespace-nowrap">Status</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
@@ -2534,25 +3748,21 @@ export default function Requests({
 										'-';
 									const amount = loan.loan_amount || loan.amount || 0;
 
-									// Status values: Pending, Approved (or Rejected)
 									const isApproved = meta.isApproved;
 									const isRejected = meta.isRejected;
 
-									const pendingPayouts = activeTab === 'payout-pending'
-										? getLoanPendingPayoutItems(loan, currentUser, availableAccountObjects, allUsers)
-										: [];
-
 									return (
 										<tr
-											key={loan.id || loan.db_id || idx}
+											key={loanKey}
 											onClick={() => setSelectedLoan(loan)}
 											title="Click to view loan details and approve/reject"
-											className={`cursor-pointer transition-colors group ${isSelected
+											className={`cursor-pointer transition-colors group ${
+												isSelected
 													? 'bg-amber-50/80 hover:bg-amber-100/70'
 													: meta.needsUserAction
 														? 'bg-amber-50/20 hover:bg-amber-50/60'
 														: 'hover:bg-slate-50'
-												}`}
+											}`}
 										>
 											{isPendingTab && (
 												<td
@@ -2575,346 +3785,104 @@ export default function Requests({
 												</td>
 											)}
 
-											{/* 1. S.No */}
+											{/* S.No */}
 											<td className="py-2.5 px-4 text-center text-xs font-bold text-slate-500">
 												{startIndex + idx + 1}
 											</td>
 
-											{activeTab === 'payout-pending' ? (
-												<>
-													{/* 2. Loan ID & Loan Date */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														<span className="font-mono text-[11px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-															{loanId}
-														</span>
-														<div className="text-[11px] text-slate-500 font-medium mt-0.5">
-															{formatLoanDate(
-																loan.loan_date ||
-																loan.appliedDate ||
-																loan.loanDate ||
-																loan.date ||
-																loan.applied_date
-															)}
-														</div>
-													</td>
+											{/* Loan Date */}
+											<td className="py-2.5 px-4 whitespace-nowrap text-xs font-semibold text-slate-600">
+												{formatLoanDate(
+													loan.loan_date ||
+													loan.appliedDate ||
+													loan.loanDate ||
+													loan.date ||
+													loan.applied_date
+												)}
+											</td>
 
-													{/* 3. Client Name & Facility Amount */}
-													<td className="py-3 px-4">
-														<div className="font-extrabold text-[13px] text-slate-900 group-hover:text-primary transition-colors">
-															{clientName}
-														</div>
-														<div className="text-[11px] text-slate-500 font-medium">
-															Facility: <span className="font-bold text-slate-700">{formatCurrency(amount)}</span>
-														</div>
-													</td>
+											{/* Loan ID */}
+											<td className="py-3 px-4 whitespace-nowrap">
+												<span className="font-mono text-[11px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+													{loanId}
+												</span>
+											</td>
 
-													{/* 4. Pending EMI(s) */}
-													<td className="py-3 px-4">
-														<div className="flex flex-col gap-1.5 min-w-[210px]">
-															{pendingPayouts.length > 0 ? (
-																pendingPayouts.map((item, pIdx) => (
-																	<div key={pIdx} className="inline-flex items-center gap-1.5 flex-wrap">
-																		<span className="font-extrabold text-[11px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200/90 shrink-0">
-																			{item.label}
-																		</span>
-																		<span className="font-black text-[12px] text-slate-900 shrink-0">
-																			{formatCurrency(item.amount)}
-																		</span>
-																		<span
-																			className="text-[10.5px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200/80 inline-flex items-center gap-0.5 shrink-0"
-																			title={`Original Due: ${item.dueDate}${item.recdDate && item.recdDate !== '-' ? `, Recd Date: ${item.recdDate}` : ''}`}
-																		>
-																			<span className="material-symbols-outlined text-[12px]">calendar_month</span>
-																			Payout: {item.payoutDate}
-																		</span>
-																	</div>
-																))
-															) : (
-																<span className="text-xs text-slate-400 italic">Facility Payout Pending</span>
-															)}
-														</div>
-													</td>
+											{/* Client Name */}
+											<td className="py-3 px-4">
+												<div className="font-extrabold text-[13px] text-slate-900 group-hover:text-primary transition-colors flex items-center gap-1.5">
+													<span>{clientName}</span>
+												</div>
+											</td>
 
-													{/* 5. Updated Payout Date By */}
-													<td className="py-3 px-4">
-														<div className="flex flex-col gap-1.5 min-w-[190px]">
-															{pendingPayouts.map((item, pIdx) => (
-																<div key={pIdx} className="space-y-0.5">
-																	<div className="flex items-center gap-1 text-xs">
-																		<span className="font-bold text-slate-800">
-																			{item.updatedBy}
-																		</span>
-																		{item.isCurrentUserEditor && (
-																			<span className="text-[10px] text-primary font-extrabold bg-primary/10 px-1.5 py-0.2 rounded">
-																				You
-																			</span>
-																		)}
-																		<span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
-																			{item.updatedRole}
-																		</span>
-																	</div>
-																	{item.updatedAt && (
-																		<div className="text-[10.5px] text-slate-400 font-mono">
-																			{item.updatedAt}
-																		</div>
-																	)}
-																</div>
-															))}
-														</div>
-													</td>
-
-													{/* 6. Awaiting Approval From */}
-													<td className="py-3 px-4">
-														<div className="flex flex-col gap-1.5 min-w-[210px]">
-															{pendingPayouts.map((item, pIdx) => (
-																<div key={pIdx} className="space-y-1">
-																	<div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-																		<span>{item.approverDisplay}</span>
-																	</div>
-																	{item.canCurrentUserApprove ? (
-																		<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300">
-																			<span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-																			Awaiting Your Approval
-																		</span>
-																	) : (
-																		<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-																			Awaiting Partner Approval
-																		</span>
-																	)}
-																</div>
-															))}
-														</div>
-													</td>
-
-													{/* 7. Primary */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														<span
-															title={primaryName}
-															className={`inline-block font-extrabold text-[10.5px] px-2 py-0.5 rounded-md uppercase tracking-wider ring-1 ${getAccountTagColor(
-																primaryAcronym,
-																availableAccountObjects
-															)}`}
-														>
-															{primaryAcronym}
-														</span>
-													</td>
-
-													{/* 8. Action */}
-													<td className="py-3 px-4 whitespace-nowrap text-center" onClick={(e) => e.stopPropagation()}>
-														<button
-															type="button"
-															onClick={() => setSelectedLoan(loan)}
-															className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200/90 transition-all active:scale-95 cursor-pointer shadow-2xs"
-														>
-															<span>Review</span>
-															<span className="material-symbols-outlined text-[15px]">arrow_forward</span>
-														</button>
-													</td>
-												</>
-											) : (
-												<>
-													{/* 2. Loan Date */}
-													<td className="py-2.5 px-4 whitespace-nowrap text-xs font-semibold text-slate-600">
-														{formatLoanDate(
-															loan.loan_date ||
-															loan.appliedDate ||
-															loan.loanDate ||
-															loan.date ||
-															loan.applied_date
-														)}
-													</td>
-
-													{/* 3. Loan ID */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														<span className="font-mono text-[11px] font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-															{loanId}
-														</span>
-													</td>
-
-													{/* 4. Client Name */}
-													<td className="py-3 px-4">
-														<div className="font-extrabold text-[13px] text-slate-900 group-hover:text-primary transition-colors flex items-center gap-1.5">
-															<span>{clientName}</span>
-														</div>
-													</td>
-
-													{/* 4. Requester Name (Hidden in My Submissions since logged-in user is the requester) */}
-													{activeTab !== 'others-approval' && (
-														<td className="py-3 px-4 whitespace-nowrap text-xs font-semibold text-slate-700">
-															<div className="flex items-center gap-1.5 capitalize">
-																<span>{requesterName}</span>
-															</div>
-														</td>
-													)}
-
-													{/* 5. Amount */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														<div className="font-extrabold text-[13.5px] text-slate-900">
-															{formatCurrency(amount)}
-														</div>
-													</td>
-
-													{/* 6. Primary (Acronym with tag) */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														<span
-															title={primaryName}
-															className={`inline-block font-extrabold text-[10.5px] px-2 py-0.5 rounded-md uppercase tracking-wider ring-1 ${getAccountTagColor(
-																primaryAcronym,
-																availableAccountObjects
-															)}`}
-														>
-															{primaryAcronym}
-														</span>
-													</td>
-
-													{/* 6. Status: pending, approved, rejected, payout pending */}
-													<td className="py-3 px-4 whitespace-nowrap">
-														{activeTab === 'payout-pending' || (isUserPayoutPendingLoan(loan, currentUser, availableAccountObjects) && !isApproved && !isRejected) ? (
-															<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-300">
-																<span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-																Payout Pending
-															</span>
-														) : isApproved ? (
-															<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-																<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-																Approved
-															</span>
-														) : isRejected ? (
-															<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
-																<span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-																Rejected
-															</span>
-														) : (loan.approval_status === 'PENDING_ADMIN' || loan.approvalStatus === 'PENDING_ADMIN') ? (
-															<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-100 text-teal-800 border border-teal-300" title="Secondary verification approved. Awaiting final Admin authorization.">
-																<span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-																Verified (Pending Admin)
-															</span>
-														) : (
-															<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-																<span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-																Pending
-															</span>
-														)}
-													</td>
-												</>
+											{/* Requester Name */}
+											{activeTab !== 'others-approval' && (
+												<td className="py-3 px-4 whitespace-nowrap text-xs font-semibold text-slate-700">
+													<div className="flex items-center gap-1.5 capitalize">
+														<span>{requesterName}</span>
+													</div>
+												</td>
 											)}
+
+											{/* Amount */}
+											<td className="py-3 px-4 whitespace-nowrap">
+												<div className="font-extrabold text-[13.5px] text-slate-900">
+													{formatCurrency(amount)}
+												</div>
+											</td>
+
+											{/* Primary */}
+											<td className="py-3 px-4 whitespace-nowrap">
+												<span
+													title={primaryName}
+													className={`inline-block font-extrabold text-[10.5px] px-2 py-0.5 rounded-md uppercase tracking-wider ring-1 ${getAccountTagColor(
+														primaryAcronym,
+														availableAccountObjects
+													)}`}
+												>
+													{primaryAcronym}
+												</span>
+											</td>
+
+											{/* Status */}
+											<td className="py-3 px-4 whitespace-nowrap">
+												{isApproved ? (
+													<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+														<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+														Approved
+													</span>
+												) : isRejected ? (
+													<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+														<span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+														Rejected
+													</span>
+												) : (loan.approval_status === 'PENDING_ADMIN' || loan.approvalStatus === 'PENDING_ADMIN') ? (
+													<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-100 text-teal-800 border border-teal-300" title="Secondary verification approved. Awaiting final Admin authorization.">
+														<span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+														Verified (Pending Admin)
+													</span>
+												) : (
+													<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+														<span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+														Pending
+													</span>
+												)}
+											</td>
 										</tr>
 									);
 								})}
 							</tbody>
 						</table>
 
-						{/* Pagination Footer (Matching JointLoan.jsx style) */}
-						<div className="border-t border-slate-100 px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50/50 rounded-b-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 select-none">
-							{/* Left: Summary Count */}
-							<div className="flex items-center gap-2 text-slate-500 font-medium text-center sm:text-left">
-								<span>
-									Showing{' '}
-									<span className="font-bold text-slate-900">
-										{totalItems === 0 ? 0 : startIndex + 1}
-									</span>{' '}
-									to <span className="font-bold text-slate-900">{endIndex}</span> of{' '}
-									<span className="font-bold text-slate-900">{totalItems}</span> loans
-								</span>
-								{totalItems !== tabLoans.length && (
-									<span className="text-[11px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full ring-1 ring-slate-200/70">
-										{tabLoans.length} total
-									</span>
-								)}
-							</div>
-
-							{/* Right: Page Navigation Buttons */}
-							<div className="flex items-center gap-1">
-								{/* First Page */}
-								<button
-									type="button"
-									onClick={() => setCurrentPage(1)}
-									disabled={currentPage === 1}
-									className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-									title="First page"
-									aria-label="First page"
-								>
-									<span className="material-symbols-outlined text-[18px]">first_page</span>
-								</button>
-
-								{/* Previous Page */}
-								<button
-									type="button"
-									onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-									disabled={currentPage === 1}
-									className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-									title="Previous page"
-									aria-label="Previous page"
-								>
-									<span className="material-symbols-outlined text-[18px]">chevron_left</span>
-								</button>
-
-								{/* Numeric Page Buttons */}
-								<div className="flex items-center gap-1 mx-0.5">
-									{getPageNumbers().map((page, pIdx) => {
-										if (page === '...') {
-											return (
-												<span
-													key={`ellipsis-${pIdx}`}
-													className="h-8 w-6 flex items-center justify-center text-slate-400 font-bold text-[12px]"
-												>
-													…
-												</span>
-											);
-										}
-										const isCurrent = page === currentPage;
-										return (
-											<button
-												key={page}
-												type="button"
-												onClick={() => setCurrentPage(page)}
-												aria-label={`Page ${page}`}
-												aria-current={isCurrent ? 'page' : undefined}
-												className={`h-8 min-w-[32px] px-2 flex items-center justify-center rounded-xl text-[12px] font-bold transition-all active:scale-95 cursor-pointer ${
-													isCurrent
-														? 'bg-primary text-white shadow-xs'
-														: 'text-slate-700 hover:text-slate-900 hover:bg-white'
-												}`}
-											>
-												{page}
-											</button>
-										);
-									})}
-								</div>
-
-								{/* Next Page */}
-								<button
-									type="button"
-									onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-									disabled={currentPage === totalPages || totalItems === 0}
-									className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-									title="Next page"
-									aria-label="Next page"
-								>
-									<span className="material-symbols-outlined text-[18px]">chevron_right</span>
-								</button>
-
-								{/* Last Page */}
-								<button
-									type="button"
-									onClick={() => setCurrentPage(totalPages)}
-									disabled={currentPage === totalPages || totalItems === 0}
-									className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
-									title="Last page"
-									aria-label="Last page"
-								>
-									<span className="material-symbols-outlined text-[18px]">last_page</span>
-								</button>
-							</div>
-						</div>
+						{/* Pagination Footer */}
+						{renderPagination(true)}
 					</div>
-
 				)}
 			</div>
 
 			{/* Full Loan Inspection Modal */}
 			{selectedLoan && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
+				<div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-3 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
 					<div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl ring-1 ring-slate-200 max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
 						{/* Modal Header (Fixed at top) */}
 						<div className="flex items-start justify-between px-6 sm:px-7 pt-6 pb-4 border-b border-slate-100 shrink-0 bg-white">
@@ -2945,492 +3913,490 @@ export default function Requests({
 						<div className="px-6 sm:px-7 py-5 overflow-y-auto flex-1 flex flex-col gap-5 min-h-0">
 							{/* Highlights Grid */}
 							<div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-							<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
-								<span className="text-[11px] font-bold text-slate-400 uppercase">Loan Amount</span>
-								<div className="text-[16px] font-black text-slate-900 mt-0.5">
-									{formatCurrency(selectedLoan.loan_amount || selectedLoan.amount)}
-								</div>
-							</div>
-							<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
-								<span className="text-[11px] font-bold text-slate-400 uppercase">Interest Rate</span>
-								<div className="text-[16px] font-black text-slate-900 mt-0.5">
-									{getLoanInterestRateDisplay(selectedLoan)}
-								</div>
-							</div>
-							<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
-								<span className="text-[11px] font-bold text-slate-400 uppercase">Total Due</span>
-								<div className="text-[16px] font-black text-slate-900 mt-0.5">
-									{getLoanTotalDuesDisplay(selectedLoan)}
-								</div>
-							</div>
-							<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
-								<span className="text-[11px] font-bold text-slate-400 uppercase">Total Repayment</span>
-								<div className="text-[16px] font-black text-slate-900 mt-0.5">
-									{getLoanTotalRepayment(selectedLoan)}
-								</div>
-							</div>
-						</div>
-
-						{/* Dedicated Pending Payout Approvals Breakdown Card */}
-						{(() => {
-							const modalPayouts = getLoanPendingPayoutItems(selectedLoan, currentUser, availableAccountObjects, allUsers);
-							if (modalPayouts.length === 0) return null;
-							return (
-								<div className="bg-gradient-to-br from-blue-50/70 via-slate-50 to-indigo-50/40 rounded-2xl border border-blue-200/90 p-4 space-y-3">
-									<div className="flex items-center justify-between">
-										<div className="flex items-center gap-2">
-											<div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-												<span className="material-symbols-outlined text-[18px]">payments</span>
-											</div>
-											<div>
-												<h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
-													Pending EMI Payout Approvals
-												</h4>
-												<p className="text-[11px] text-slate-500">
-													{modalPayouts.length} EMI installment{modalPayouts.length > 1 ? 's' : ''} awaiting remittance payout authorization
-												</p>
-											</div>
-										</div>
-										{onNavigateToJointLoan && (
-											<button
-												type="button"
-												onClick={() => {
-													const target = selectedLoan;
-													setSelectedLoan(null);
-													onNavigateToJointLoan(target);
-												}}
-												className="px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 bg-white border border-blue-200 rounded-xl transition-all inline-flex items-center gap-1 cursor-pointer shadow-2xs"
-											>
-												<span className="material-symbols-outlined text-[14px]">open_in_new</span>
-												<span>Facility Schedule</span>
-											</button>
-										)}
+								<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
+									<span className="text-[11px] font-bold text-slate-400 uppercase">Loan Amount</span>
+									<div className="text-[16px] font-black text-slate-900 mt-0.5">
+										{formatCurrency(selectedLoan.loan_amount || selectedLoan.amount)}
 									</div>
+								</div>
+								<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
+									<span className="text-[11px] font-bold text-slate-400 uppercase">Interest Rate</span>
+									<div className="text-[16px] font-black text-slate-900 mt-0.5">
+										{getLoanInterestRateDisplay(selectedLoan)}
+									</div>
+								</div>
+								<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
+									<span className="text-[11px] font-bold text-slate-400 uppercase">Total Due</span>
+									<div className="text-[16px] font-black text-slate-900 mt-0.5">
+										{getLoanTotalDuesDisplay(selectedLoan)}
+									</div>
+								</div>
+								<div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
+									<span className="text-[11px] font-bold text-slate-400 uppercase">Total Repayment</span>
+									<div className="text-[16px] font-black text-slate-900 mt-0.5">
+										{getLoanTotalRepayment(selectedLoan)}
+									</div>
+								</div>
+							</div>
 
-									<div className="grid grid-cols-1 gap-2.5">
-										{modalPayouts.map((item, pIdx) => (
-											<div
-												key={pIdx}
-												className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-											>
-												<div className="flex items-start sm:items-center gap-3">
-													<div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 flex flex-col items-center justify-center shrink-0">
-														<span className="text-[8.5px] font-black uppercase text-amber-600">EMI</span>
-														<span className="text-sm font-black text-amber-900 leading-none">#{item.sNo}</span>
-													</div>
-													<div className="space-y-0.5">
-														<div className="flex flex-wrap items-center gap-2">
-															<span className="font-black text-slate-900 text-[13px]">
-																{formatCurrency(item.amount)}
-															</span>
-															<span className="text-[11px] text-slate-400">•</span>
-															<span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/70 inline-flex items-center gap-1">
-																<span className="material-symbols-outlined text-[13px]">calendar_month</span>
-																Requested Payout: {item.payoutDate}
-															</span>
-															{item.recdDate && item.recdDate !== '-' && (
-																<span className="text-[11px] text-slate-500 font-medium">
-																	(Payment Recd: {item.recdDate})
-																</span>
-															)}
-														</div>
-														<div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-															<span>
-																Payout date updated by: <strong className="text-slate-800">{item.updatedBy}</strong>
-																<span className="text-slate-500 font-normal"> ({item.updatedRole})</span>
-																{item.isCurrentUserEditor && <span className="text-primary font-bold ml-1">(You)</span>}
-																{item.updatedAt && <span className="text-slate-400 font-mono text-[10px] ml-1">• {item.updatedAt}</span>}
-															</span>
-														</div>
-														<div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-1.5">
-															<span>Approver:</span>
-															<strong className="text-slate-800">{item.approverDisplay}</strong>
-															{item.canCurrentUserApprove ? (
-																<span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 ml-1">
-																	<span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-																	You can approve
-																</span>
-															) : (
-																<span className="text-[10px] text-slate-400 font-medium ml-1">
-																	(Awaiting partner action)
-																</span>
-															)}
-														</div>
-													</div>
+							{/* Dedicated Pending Payout Approvals Breakdown Card */}
+							{(() => {
+								const modalPayouts = getLoanPendingPayoutItems(selectedLoan, currentUser, availableAccountObjects, allUsers, updatedPayoutKeys);
+								if (modalPayouts.length === 0) return null;
+								return (
+									<div className="bg-gradient-to-br from-blue-50/70 via-slate-50 to-indigo-50/40 rounded-2xl border border-blue-200/90 p-4 space-y-3">
+										<div className="flex items-center justify-between">
+											<div className="flex items-center gap-2">
+												<div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+													<span className="material-symbols-outlined text-[18px]">payments</span>
 												</div>
-
-												{item.canCurrentUserApprove && item.rawInst && (
-													<div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-														<button
-															type="button"
-															disabled={isSubmittingPayout}
-															onClick={() => handleDirectApprovePayout(selectedLoan, item)}
-															className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-															title="Confirm remittance and approve payout date"
-														>
-															{isSubmittingPayout && submittingPayoutSNo === item.sNo ? (
-																<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-															) : (
-																<span className="material-symbols-outlined text-[15px]">check_circle</span>
-															)}
-															<span>Approve Payout</span>
-														</button>
-														<button
-															type="button"
-															disabled={isSubmittingPayout}
-															onClick={() => handleOpenRejectPayoutModal(selectedLoan, item)}
-															className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-															title="Flag discrepancy / reject payout date"
-														>
-															<span className="material-symbols-outlined text-[15px]">cancel</span>
-															<span>Reject</span>
-														</button>
-													</div>
-												)}
+												<div>
+													<h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+														Pending EMI Payout Approvals
+													</h4>
+													<p className="text-[11px] text-slate-500">
+														{modalPayouts.length} EMI installment{modalPayouts.length > 1 ? 's' : ''} awaiting remittance payout authorization
+													</p>
+												</div>
 											</div>
-										))}
+											{onNavigateToJointLoan && (
+												<button
+													type="button"
+													onClick={() => {
+														const target = selectedLoan;
+														setSelectedLoan(null);
+														onNavigateToJointLoan(target);
+													}}
+													className="px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 bg-white border border-blue-200 rounded-xl transition-all inline-flex items-center gap-1 cursor-pointer shadow-2xs"
+												>
+													<span className="material-symbols-outlined text-[14px]">open_in_new</span>
+													<span>Facility Schedule</span>
+												</button>
+											)}
+										</div>
+
+										<div className="grid grid-cols-1 gap-2.5">
+											{modalPayouts.map((item, pIdx) => (
+												<div
+													key={pIdx}
+													className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+												>
+													<div className="flex items-start sm:items-center gap-3">
+														<div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 flex flex-col items-center justify-center shrink-0">
+															<span className="text-[8.5px] font-black uppercase text-amber-600">EMI</span>
+															<span className="text-sm font-black text-amber-900 leading-none">#{item.sNo}</span>
+														</div>
+														<div className="space-y-0.5">
+															<div className="flex flex-wrap items-center gap-2">
+																<span className="font-black text-slate-900 text-[13px]">
+																	{formatCurrency(item.amount)}
+																</span>
+																<span className="text-[11px] text-slate-400">•</span>
+																<span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/70 inline-flex items-center gap-1">
+																	<span className="material-symbols-outlined text-[13px]">calendar_month</span>
+																	Requested Payout: {item.payoutDate}
+																</span>
+																{item.recdDate && item.recdDate !== '-' && (
+																	<span className="text-[11px] text-slate-500 font-medium">
+																		(Payment Recd: {item.recdDate})
+																	</span>
+																)}
+															</div>
+															<div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+																<span>
+																	Payout date updated by: <strong className="text-slate-800">{item.updatedBy}</strong>
+																	<span className="text-slate-500 font-normal"> ({item.updatedRole})</span>
+																	{item.isCurrentUserEditor && <span className="text-primary font-bold ml-1">(You)</span>}
+																	{item.updatedAt && <span className="text-slate-400 font-mono text-[10px] ml-1">• {item.updatedAt}</span>}
+																</span>
+															</div>
+															<div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-1.5">
+																<span>Approver:</span>
+																<strong className="text-slate-800">{item.approverDisplay}</strong>
+																{item.canCurrentUserApprove ? (
+																	<span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 ml-1">
+																		<span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+																		You can approve
+																	</span>
+																) : (
+																	<span className="text-[10px] text-slate-400 font-medium ml-1">
+																		(Awaiting partner action)
+																	</span>
+																)}
+															</div>
+														</div>
+													</div>
+
+													{item.canCurrentUserApprove && item.rawInst && (
+														<div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+															<button
+																type="button"
+																disabled={isSubmittingPayout}
+																onClick={() => handleDirectApprovePayout(selectedLoan, item)}
+																className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+																title="Confirm remittance and approve payout date"
+															>
+																{isSubmittingPayout && submittingPayoutSNo === item.sNo ? (
+																	<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+																) : (
+																	<span className="material-symbols-outlined text-[15px]">check_circle</span>
+																)}
+																<span>Approve Payout</span>
+															</button>
+															<button
+																type="button"
+																disabled={isSubmittingPayout}
+																onClick={() => handleOpenRejectPayoutModal(selectedLoan, item)}
+																className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+																title="Flag discrepancy / reject payout date"
+															>
+																<span className="material-symbols-outlined text-[15px]">cancel</span>
+																<span>Reject</span>
+															</button>
+														</div>
+													)}
+												</div>
+											))}
+										</div>
 									</div>
-								</div>
-							);
-						})()}
+								);
+							})()}
 
-						{/* Accounts Breakdown Table */}
-						{(() => {
-							const totalPrincipal = Number(selectedLoan.loan_amount || selectedLoan.amount || 0);
+							{/* Accounts Breakdown Table */}
+							{(() => {
+								const totalPrincipal = Number(selectedLoan.loan_amount || selectedLoan.amount || 0);
 
-							// Determine total facility repayment
-							let totalFacilityRepay = Number(
-								selectedLoan.total_repayment_amount ||
-								selectedLoan.total_repayment ||
-								selectedLoan.totalRepayAmount ||
-								0
-							);
-
-							if (totalFacilityRepay <= 0 && Array.isArray(selectedLoan.repaymentSchedule) && selectedLoan.repaymentSchedule.length > 0) {
-								totalFacilityRepay = selectedLoan.repaymentSchedule.reduce(
-									(sum, s) => sum + (Number(s.amount || s.repayment_amount || s.total_amount) || 0),
+								// Determine total facility repayment
+								let totalFacilityRepay = Number(
+									selectedLoan.total_repayment_amount ||
+									selectedLoan.total_repayment ||
+									selectedLoan.totalRepayAmount ||
 									0
 								);
-							}
-							if (totalFacilityRepay <= 0) {
-								totalFacilityRepay = totalPrincipal;
-							}
 
-							// 1. Primary Partner
-							const primaryAcc = Array.isArray(selectedLoan.accountDetails)
-								? selectedLoan.accountDetails.find((a) => a?.isPrimary)
-								: null;
-
-							const priShare = primaryAcc?.share != null && !isNaN(Number(primaryAcc.share))
-								? Number(primaryAcc.share)
-								: Number(selectedLoan.primary_account_share || selectedLoan.primaryShare || 60);
-
-							const priPrincipal = primaryAcc?.principal != null && !isNaN(Number(primaryAcc.principal))
-								? Number(primaryAcc.principal)
-								: Math.round((totalPrincipal * priShare) / 100);
-
-							const priRepay = primaryAcc?.repayAmount != null && Number(primaryAcc.repayAmount) > 0
-								? Number(primaryAcc.repayAmount)
-								: Math.round((totalFacilityRepay * priShare) / 100);
-
-							// 2. Secondary Partners
-							const secNames = getLoanSecondaryAccounts(selectedLoan);
-							const secAccountDetails = Array.isArray(selectedLoan.accountDetails)
-								? selectedLoan.accountDetails.filter((a) => a && !a.isPrimary)
-								: [];
-							const secAccountsList = Array.isArray(selectedLoan.secondaryAccounts)
-								? selectedLoan.secondaryAccounts
-								: [];
-							const remAccountsList = Array.isArray(selectedLoan.remaining_accounts)
-								? selectedLoan.remaining_accounts
-								: [];
-
-							const remainingSharePct = Math.max(0, 100 - priShare);
-							const fallbackSecShare = secNames.length > 0 ? remainingSharePct / secNames.length : remainingSharePct;
-
-							const secondaryRows = secNames.map((secName, idx) => {
-								const secDetail =
-									secAccountDetails.find(
-										(a) => a.accountName === secName || a.accountTag === secName
-									) || (secAccountDetails.length === secNames.length ? secAccountDetails[idx] : null);
-
-								const secObj =
-									secAccountsList.find(
-										(s) => s.accountName === secName || s.name === secName
-									) || (secAccountsList.length === secNames.length ? secAccountsList[idx] : null);
-
-								const remObj =
-									remAccountsList.find(
-										(r) => r.account_name === secName
-									) || (remAccountsList.length === secNames.length ? remAccountsList[idx] : null);
-
-								let sharePct = fallbackSecShare;
-								if (secDetail?.share != null && !isNaN(Number(secDetail.share))) {
-									sharePct = Number(secDetail.share);
-								} else if (secObj?.share != null && !isNaN(Number(secObj.share))) {
-									sharePct = Number(secObj.share);
-								} else if (remObj?.percentage != null && !isNaN(Number(remObj.percentage))) {
-									sharePct = Number(remObj.percentage);
+								if (totalFacilityRepay <= 0 && Array.isArray(selectedLoan.repaymentSchedule) && selectedLoan.repaymentSchedule.length > 0) {
+									totalFacilityRepay = selectedLoan.repaymentSchedule.reduce(
+										(sum, s) => sum + (Number(s.amount || s.repayment_amount || s.total_amount) || 0),
+										0
+									);
+								}
+								if (totalFacilityRepay <= 0) {
+									totalFacilityRepay = totalPrincipal;
 								}
 
-								let principal = 0;
-								if (secDetail?.principal != null && !isNaN(Number(secDetail.principal))) {
-									principal = Number(secDetail.principal);
-								} else if (secObj?.amount != null && !isNaN(Number(secObj.amount))) {
-									principal = Number(secObj.amount);
-								} else if (remObj?.share != null && !isNaN(Number(remObj.share))) {
-									principal = Number(remObj.share);
-								} else {
-									principal = Math.round((totalPrincipal * sharePct) / 100);
-								}
+								// 1. Primary Partner
+								const primaryAcc = Array.isArray(selectedLoan.accountDetails)
+									? selectedLoan.accountDetails.find((a) => a?.isPrimary)
+									: null;
 
-								let repay = 0;
-								if (secDetail?.repayAmount != null && Number(secDetail.repayAmount) > 0) {
-									repay = Number(secDetail.repayAmount);
-								} else if (secObj?.interest != null && secObj?.amount != null) {
-									repay = Number(secObj.amount || 0) + Number(secObj.interest || 0);
-								} else {
-									repay = Math.round((totalFacilityRepay * sharePct) / 100);
-								}
+								const priShare = primaryAcc?.share != null && !isNaN(Number(primaryAcc.share))
+									? Number(primaryAcc.share)
+									: Number(selectedLoan.primary_account_share || selectedLoan.primaryShare || 60);
 
-								return {
-									name: secName,
-									share: sharePct,
-									principal,
-									repay,
-								};
-							});
+								const priPrincipal = primaryAcc?.principal != null && !isNaN(Number(primaryAcc.principal))
+									? Number(primaryAcc.principal)
+									: Math.round((totalPrincipal * priShare) / 100);
 
-							// Summary Totals
-							const totalShareSum = Math.round(priShare + secondaryRows.reduce((sum, r) => sum + r.share, 0));
-							const totalPrincipalSum = priPrincipal + secondaryRows.reduce((sum, r) => sum + r.principal, 0);
-							const totalRepaySum = priRepay + secondaryRows.reduce((sum, r) => sum + r.repay, 0);
+								const priRepay = primaryAcc?.repayAmount != null && Number(primaryAcc.repayAmount) > 0
+									? Number(primaryAcc.repayAmount)
+									: Math.round((totalFacilityRepay * priShare) / 100);
 
-							return (
-								<div>
-									<h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-										Partner Capital Allocation
-									</h4>
-									<div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
-										<table className="w-full text-left text-xs">
-											<thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-600">
-												<tr>
-													<th className="p-3">Account Name</th>
-													<th className="p-3">Role</th>
-													<th className="p-3 text-right">Share %</th>
-													<th className="p-3 text-right">Principal Amount</th>
-													<th className="p-3 text-right">Total Repayment</th>
-												</tr>
-											</thead>
-											<tbody className="divide-y divide-slate-100">
-												<tr className="bg-white hover:bg-slate-50/50 transition-colors">
-													<td className="p-3 font-bold text-slate-900">
-														{selectedLoan.primaryAccountName || selectedLoan.primary || 'Primary Account'}
-													</td>
-													<td className="p-3 text-slate-500">
-														<span className="px-2 py-1 bg-primary/10 text-primary font-bold rounded-md text-[10px]">
-															Primary Partner
-														</span>
-													</td>
-													<td className="p-3 text-right font-mono font-bold">
-														{priShare}%
-													</td>
-													<td className="p-3 text-right font-mono font-bold text-slate-900">
-														{formatCurrency(priPrincipal)}
-													</td>
-													<td className="p-3 text-right font-mono font-bold text-emerald-700">
-														{formatCurrency(priRepay)}
-													</td>
-												</tr>
-												{secondaryRows.map((sec, idx) => (
-													<tr key={idx} className="bg-slate-50/50 hover:bg-slate-100/50 transition-colors">
-														<td className="p-3 font-bold text-slate-900">{sec.name}</td>
+								// 2. Secondary Partners
+								const secNames = getLoanSecondaryAccounts(selectedLoan);
+								const secAccountDetails = Array.isArray(selectedLoan.accountDetails)
+									? selectedLoan.accountDetails.filter((a) => a && !a.isPrimary)
+									: [];
+								const secAccountsList = Array.isArray(selectedLoan.secondaryAccounts)
+									? selectedLoan.secondaryAccounts
+									: [];
+								const remAccountsList = Array.isArray(selectedLoan.remaining_accounts)
+									? selectedLoan.remaining_accounts
+									: [];
+
+								const remainingSharePct = Math.max(0, 100 - priShare);
+								const fallbackSecShare = secNames.length > 0 ? remainingSharePct / secNames.length : remainingSharePct;
+
+								const secondaryRows = secNames.map((secName, idx) => {
+									const secDetail =
+										secAccountDetails.find(
+											(a) => a.accountName === secName || a.accountTag === secName
+										) || (secAccountDetails.length === secNames.length ? secAccountDetails[idx] : null);
+
+									const secObj =
+										secAccountsList.find(
+											(s) => s.accountName === secName || s.name === secName
+										) || (secAccountsList.length === secNames.length ? secAccountsList[idx] : null);
+
+									const remObj =
+										remAccountsList.find(
+											(r) => r.account_name === secName
+										) || (remAccountsList.length === secNames.length ? remAccountsList[idx] : null);
+
+									let sharePct = fallbackSecShare;
+									if (secDetail?.share != null && !isNaN(Number(secDetail.share))) {
+										sharePct = Number(secDetail.share);
+									} else if (secObj?.share != null && !isNaN(Number(secObj.share))) {
+										sharePct = Number(secObj.share);
+									} else if (remObj?.percentage != null && !isNaN(Number(remObj.percentage))) {
+										sharePct = Number(remObj.percentage);
+									}
+
+									let principal = 0;
+									if (secDetail?.principal != null && !isNaN(Number(secDetail.principal))) {
+										principal = Number(secDetail.principal);
+									} else if (secObj?.amount != null && !isNaN(Number(secObj.amount))) {
+										principal = Number(secObj.amount);
+									} else if (remObj?.share != null && !isNaN(Number(remObj.share))) {
+										principal = Number(remObj.share);
+									} else {
+										principal = Math.round((totalPrincipal * sharePct) / 100);
+									}
+
+									let repay = 0;
+									if (secDetail?.repayAmount != null && Number(secDetail.repayAmount) > 0) {
+										repay = Number(secDetail.repayAmount);
+									} else if (secObj?.interest != null && secObj?.amount != null) {
+										repay = Number(secObj.amount || 0) + Number(secObj.interest || 0);
+									} else {
+										repay = Math.round((totalFacilityRepay * sharePct) / 100);
+									}
+
+									return {
+										name: secName,
+										share: sharePct,
+										principal,
+										repay,
+									};
+								});
+
+								// Summary Totals
+								const totalShareSum = Math.round(priShare + secondaryRows.reduce((sum, r) => sum + r.share, 0));
+								const totalPrincipalSum = priPrincipal + secondaryRows.reduce((sum, r) => sum + r.principal, 0);
+								const totalRepaySum = priRepay + secondaryRows.reduce((sum, r) => sum + r.repay, 0);
+
+								return (
+									<div>
+										<h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+											Partner Capital Allocation
+										</h4>
+										<div className="border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
+											<table className="w-full text-left text-xs">
+												<thead className="bg-slate-50 border-b border-slate-200 font-bold text-slate-600">
+													<tr>
+														<th className="p-3">Account Name</th>
+														<th className="p-3">Role</th>
+														<th className="p-3 text-right">Share %</th>
+														<th className="p-3 text-right">Principal Amount</th>
+														<th className="p-3 text-right">Total Repayment</th>
+													</tr>
+												</thead>
+												<tbody className="divide-y divide-slate-100">
+													<tr className="bg-white hover:bg-slate-50/50 transition-colors">
+														<td className="p-3 font-bold text-slate-900">
+															{selectedLoan.primaryAccountName || selectedLoan.primary || 'Primary Account'}
+														</td>
 														<td className="p-3 text-slate-500">
-															<span className="px-2 py-1 bg-amber-100 text-amber-800 font-bold rounded-md text-[10px]">
-																Secondary Partner
+															<span className="px-2 py-1 bg-primary/10 text-primary font-bold rounded-md text-[10px]">
+																Primary Partner
 															</span>
 														</td>
-														<td className="p-3 text-right font-mono font-bold">{sec.share}%</td>
+														<td className="p-3 text-right font-mono font-bold">
+															{priShare}%
+														</td>
 														<td className="p-3 text-right font-mono font-bold text-slate-900">
-															{formatCurrency(sec.principal)}
+															{formatCurrency(priPrincipal)}
 														</td>
 														<td className="p-3 text-right font-mono font-bold text-emerald-700">
-															{formatCurrency(sec.repay)}
+															{formatCurrency(priRepay)}
 														</td>
 													</tr>
-												))}
-											</tbody>
-											<tfoot className="bg-slate-100/90 border-t-2 border-slate-200 font-bold text-slate-900">
-												<tr>
-													<td className="p-3 font-extrabold text-slate-900">Total</td>
-													<td className="p-3 text-slate-400 font-normal">—</td>
-													<td className="p-3 text-right font-mono font-extrabold text-slate-900">
-														{totalShareSum}%
-													</td>
-													<td className="p-3 text-right font-mono font-extrabold text-slate-900">
-														{formatCurrency(totalPrincipalSum || totalPrincipal)}
-													</td>
-													<td className="p-3 text-right font-mono font-extrabold text-emerald-800">
-														{formatCurrency(totalRepaySum || totalFacilityRepay)}
-													</td>
-												</tr>
-											</tfoot>
-										</table>
-									</div>
-								</div>
-							);
-						})()}
-
-						{/* Approval Details Section */}
-						{(() => {
-							const { secManager, admin, secManagers } = getLoanSignOffDetails(selectedLoan);
-							const meta = getLoanApprovalMeta(selectedLoan);
-							const isPendingAdmin =
-								selectedLoan.approval_status === 'PENDING_ADMIN' ||
-								selectedLoan.approvalStatus === 'PENDING_ADMIN' ||
-								(secManager && !admin && !meta.isApproved);
-
-							return (
-								<div>
-									<h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
-										<span className="material-symbols-outlined text-[16px] text-primary">verified_user</span>
-										<span>Approval &amp; Authorization Details</span>
-									</h4>
-									<div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-										{/* Secondary Manager Card */}
-										<div className="p-3.5 rounded-2xl border border-slate-200/90 bg-slate-50/70 flex flex-col justify-between gap-3">
-											<div className="flex items-start justify-between gap-2">
-												<div className="flex items-center gap-2.5 min-w-0">
-													<div
-														className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-															secManager
-																? 'bg-amber-100 text-amber-800'
-																: 'bg-slate-100 text-slate-400'
-														}`}
-													>
-														<span className="material-symbols-outlined text-[19px]">
-															{secManager ? 'shield_person' : 'hourglass_top'}
-														</span>
-													</div>
-													<div className="min-w-0">
-														<div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-															Secondary Manager
-														</div>
-														<div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
-															<span className="truncate">
-																{secManager ? secManager.name : 'Pending Secondary Verification'}
-															</span>
-															{secManager?.code && (
-																<span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 shrink-0">
-																	{secManager.code}
+													{secondaryRows.map((sec, idx) => (
+														<tr key={idx} className="bg-slate-50/50 hover:bg-slate-100/50 transition-colors">
+															<td className="p-3 font-bold text-slate-900">{sec.name}</td>
+															<td className="p-3 text-slate-500">
+																<span className="px-2 py-1 bg-amber-100 text-amber-800 font-bold rounded-md text-[10px]">
+																	Secondary Partner
 																</span>
-															)}
+															</td>
+															<td className="p-3 text-right font-mono font-bold">{sec.share}%</td>
+															<td className="p-3 text-right font-mono font-bold text-slate-900">
+																{formatCurrency(sec.principal)}
+															</td>
+															<td className="p-3 text-right font-mono font-bold text-emerald-700">
+																{formatCurrency(sec.repay)}
+															</td>
+														</tr>
+													))}
+												</tbody>
+												<tfoot className="bg-slate-100/90 border-t-2 border-slate-200 font-bold text-slate-900">
+													<tr>
+														<td className="p-3 font-extrabold text-slate-900">Total</td>
+														<td className="p-3 text-slate-400 font-normal">—</td>
+														<td className="p-3 text-right font-mono font-extrabold text-slate-900">
+															{totalShareSum}%
+														</td>
+														<td className="p-3 text-right font-mono font-extrabold text-slate-900">
+															{formatCurrency(totalPrincipalSum || totalPrincipal)}
+														</td>
+														<td className="p-3 text-right font-mono font-extrabold text-emerald-800">
+															{formatCurrency(totalRepaySum || totalFacilityRepay)}
+														</td>
+													</tr>
+												</tfoot>
+											</table>
+										</div>
+									</div>
+								);
+							})()}
+
+							{/* Approval Details Section */}
+							{(() => {
+								const { secManager, admin, secManagers } = getLoanSignOffDetails(selectedLoan);
+								const meta = getLoanApprovalMeta(selectedLoan);
+								const isPendingAdmin =
+									selectedLoan.approval_status === 'PENDING_ADMIN' ||
+									selectedLoan.approvalStatus === 'PENDING_ADMIN' ||
+									(secManager && !admin && !meta.isApproved);
+
+								return (
+									<div>
+										<h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+											<span className="material-symbols-outlined text-[16px] text-primary">verified_user</span>
+											<span>Approval &amp; Authorization Details</span>
+										</h4>
+										<div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+											{/* Secondary Manager Card */}
+											<div className="p-3.5 rounded-2xl border border-slate-200/90 bg-slate-50/70 flex flex-col justify-between gap-3">
+												<div className="flex items-start justify-between gap-2">
+													<div className="flex items-center gap-2.5 min-w-0">
+														<div
+															className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${secManager
+																	? 'bg-amber-100 text-amber-800'
+																	: 'bg-slate-100 text-slate-400'
+																}`}
+														>
+															<span className="material-symbols-outlined text-[19px]">
+																{secManager ? 'shield_person' : 'hourglass_top'}
+															</span>
+														</div>
+														<div className="min-w-0">
+															<div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+																Secondary Manager
+															</div>
+															<div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
+																<span className="truncate">
+																	{secManager ? secManager.name : 'Pending Secondary Verification'}
+																</span>
+																{secManager?.code && (
+																	<span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 shrink-0">
+																		{secManager.code}
+																	</span>
+																)}
+															</div>
 														</div>
 													</div>
-												</div>
-												{secManager ? (
-													<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 shrink-0">
-														<span className="material-symbols-outlined text-[12px]">check</span>
-														Verified
-													</span>
-												) : (
-													<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 shrink-0">
-														<span className="material-symbols-outlined text-[12px]">schedule</span>
-														Pending
-													</span>
-												)}
-											</div>
-
-											{(secManager?.accountName || secManager?.timestamp) && (
-												<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500 font-medium">
-													{secManager.accountName ? (
-														<span className="truncate max-w-[170px]" title={secManager.accountName}>
-															{secManager.accountName}
+													{secManager ? (
+														<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 shrink-0">
+															<span className="material-symbols-outlined text-[12px]">check</span>
+															Verified
 														</span>
 													) : (
-														<span />
-													)}
-													{secManager.timestamp && (
-														<span className="text-[10px] text-slate-400 font-mono ml-auto">
-															{secManager.timestamp}
+														<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 shrink-0">
+															<span className="material-symbols-outlined text-[12px]">schedule</span>
+															Pending
 														</span>
 													)}
 												</div>
-											)}
-										</div>
 
-										{/* Administrator Card */}
-										<div className="p-3.5 rounded-2xl border border-slate-200/90 bg-slate-50/70 flex flex-col justify-between gap-3">
-											<div className="flex items-start justify-between gap-2">
-												<div className="flex items-center gap-2.5 min-w-0">
-													<div
-														className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-															admin
-																? 'bg-emerald-100 text-emerald-800'
-																: isPendingAdmin
-																? 'bg-purple-100 text-purple-800'
-																: 'bg-slate-100 text-slate-400'
-														}`}
-													>
-														<span className="material-symbols-outlined text-[19px]">
-															{admin
-																? 'admin_panel_settings'
-																: isPendingAdmin
-																? 'pending_actions'
-																: 'hourglass_top'}
-														</span>
-													</div>
-													<div className="min-w-0">
-														<div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-															Administrator
-														</div>
-														<div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
-															<span className="truncate">
-																{admin
-																	? admin.name
-																	: isPendingAdmin
-																	? 'Awaiting Admin Authorization'
-																	: 'Awaiting Prior Verification'}
+												{(secManager?.accountName || secManager?.timestamp) && (
+													<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500 font-medium">
+														{secManager.accountName ? (
+															<span className="truncate max-w-[170px]" title={secManager.accountName}>
+																{secManager.accountName}
 															</span>
-															{admin?.code && (
-																<span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 shrink-0">
-																	{admin.code}
-																</span>
-															)}
-														</div>
+														) : (
+															<span />
+														)}
+														{secManager.timestamp && (
+															<span className="text-[10px] text-slate-400 font-mono ml-auto">
+																{secManager.timestamp}
+															</span>
+														)}
 													</div>
-												</div>
-												{admin ? (
-													<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
-														<span className="material-symbols-outlined text-[12px]">verified</span>
-														Authorized
-													</span>
-												) : isPendingAdmin ? (
-													<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 shrink-0">
-														<span className="material-symbols-outlined text-[12px]">schedule</span>
-														Pending Admin
-													</span>
-												) : (
-													<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 shrink-0">
-														<span className="material-symbols-outlined text-[12px]">schedule</span>
-														Pending
-													</span>
 												)}
 											</div>
 
-											{admin?.timestamp && (
-												<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500 font-medium">
-													<span className="text-[10px] text-slate-400">Authorized Date</span>
-													<span className="text-[10px] text-slate-400 font-mono ml-auto">
-														{admin.timestamp}
-													</span>
+											{/* Administrator Card */}
+											<div className="p-3.5 rounded-2xl border border-slate-200/90 bg-slate-50/70 flex flex-col justify-between gap-3">
+												<div className="flex items-start justify-between gap-2">
+													<div className="flex items-center gap-2.5 min-w-0">
+														<div
+															className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${admin
+																	? 'bg-emerald-100 text-emerald-800'
+																	: isPendingAdmin
+																		? 'bg-purple-100 text-purple-800'
+																		: 'bg-slate-100 text-slate-400'
+																}`}
+														>
+															<span className="material-symbols-outlined text-[19px]">
+																{admin
+																	? 'admin_panel_settings'
+																	: isPendingAdmin
+																		? 'pending_actions'
+																		: 'hourglass_top'}
+															</span>
+														</div>
+														<div className="min-w-0">
+															<div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+																Administrator
+															</div>
+															<div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
+																<span className="truncate">
+																	{admin
+																		? admin.name
+																		: isPendingAdmin
+																			? 'Awaiting Admin Authorization'
+																			: 'Awaiting Prior Verification'}
+																</span>
+																{admin?.code && (
+																	<span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 shrink-0">
+																		{admin.code}
+																	</span>
+																)}
+															</div>
+														</div>
+													</div>
+													{admin ? (
+														<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+															<span className="material-symbols-outlined text-[12px]">verified</span>
+															Authorized
+														</span>
+													) : isPendingAdmin ? (
+														<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 shrink-0">
+															<span className="material-symbols-outlined text-[12px]">schedule</span>
+															Pending Admin
+														</span>
+													) : (
+														<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 shrink-0">
+															<span className="material-symbols-outlined text-[12px]">schedule</span>
+															Pending
+														</span>
+													)}
 												</div>
-											)}
+
+												{admin?.timestamp && (
+													<div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-500 font-medium">
+														<span className="text-[10px] text-slate-400">Authorized Date</span>
+														<span className="text-[10px] text-slate-400 font-mono ml-auto">
+															{admin.timestamp}
+														</span>
+													</div>
+												)}
+											</div>
 										</div>
 									</div>
-								</div>
-							);
-						})()}
+								);
+							})()}
 						</div>
 
 						{/* Modal Actions (Fixed at bottom) */}
@@ -3504,7 +4470,7 @@ export default function Requests({
 
 			{/* Payout Rejection / Discrepancy Modal */}
 			{isPayoutRejectModalOpen && payoutToReject && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs font-sans animate-in fade-in duration-150">
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
 					<div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl ring-1 ring-slate-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
 						<div className="flex items-center gap-3">
 							<div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
@@ -3568,7 +4534,7 @@ export default function Requests({
 
 			{/* Rejection Modal */}
 			{isRejectModalOpen && loanToReject && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs font-sans animate-in fade-in duration-150">
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
 					<div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl ring-1 ring-slate-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
 						<div className="flex items-center gap-3">
 							<div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
@@ -3746,7 +4712,7 @@ export default function Requests({
 
 			{/* Batch Rejection Modal */}
 			{isBatchRejectModalOpen && selectedLoans.length > 0 && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs font-sans animate-in fade-in duration-150">
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
 					<div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl ring-1 ring-slate-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
 						<div className="flex items-center gap-3">
 							<div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
@@ -3821,6 +4787,208 @@ export default function Requests({
 									<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
 								)}
 								<span>{isBatchSubmitting ? 'Rejecting...' : `Confirm Rejection (${selectedLoans.length})`}</span>
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Floating Batch Action Pill for Payout Pending Tab */}
+			{activeTab === 'payout-pending' && selectedPayoutDues.length > 0 && (
+				<div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 max-w-2xl w-[calc(100%-2rem)] sm:w-auto bg-slate-900/95 backdrop-blur-md text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-2xl shadow-2xl border border-slate-700/80 flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
+					<div className="flex items-center gap-3">
+						<div className="flex items-center gap-2">
+							<span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse"></span>
+							<span className="text-xs sm:text-sm font-extrabold text-white">
+								{selectedPayoutDues.length} {selectedPayoutDues.length === 1 ? 'Due' : 'Dues'} Selected
+							</span>
+							<span className="text-xs text-blue-200 font-mono font-bold">
+								• {formatCurrency(selectedPayoutTotalAmount)}
+							</span>
+						</div>
+						<button
+							type="button"
+							onClick={() => setSelectedPayoutItemKeys([])}
+							className="text-[11px] font-bold text-slate-400 hover:text-white underline underline-offset-2 transition-colors cursor-pointer"
+						>
+							Deselect
+						</button>
+					</div>
+
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={() => {
+								setBatchPayoutRejectReason('');
+								setIsBatchPayoutRejectOpen(true);
+							}}
+							disabled={isBatchPayoutSubmitting}
+							className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition-all disabled:opacity-50 active:scale-95 cursor-pointer"
+						>
+							<span className="material-symbols-outlined text-[16px]">cancel</span>
+							<span>Reject ({selectedPayoutDues.length})</span>
+						</button>
+						<button
+							type="button"
+							onClick={() => setIsBatchPayoutApproveOpen(true)}
+							disabled={isBatchPayoutSubmitting}
+							className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all disabled:opacity-50 active:scale-95 cursor-pointer"
+						>
+							<span className="material-symbols-outlined text-[16px]">check_circle</span>
+							<span>Approve ({selectedPayoutDues.length})</span>
+						</button>
+					</div>
+				</div>
+			)}
+
+			{/* Batch Payout Approval Confirmation Modal */}
+			{isBatchPayoutApproveOpen && selectedPayoutDues.length > 0 && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
+					<div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl ring-1 ring-slate-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
+						<div className="flex items-center gap-3">
+							<div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+								<span className="material-symbols-outlined text-[22px]">check_circle</span>
+							</div>
+							<div>
+								<h3 className="text-base font-extrabold text-slate-900">
+									Approve {selectedPayoutDues.length} Selected Payout {selectedPayoutDues.length === 1 ? 'Due' : 'Dues'}
+								</h3>
+								<p className="text-xs text-slate-500">
+									Total Remittance: <span className="font-bold text-slate-800">{formatCurrency(selectedPayoutTotalAmount)}</span>
+								</p>
+							</div>
+						</div>
+
+						<p className="text-xs text-slate-600">
+							This confirms payment receipt and synchronizes secondary partner settlements.
+						</p>
+
+						{/* List of selected payout dues */}
+						<div className="max-h-56 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-slate-50/50 p-2 text-xs">
+							{selectedPayoutDues.map(({ loan, item, key }) => {
+								const client = loan.client_account_name || loan.borrower?.name || 'Borrower';
+								const loanId = loan.loan_ref_id || loan.id || `JL-${loan.db_id}`;
+								const secAmt = getPayoutItemSecondaryAmount(item, loan);
+								const payoutDate = payoutDateOverrides[key] || item.payoutDate || '-';
+								return (
+									<div key={key} className="py-2 px-2 flex items-center justify-between gap-2">
+										<div className="min-w-0">
+											<div className="font-bold text-slate-800 truncate">{client}</div>
+											<div className="text-[10px] text-slate-500 font-mono">
+												{loanId} • EMI #{item.sNo} • Payout: <span className="font-semibold text-slate-700">{payoutDate}</span>
+											</div>
+										</div>
+										<div className="font-extrabold text-slate-900 shrink-0 font-mono">
+											{formatCurrency(secAmt)}
+										</div>
+									</div>
+								);
+							})}
+						</div>
+
+						<div className="flex items-center justify-end gap-2.5">
+							<button
+								type="button"
+								onClick={() => setIsBatchPayoutApproveOpen(false)}
+								disabled={isBatchPayoutSubmitting}
+								className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								onClick={handleBatchPayoutApprove}
+								disabled={isBatchPayoutSubmitting}
+								className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+							>
+								{isBatchPayoutSubmitting && (
+									<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+								)}
+								<span>{isBatchPayoutSubmitting ? 'Approving...' : `Confirm & Approve (${selectedPayoutDues.length})`}</span>
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Batch Payout Rejection / Discrepancy Modal */}
+			{isBatchPayoutRejectOpen && selectedPayoutDues.length > 0 && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm font-sans animate-in fade-in duration-150">
+					<div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl ring-1 ring-slate-200 flex flex-col gap-4 animate-in zoom-in-95 duration-150">
+						<div className="flex items-center gap-3">
+							<div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+								<span className="material-symbols-outlined text-[22px]">cancel</span>
+							</div>
+							<div>
+								<h3 className="text-base font-extrabold text-slate-900">
+									Reject / Flag Discrepancy ({selectedPayoutDues.length} {selectedPayoutDues.length === 1 ? 'Due' : 'Dues'})
+								</h3>
+								<p className="text-xs text-slate-500">
+									Total Remittance: <span className="font-bold text-slate-800">{formatCurrency(selectedPayoutTotalAmount)}</span>
+								</p>
+							</div>
+						</div>
+
+						<p className="text-xs text-slate-600">
+							Please enter the discrepancy reason for rejecting the payout date on these {selectedPayoutDues.length} dues. The reason will be recorded and flagged in the facility schedule.
+						</p>
+
+						{/* List of selected payout dues */}
+						<div className="max-h-40 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-slate-50/50 p-2 text-xs">
+							{selectedPayoutDues.map(({ loan, item, key }) => {
+								const client = loan.client_account_name || loan.borrower?.name || 'Borrower';
+								const loanId = loan.loan_ref_id || loan.id || `JL-${loan.db_id}`;
+								const secAmt = getPayoutItemSecondaryAmount(item, loan);
+								const payoutDate = payoutDateOverrides[key] || item.payoutDate || '-';
+								return (
+									<div key={key} className="py-1.5 px-2 flex items-center justify-between gap-2">
+										<div className="min-w-0">
+											<span className="font-bold text-slate-800 truncate">{client}</span>
+											<span className="text-[10px] text-slate-500 font-mono ml-2">({loanId} • #{item.sNo} • {payoutDate})</span>
+										</div>
+										<span className="font-bold text-slate-900 shrink-0 font-mono">
+											{formatCurrency(secAmt)}
+										</span>
+									</div>
+								);
+							})}
+						</div>
+
+						<div>
+							<label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+								Discrepancy / Rejection Reason
+							</label>
+							<textarea
+								rows={3}
+								value={batchPayoutRejectReason}
+								onChange={(e) => setBatchPayoutRejectReason(e.target.value)}
+								placeholder="e.g. Payment not received in bank, date discrepancy, incorrect deduction..."
+								className="w-full p-3 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:bg-white placeholder:text-slate-400"
+							/>
+						</div>
+
+						<div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+							<button
+								type="button"
+								onClick={() => {
+									setIsBatchPayoutRejectOpen(false);
+									setBatchPayoutRejectReason('');
+								}}
+								disabled={isBatchPayoutSubmitting}
+								className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								onClick={handleBatchPayoutReject}
+								disabled={isBatchPayoutSubmitting}
+								className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+							>
+								{isBatchPayoutSubmitting && (
+									<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+								)}
+								<span>{isBatchPayoutSubmitting ? 'Rejecting...' : `Confirm Discrepancy (${selectedPayoutDues.length})`}</span>
 							</button>
 						</div>
 					</div>
