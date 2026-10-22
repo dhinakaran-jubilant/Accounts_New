@@ -26,13 +26,21 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
+# Enable ANSI escape sequences on Windows 10/11 console
+if sys.platform == 'win32':
+    try:
+        os.system('')
+    except Exception:
+        pass
+
 # ANSI colors for nice terminal output
-CYAN = '\033[96m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
-GREEN = '\033[92m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
-YELLOW = '\033[93m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
-RED = '\033[91m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
-BOLD = '\033[1m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
-RESET = '\033[0m' if sys.platform != 'win32' or os.environ.get('TERM') else ''
+CYAN = '\033[96m'
+GREEN = '\033[92m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+BOLD = '\033[1m'
+RESET = '\033[0m'
+
 
 def log(tag, msg, color=CYAN):
     print(f"[{tag}] {msg}", flush=True)
@@ -277,6 +285,8 @@ def main():
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding='utf-8',
+        errors='replace',
         bufsize=1
     )
     processes.append((backend_proc, "BACKEND"))
@@ -290,6 +300,8 @@ def main():
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding='utf-8',
+        errors='replace',
         bufsize=1
     )
     processes.append((frontend_proc, "FRONTEND"))
