@@ -250,15 +250,19 @@ def serialize_pg_loan_to_joint(l):
         
     today_dt = datetime.date.today()
     repayment_schedule_list = []
+    penal_interest_list = []
     has_overdue = False
-    for idx, s in enumerate(l.repayment_schedule):
+
+    sys_schedule = [s for s in l.repayment_schedule if getattr(s, 'type', None) != 'manual']
+    manual_schedule = [s for s in l.repayment_schedule if getattr(s, 'type', None) == 'manual']
+
+    for idx, s in enumerate(sys_schedule):
         splits_data = None
         if s.splits:
             try:
                 splits_data = json.loads(s.splits)
             except Exception:
                 splits_data = None
-
 
         row_status = 'Active'
         if splits_data and not splits_data.get('isFinalSettled'):
@@ -339,6 +343,68 @@ def serialize_pg_loan_to_joint(l):
             'remarks': s.remarks or '',
             'splits': splits_data
         })
+
+    for p_idx, p in enumerate(manual_schedule):
+        p_splits = None
+        if p.splits:
+            try:
+                p_splits = json.loads(p.splits) if isinstance(p.splits, str) else p.splits
+            except Exception:
+                p_splits = None
+
+        pri_amt = 0.0
+        sec_accounts_list = []
+        sec_sum = 0.0
+        sec_amts = []
+        if isinstance(p_splits, dict):
+            pri_amt = float(p_splits.get(l.primary_account_name, 0.0) or 0.0)
+            for r in l.remaining_accounts:
+                s_amt = float(p_splits.get(r.account_name, 0.0) or 0.0)
+                sec_sum += s_amt
+                sec_amts.append(s_amt)
+                sec_accounts_list.append({
+                    'accountName': r.account_name,
+                    'accountTag': get_acronym(r.account_name) or (r.account_name[:2].upper() if r.account_name else 'SEC'),
+                    'amount': s_amt,
+                    'payoutDate': p.payment_date or '',
+                    'dueDate': p.payment_date or ''
+                })
+        else:
+            pri_pct = float(pri_share_val or 60.0)
+            pri_amt = round((float(p.amount or 0) * pri_pct) / 100.0, 2)
+            sec_sum = round(float(p.amount or 0) - pri_amt, 2)
+            for r in l.remaining_accounts:
+                s_pct = float(r.percentage or 0.0)
+                s_amt = round((float(p.amount or 0) * s_pct) / 100.0, 2)
+                sec_amts.append(s_amt)
+                sec_accounts_list.append({
+                    'accountName': r.account_name,
+                    'accountTag': get_acronym(r.account_name) or (r.account_name[:2].upper() if r.account_name else 'SEC'),
+                    'amount': s_amt,
+                    'payoutDate': p.payment_date or '',
+                    'dueDate': p.payment_date or ''
+                })
+
+        penal_interest_list.append({
+            'id': p.id,
+            'sNo': p_idx + 1,
+            'date': p.date,
+            'amount': float(p.amount or 0),
+            'receivedDate': p.received_date or '',
+            'recdDate': p.received_date or '',
+            'primaryAmount': pri_amt,
+            'primaryAccountName': l.primary_account_name,
+            'primaryTag': primary_tag,
+            'dueDate': p.payment_date or '',
+            'payoutDate': p.payment_date or '',
+            'secAmounts': sec_amts,
+            'secAmount': sec_sum,
+            'secondaryAccounts': sec_accounts_list,
+            'remarks': p.remarks or '',
+            'type': 'manual',
+            'splits': p_splits
+        })
+
         
     has_payout_pending = False
     all_settled = len(repayment_schedule_list) > 0
@@ -494,7 +560,9 @@ def serialize_pg_loan_to_joint(l):
         'editedBy': getattr(l, 'edited_by', None),
         'history': (json.loads(l.history) if getattr(l, 'history', None) and isinstance(l.history, str) else (l.history if isinstance(getattr(l, 'history', None), list) else [])) if hasattr(l, 'history') else [],
         'repaymentSchedule': repayment_schedule_list,
-        'repayment_schedule': repayment_schedule_list
+        'repayment_schedule': repayment_schedule_list,
+        'penal_interest': penal_interest_list,
+        'penalInterests': penal_interest_list
     }
 
 # Helper to safely convert values to float

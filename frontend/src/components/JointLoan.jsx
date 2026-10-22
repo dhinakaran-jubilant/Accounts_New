@@ -21,32 +21,32 @@ export const getStatusBadge = (status) => {
 		case 'Active':
 		case 'Settled':
 			return {
-				color: 'bg-emerald-50 text-emerald-700 ring-emerald-300',
+				color: 'bg-emerald-100 text-emerald-700 ring-emerald-300',
 				dot: 'bg-emerald-500',
 			};
 		case 'Collected':
 			return {
-				color: 'bg-blue-50 text-blue-700 ring-blue-300',
+				color: 'bg-blue-100 text-blue-700 ring-blue-300',
 				dot: 'bg-blue-500',
 			};
 		case 'Pending Payout Approval':
 			return {
-				color: 'bg-amber-50 text-amber-800 ring-amber-300',
+				color: 'bg-amber-100 text-amber-800 ring-amber-300',
 				dot: 'bg-amber-500',
 			};
 		case 'Payout Discrepancy':
 			return {
-				color: 'bg-rose-50 text-rose-700 ring-rose-300',
+				color: 'bg-rose-100 text-rose-700 ring-rose-300',
 				dot: 'bg-rose-500',
 			};
 		case 'Overdue':
 			return {
-				color: 'bg-rose-50 text-rose-700 ring-rose-300',
+				color: 'bg-rose-100 text-rose-700 ring-rose-300',
 				dot: 'bg-rose-500',
 			};
 		case 'Date Overdue':
 			return {
-				color: 'bg-orange-50 text-orange-700 ring-orange-300',
+				color: 'bg-orange-100 text-orange-700 ring-orange-300',
 				dot: 'bg-orange-500',
 			};
 		case 'Closed':
@@ -56,17 +56,17 @@ export const getStatusBadge = (status) => {
 			};
 		case 'Pending Secondary':
 			return {
-				color: 'bg-amber-50 text-amber-700 ring-amber-300',
+				color: 'bg-amber-100 text-amber-700 ring-amber-300',
 				dot: 'bg-amber-500',
 			};
 		case 'Pending Admin':
 			return {
-				color: 'bg-purple-50 text-purple-700 ring-purple-300',
+				color: 'bg-purple-100 text-purple-700 ring-purple-300',
 				dot: 'bg-purple-500',
 			};
 		case 'Rejected':
 			return {
-				color: 'bg-rose-50 text-rose-700 ring-rose-300',
+				color: 'bg-rose-100 text-rose-700 ring-rose-300',
 				dot: 'bg-rose-500',
 			};
 		case 'Pending':
@@ -78,22 +78,111 @@ export const getStatusBadge = (status) => {
 	}
 };
 
-// Tag color styling helper for Primary codes: SCS, AS, FC, SCE, JC
-export const getPrimaryTagColor = (primary) => {
-	switch (primary) {
-		case 'SCS':
-			return 'bg-purple-50 text-purple-700 ring-purple-300';
-		case 'AS':
-			return 'bg-blue-50 text-blue-700 ring-blue-300';
-		case 'FC':
-			return 'bg-teal-50 text-teal-700 ring-teal-300';
-		case 'SCE':
-			return 'bg-amber-50 text-amber-700 ring-amber-300';
-		case 'JC':
-			return 'bg-rose-50 text-rose-700 ring-rose-300';
-		default:
-			return 'bg-slate-100 text-slate-700 ring-slate-300';
+// Color map for account tag badges matching Settings presets
+export const ACCOUNT_COLOR_MAP = {
+	purple: 'bg-purple-50 text-purple-700 ring-purple-300',
+	blue: 'bg-blue-50 text-blue-700 ring-blue-300',
+	teal: 'bg-teal-50 text-teal-700 ring-teal-300',
+	emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-300',
+	green: 'bg-emerald-50 text-emerald-700 ring-emerald-300',
+	amber: 'bg-amber-50 text-amber-700 ring-amber-300',
+	orange: 'bg-amber-50 text-amber-700 ring-amber-300',
+	rose: 'bg-rose-50 text-rose-700 ring-rose-300',
+	red: 'bg-rose-50 text-rose-700 ring-rose-300',
+	indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-300',
+	cyan: 'bg-cyan-50 text-cyan-700 ring-cyan-300',
+	sky: 'bg-sky-50 text-sky-700 ring-sky-300',
+	slate: 'bg-slate-100 text-slate-700 ring-slate-300',
+};
+
+// Curated dynamic palette for deterministic color generation when no DB color is assigned
+const DYNAMIC_TAG_PALETTE = [
+	'bg-purple-50 text-purple-700 ring-purple-300',
+	'bg-teal-50 text-teal-700 ring-teal-300',
+	'bg-blue-50 text-blue-700 ring-blue-300',
+	'bg-amber-50 text-amber-700 ring-amber-300',
+	'bg-rose-50 text-rose-700 ring-rose-300',
+	'bg-emerald-50 text-emerald-700 ring-emerald-300',
+	'bg-indigo-50 text-indigo-700 ring-indigo-300',
+	'bg-cyan-50 text-cyan-700 ring-cyan-300',
+];
+
+// Module-level cache of account objects (populated via API and stored in localStorage)
+let cachedGlobalAccountObjects = (() => {
+	try {
+		const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('loanDesk_account_names') : null;
+		return raw ? JSON.parse(raw) : [];
+	} catch {
+		return [];
 	}
+})();
+
+export const setCachedGlobalAccountObjects = (accounts) => {
+	if (Array.isArray(accounts) && accounts.length > 0) {
+		cachedGlobalAccountObjects = accounts;
+		try {
+			if (typeof localStorage !== 'undefined') {
+				localStorage.setItem('loanDesk_account_names', JSON.stringify(accounts));
+			}
+		} catch {}
+	}
+};
+
+// Tag color styling helper for any account (dynamically resolved from DB account objects, color name, or deterministic palette)
+export const getPrimaryTagColor = (primary, accountObjects = []) => {
+	if (!primary) return 'bg-slate-100 text-slate-700 ring-slate-300';
+
+	// 1. If primary is already an account object with color property
+	if (typeof primary === 'object' && primary !== null) {
+		const objColor = primary.color || primary.colorName;
+		if (objColor && ACCOUNT_COLOR_MAP[String(objColor).toLowerCase()]) {
+			return ACCOUNT_COLOR_MAP[String(objColor).toLowerCase()];
+		}
+		primary = primary.acronym || primary.name || primary.accountName || primary.accountTag || '';
+	}
+
+	const raw = String(primary).trim();
+	if (!raw) return 'bg-slate-100 text-slate-700 ring-slate-300';
+
+	const clean = (s) => String(s || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
+	const targetClean = clean(raw);
+
+	// 2. If primary is directly a recognized color key (e.g. 'purple', 'teal', 'blue')
+	if (ACCOUNT_COLOR_MAP[targetClean]) {
+		return ACCOUNT_COLOR_MAP[targetClean];
+	}
+
+	// 3. Resolve from provided accountObjects or module-level cached account objects
+	const accountsToSearch = (Array.isArray(accountObjects) && accountObjects.length > 0)
+		? accountObjects
+		: cachedGlobalAccountObjects;
+
+	if (Array.isArray(accountsToSearch) && accountsToSearch.length > 0) {
+		const matchedAcc = accountsToSearch.find((a) => {
+			if (!a) return false;
+			return (
+				clean(a.acronym) === targetClean ||
+				clean(a.name) === targetClean ||
+				clean(a.accountName) === targetClean ||
+				clean(a.label) === targetClean
+			);
+		});
+
+		if (matchedAcc && matchedAcc.color) {
+			const col = String(matchedAcc.color).toLowerCase();
+			if (ACCOUNT_COLOR_MAP[col]) {
+				return ACCOUNT_COLOR_MAP[col];
+			}
+		}
+	}
+
+	// 4. Deterministic hash-based dynamic color so ANY account code/name gets a consistent, vibrant badge
+	let hash = 0;
+	for (let i = 0; i < targetClean.length; i++) {
+		hash = targetClean.charCodeAt(i) + ((hash << 5) - hash);
+	}
+	const paletteIndex = Math.abs(hash) % DYNAMIC_TAG_PALETTE.length;
+	return DYNAMIC_TAG_PALETTE[paletteIndex];
 };
 
 // Format numeric string into Indian currency comma format (e.g. 5,00,000 or 5,00,000.50)
@@ -4881,9 +4970,13 @@ export function JointLoanDetailsPage({
 	useEffect(() => {
 		if (Array.isArray(availableAccountObjects) && availableAccountObjects.length > 0) {
 			setAccountObjectsList(availableAccountObjects);
+			setCachedGlobalAccountObjects(availableAccountObjects);
 		} else {
 			api.getAccountNames().then((res) => {
-				if (Array.isArray(res) && res.length > 0) setAccountObjectsList(res);
+				if (Array.isArray(res) && res.length > 0) {
+					setAccountObjectsList(res);
+					setCachedGlobalAccountObjects(res);
+				}
 			}).catch(() => { });
 		}
 	}, [availableAccountObjects]);
@@ -5705,6 +5798,37 @@ export function JointLoanDetailsPage({
 						resolvedPaidA = schItem.splits.amountA ?? schItem.splits.paidAmount ?? schItem.splits.paid_amount;
 					}
 				}
+
+				// Fallback: If splitInfo has raw account breakdown { "FINOVA CAPITAL": [...], "SURGE CAPITAL SOLUTIONS": [...] }
+				if (resolvedPaidA === undefined || resolvedPaidA === null || Number(resolvedPaidA) === 0) {
+					const priAccName = (inst.primaryAccountName || loan?.primaryAccountName || loan?.primary_account_name || '').trim();
+					let priSlices = priAccName && Array.isArray(splitInfo[priAccName]) ? splitInfo[priAccName] : null;
+					if (!priSlices) {
+						priSlices = Object.values(splitInfo).find((v) => Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && 'amount' in v[0]);
+					}
+					if (Array.isArray(priSlices) && priSlices.length > 0) {
+						const pri0 = Number(priSlices[0]?.amount) || 0;
+						let sec0 = 0;
+						const secAmts0 = [];
+						Object.entries(splitInfo).forEach(([accKey, accSlices]) => {
+							if (accKey !== priAccName && Array.isArray(accSlices) && accSlices.length > 0 && typeof accSlices[0] === 'object' && 'amount' in accSlices[0]) {
+								const s0 = Number(accSlices[0]?.amount) || 0;
+								sec0 += s0;
+								secAmts0.push(s0);
+							}
+						});
+						if (pri0 > 0 || sec0 > 0) {
+							resolvedPaidA = pri0 + sec0;
+							if (splitInfo.priAmountA === undefined) splitInfo.priAmountA = pri0;
+							if (splitInfo.secAmountA === undefined) splitInfo.secAmountA = sec0;
+							if (splitInfo.secAmountsA === undefined) splitInfo.secAmountsA = secAmts0;
+							if (splitInfo.amountA === undefined) splitInfo.amountA = pri0 + sec0;
+							if (splitInfo.paidAmount === undefined) splitInfo.paidAmount = pri0 + sec0;
+							if (splitInfo.amountB === undefined) splitInfo.amountB = Math.max(0, fullAmount - (pri0 + sec0));
+						}
+					}
+				}
+
 				const paidAmountA = resolvedPaidA !== undefined && resolvedPaidA !== null && !isNaN(Number(resolvedPaidA)) && Number(resolvedPaidA) > 0
 					? Math.min(fullAmount, Math.max(0, Number(resolvedPaidA)))
 					: (splitInfo.amountA !== undefined
@@ -5729,7 +5853,9 @@ export function JointLoanDetailsPage({
 				const rawPriA = splitInfo.priAmountA ?? splitInfo.priAmount ?? splitInfo.pri_amount_a ?? splitInfo.pri_amount ?? splitInfo.firstPriAmount;
 				const customPriAmountA = rawPriA !== undefined && rawPriA !== null && !isNaN(Number(rawPriA))
 					? Number(rawPriA)
-					: (splitInfo.priAmount !== undefined && !splitInfo.isFinalSettled ? Number(splitInfo.priAmount) : null);
+					: (splitInfo.priAmount !== undefined && !splitInfo.isFinalSettled
+						? Number(splitInfo.priAmount)
+						: (splitInfo.priAmountA !== undefined ? Number(splitInfo.priAmountA) : null));
 				const priAmountA = customPriAmountA !== null ? customPriAmountA : Math.round(fullPriAmount * ratioA);
 				const priAmountB = splitInfo.priAmountB !== undefined
 					? Number(splitInfo.priAmountB)
@@ -5743,11 +5869,13 @@ export function JointLoanDetailsPage({
 				const rawSecA = splitInfo.secAmountA ?? splitInfo.secAmount ?? splitInfo.sec_amount_a ?? splitInfo.sec_amount ?? splitInfo.firstSecAmount;
 				const customSecAmountA = rawSecA !== undefined && rawSecA !== null && !isNaN(Number(rawSecA))
 					? Number(rawSecA)
-					: (splitInfo.secAmount !== undefined && !splitInfo.isFinalSettled ? Number(splitInfo.secAmount) : null);
+					: (splitInfo.secAmount !== undefined && !splitInfo.isFinalSettled
+						? Number(splitInfo.secAmount)
+						: (splitInfo.secAmountA !== undefined ? Number(splitInfo.secAmountA) : null));
 				const rawSecAmtsA = splitInfo.secAmountsA ?? splitInfo.secAmounts ?? splitInfo.sec_amounts ?? splitInfo.firstSecAmounts;
 				const customSecAmountsA = Array.isArray(rawSecAmtsA)
 					? rawSecAmtsA
-					: (Array.isArray(splitInfo.secAmounts) && !splitInfo.isFinalSettled ? splitInfo.secAmounts : null);
+					: (Array.isArray(splitInfo.secAmountsA) ? splitInfo.secAmountsA : (Array.isArray(splitInfo.secAmounts) && !splitInfo.isFinalSettled ? splitInfo.secAmounts : null));
 				const customSecAmountsB = Array.isArray(splitInfo.secAmountsB) ? splitInfo.secAmountsB : null;
 
 				const fullSecTotal = (inst.secAccounts || []).reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
@@ -11631,6 +11759,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				if (isMounted && Array.isArray(accs) && accs.length > 0) {
 					setAvailableAccountObjects(accs);
 					setAvailableAccountOptions(accs.map((a) => a.name));
+					setCachedGlobalAccountObjects(accs);
 				}
 			} catch (err) {
 				console.warn('Backend account names unavailable:', err);
@@ -13918,10 +14047,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 											<td className="py-3 px-4 whitespace-nowrap">
 												<span
 													className={`inline-block font-extrabold text-[10.5px] px-2 py-0.5 rounded-md uppercase tracking-wider ring-1 ${getPrimaryTagColor(
-														loan.primary
+														loan.primary || loan.primaryAccountName || loan.primary_account_name,
+														availableAccountObjects
 													)}`}
 												>
-													{loan.primary || 'SCS'}
+													{loan.primary || getAcronym(loan.primaryAccountName || loan.primary_account_name, availableAccountObjects) || 'PRI'}
 												</span>
 											</td>
 
