@@ -731,9 +731,9 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 		const chqNo = pdfRow?.cheque_no || pdfRow?.chequeNo || (pdfRow ? '' : `CHQ-${baseChqNum + i}`);
 
 		// Status calculation purely from DB row & actual dates
-		let status = 'Upcoming';
-		let badgeClass = 'bg-slate-100 text-slate-700 ring-slate-200';
-		let dotClass = 'bg-slate-400';
+		let status = 'Active';
+		let badgeClass = 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+		let dotClass = 'bg-emerald-500';
 
 		if (pdfRow?.status) {
 			status = pdfRow.status;
@@ -741,13 +741,13 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 			status = 'Settled';
 		} else if (receivedDate) {
 			status = 'Collected';
-		} else if (isPastOrTodayDate(dateStr)) {
+		} else if (isDueDateCrossed(dateStr)) {
 			status = 'Overdue';
 		} else {
-			status = 'Upcoming';
+			status = 'Active';
 		}
 
-		if (status === 'Settled' || status === 'Closed') {
+		if (status === 'Settled' || status === 'Closed' || status === 'Active') {
 			badgeClass = 'bg-emerald-50 text-emerald-700 ring-emerald-200';
 			dotClass = 'bg-emerald-500';
 		} else if (status === 'Collected' || status === 'Paid') {
@@ -928,45 +928,36 @@ export const isEmiOverdue = (inst) => {
 };
 
 // Check if a loan has any installment awaiting payout date approval
+// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date.
 export const isLoanPayoutPending = (loan) => {
 	if (!loan || loan.is_deleted) return false;
-	const loanStatus = (loan.status || '').toLowerCase();
-	const appStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
-	if (
-		loanStatus === 'pending payout approval' ||
-		loanStatus === 'payout pending' ||
-		loanStatus === 'pending' ||
-		appStatus === 'PENDING_PAYOUT'
-	) {
-		return true;
-	}
-	const sch = loan.repaymentSchedule || loan.repayment_schedule;
+	const sch = Array.isArray(loan.repaymentSchedule)
+		? loan.repaymentSchedule
+		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+
 	if (Array.isArray(sch)) {
 		for (const item of sch) {
 			if (!item) continue;
-			const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
-			const instStatus = (item.status || '').toLowerCase();
-			if (pStatus === 'PENDING' || instStatus === 'pending payout approval') {
-				return true;
-			}
+
+			// 1. Sub-installments (splits)
 			if (Array.isArray(item.subInstallments) && item.subInstallments.length > 0) {
 				for (const sub of item.subInstallments) {
 					if (!sub) continue;
 					const subPStatus = (sub.payout_approval_status || sub.payoutApprovalStatus || '').toUpperCase();
 					const subStatus = (sub.status || '').toLowerCase();
-					if (subPStatus === 'PENDING' || subStatus === 'pending payout approval') {
-						return true;
-					}
 					const subRecd = sub.receivedDate || sub.received_date || sub.recdDate;
 					const hasSubRecd = Boolean(subRecd && String(subRecd).trim() && String(subRecd).trim() !== '-' && String(subRecd).trim() !== '—');
 					const subPayoutDate = sub.dueDate || sub.paymentDate || sub.payment_date;
 					const hasSubPayout = Boolean(subPayoutDate && String(subPayoutDate).trim() && String(subPayoutDate).trim() !== '-' && String(subPayoutDate).trim() !== '—');
-					const isSubApproved = hasSubPayout && (subStatus === 'settled' || ((subPStatus === 'APPROVED' || sub.payout_approved_by || sub.payoutApprovedBy) && subPStatus !== 'PENDING' && subPStatus !== 'REJECTED' && (sub.payout_approved_by || sub.payoutApprovedBy || subStatus === 'settled')));
-					if (hasSubRecd && !isSubApproved) {
+					const isSubApproved = hasSubPayout && (subStatus === 'settled' || ((subPStatus === 'APPROVED' || sub.payout_approved_by || sub.payoutApprovedBy) && subPStatus !== 'PENDING' && subPStatus !== 'REJECTED'));
+
+					if ((hasSubRecd || hasSubPayout) && !isSubApproved) {
 						return true;
 					}
 				}
 			}
+
+			// 2. Raw JSON splits
 			if (item.splits) {
 				let sp = item.splits;
 				if (typeof sp === 'string') {
@@ -979,28 +970,29 @@ export const isLoanPayoutPending = (loan) => {
 				if (sp && typeof sp === 'object') {
 					const sA = (sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
 					const sB = (sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
-					const sAll = (sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
-					if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
-						return true;
-					}
-					if (!sp.isFinalSettled) {
-						const recdA = sp.recdDateA || sp.recdDate;
-						const recdB = sp.recdDateB;
-						if (recdA && sA !== 'APPROVED') return true;
-						if (recdB && sB !== 'APPROVED') return true;
-					}
+					const recdA = sp.recdDateA || sp.recdDate;
+					const recdB = sp.recdDateB;
+					const dueA = sp.dueDateA || sp.dueDate;
+					const dueB = sp.dueDateB;
+					const hasA = Boolean((recdA && String(recdA).trim() && recdA !== '-' && recdA !== '—') || (dueA && String(dueA).trim() && dueA !== '-' && dueA !== '—'));
+					const hasB = Boolean((recdB && String(recdB).trim() && recdB !== '-' && recdB !== '—') || (dueB && String(dueB).trim() && dueB !== '-' && dueB !== '—'));
+
+					if (hasA && sA !== 'APPROVED') return true;
+					if (hasB && sB !== 'APPROVED') return true;
 				}
 			}
 
-			// Main / regular installment:
-			// If EMI received date is filled, but payout to secondary is not yet approved/settled
+			// 3. Regular installment
 			const recdDate = item.receivedDate || item.received_date || item.recdDate || item.recd_date;
-			const hasRecdDate = Boolean(recdDate && String(recdDate).trim() && String(recdDate).trim() !== '-' && String(recdDate).trim() !== '—') || instStatus === 'collected';
+			const hasRecdDate = Boolean(recdDate && String(recdDate).trim() && String(recdDate).trim() !== '-' && String(recdDate).trim() !== '—') || item.status === 'Collected';
 			const payoutDate = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
 			const hasPayoutDate = Boolean(payoutDate && String(payoutDate).trim() && String(payoutDate).trim() !== '-' && String(payoutDate).trim() !== '—');
-			const isApproved = hasPayoutDate && (instStatus === 'settled' || ((pStatus === 'APPROVED' || item.payout_approved_by || item.payoutApprovedBy) && pStatus !== 'PENDING' && pStatus !== 'REJECTED' && (item.payout_approved_by || item.payoutApprovedBy || instStatus === 'settled')));
+			const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
+			const instStatus = (item.status || '').toLowerCase();
+			const isApproved = hasPayoutDate && (instStatus === 'settled' || ((pStatus === 'APPROVED' || item.payout_approved_by || item.payoutApprovedBy) && pStatus !== 'PENDING' && pStatus !== 'REJECTED'));
 
-			if (hasRecdDate && !isApproved) {
+			// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
+			if ((hasRecdDate || hasPayoutDate) && !isApproved) {
 				return true;
 			}
 		}
@@ -1080,9 +1072,11 @@ export const areAllPayoutsApproved = (loan) => {
 
 // Compute loan status based on EMI schedule and approval status:
 // - Pending: if any payout date approval is pending, or if pending initial approval
+// Compute loan status based on EMI schedule and approval status:
+// - Pending: if any payout date approval is pending (recd/payout date filled and not approved by sec manager), or if pending initial approval
 // - Closed: all EMIs are paid AND all payout dates are approved
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
-// - Active: loan is active, EMI is not pending/overdue
+// - Active: all emi's recd/payout date approved by sec manager and no emi date is crossed today date
 export const getComputedLoanStatus = (loan) => {
 	if (!loan) return 'Active';
 
@@ -1101,17 +1095,14 @@ export const getComputedLoanStatus = (loan) => {
 		return 'Pending Admin';
 	}
 
-	// 4. Any payout date approval pending -> loan status is ALWAYS 'Pending'
-	const hasPayoutPending = isLoanPayoutPending(loan);
-	if (hasPayoutPending) {
-		return 'Pending';
-	}
-
 	const schedule = Array.isArray(loan.repaymentSchedule)
 		? loan.repaymentSchedule
 		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
 
-	// 5. Closed: only once all payout dates are approved AND all EMIs are paid
+	// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
+	const hasPayoutPending = isLoanPayoutPending(loan);
+
+	// Closed: only once all payout dates are approved AND all EMIs are paid
 	const allPayoutsApproved = areAllPayoutsApproved(loan);
 	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
 
@@ -1119,18 +1110,17 @@ export const getComputedLoanStatus = (loan) => {
 		return 'Closed';
 	}
 
-	// 6. Overdue: loan is active but any one of EMI is overdue
-	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
-	if (hasOverdue || loan.status === 'Overdue' || loan.status === 'Date Overdue') {
-		return 'Overdue';
-	}
-
-	// 7. Generic pending fallback
-	if (loan.status === 'Pending') {
+	if (hasPayoutPending) {
 		return 'Pending';
 	}
 
-	// 8. Active: loan is active, EMI is not pending/overdue
+	// Rule: overdue means if any emi date is crossed today date
+	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
+	if (hasOverdue) {
+		return 'Overdue';
+	}
+
+	// Rule: active status means all emi's recd/payout date approved by sec manager and any emi date is not crossed today date
 	return 'Active';
 };
 
@@ -5930,12 +5920,12 @@ export function JointLoanDetailsPage({
 						row.badgeClass = 'bg-blue-50 text-blue-700 ring-blue-200';
 						row.dotClass = 'bg-blue-500';
 					} else {
-						const isPast = isPastOrTodayDate(row.date) || row.parentSNo === 2;
-						row.status = isPast ? 'Overdue' : 'Upcoming';
-						row.badgeClass = isPast
+						const isOverdue = isDueDateCrossed(row.date);
+						row.status = isOverdue ? 'Overdue' : 'Active';
+						row.badgeClass = isOverdue
 							? 'bg-rose-50 text-rose-700 ring-rose-200'
-							: 'bg-slate-100 text-slate-700 ring-slate-200';
-						row.dotClass = isPast ? 'bg-rose-500' : 'bg-slate-400';
+							: 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+						row.dotClass = isOverdue ? 'bg-rose-500' : 'bg-emerald-500';
 					}
 				};
 
@@ -6046,18 +6036,12 @@ export function JointLoanDetailsPage({
 					merged.badgeClass = 'bg-blue-50 text-blue-700 ring-blue-200';
 					merged.dotClass = 'bg-blue-500';
 				} else {
-					if (inst.sNo === 2) {
-						merged.status = 'Overdue';
-						merged.badgeClass = 'bg-rose-50 text-rose-700 ring-rose-200';
-						merged.dotClass = 'bg-rose-500';
-					} else {
-						const isPast = isPastOrTodayDate(inst.date);
-						merged.status = isPast ? 'Overdue' : 'Upcoming';
-						merged.badgeClass = isPast
-							? 'bg-rose-50 text-rose-700 ring-rose-200'
-							: 'bg-slate-100 text-slate-700 ring-slate-200';
-						merged.dotClass = isPast ? 'bg-rose-500' : 'bg-slate-400';
-					}
+					const isOverdue = isDueDateCrossed(inst.date);
+					merged.status = isOverdue ? 'Overdue' : 'Active';
+					merged.badgeClass = isOverdue
+						? 'bg-rose-50 text-rose-700 ring-rose-200'
+						: 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+					merged.dotClass = isOverdue ? 'bg-rose-500' : 'bg-emerald-500';
 				}
 				result.push(merged);
 			}
@@ -6843,8 +6827,8 @@ export function JointLoanDetailsPage({
 			return repaymentSchedule.filter((s) => s.status === 'Overdue' || s.status === 'Partial');
 		if (scheduleFilter === 'PARTIAL')
 			return repaymentSchedule.filter((s) => s.isPartial);
-		if (scheduleFilter === 'UPCOMING')
-			return repaymentSchedule.filter((s) => s.status === 'Upcoming');
+		if (scheduleFilter === 'ACTIVE' || scheduleFilter === 'UPCOMING')
+			return repaymentSchedule.filter((s) => s.status === 'Active' || s.status === 'Upcoming');
 		return repaymentSchedule;
 	}, [repaymentSchedule, scheduleFilter]);
 
@@ -6913,8 +6897,8 @@ export function JointLoanDetailsPage({
 		() => repaymentSchedule.filter((s) => s.status === 'Overdue' || s.status === 'Partial').length,
 		[repaymentSchedule]
 	);
-	const upcomingCount = useMemo(
-		() => repaymentSchedule.filter((s) => s.status === 'Upcoming').length,
+	const activeCount = useMemo(
+		() => repaymentSchedule.filter((s) => s.status === 'Active' || s.status === 'Upcoming').length,
 		[repaymentSchedule]
 	);
 	const partialCount = useMemo(
@@ -6926,11 +6910,11 @@ export function JointLoanDetailsPage({
 			{ id: 'ALL', label: 'All Statuses', count: repaymentSchedule.length, dot: 'bg-slate-400' },
 			{ id: 'SETTLED', label: 'Settled', count: settledCount, dot: 'bg-emerald-500' },
 			{ id: 'COLLECTED', label: 'Collected', count: collectedCount, dot: 'bg-blue-500' },
+			{ id: 'ACTIVE', label: 'Active', count: activeCount, dot: 'bg-emerald-500' },
 			{ id: 'OVERDUE', label: 'Overdue', count: overdueCount, dot: 'bg-rose-500' },
 			{ id: 'PARTIAL', label: 'Partial', count: partialCount, dot: 'bg-amber-500' },
-			{ id: 'UPCOMING', label: 'Upcoming', count: upcomingCount, dot: 'bg-slate-400' },
 		],
-		[repaymentSchedule.length, settledCount, collectedCount, overdueCount, partialCount, upcomingCount]
+		[repaymentSchedule.length, settledCount, collectedCount, overdueCount, partialCount, activeCount]
 	);
 	const paidInstallmentsCount = useMemo(
 		() => repaymentSchedule.filter((s) => s.status === 'Settled' || s.status === 'Collected' || s.status === 'Paid').length,
@@ -9492,10 +9476,10 @@ export function JointLoanDetailsPage({
 																	e.stopPropagation();
 																	handleClearRowDates(inst.sNo);
 																}}
-																className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 active:scale-95 cursor-pointer z-10"
+																className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-95 cursor-pointer z-10"
 																title="Clear Recd Date & Payout Date"
 															>
-																<span className="material-symbols-outlined text-[15px]">
+																<span className="material-symbols-outlined" style={{fontSize: "15px"}}>
 																	close
 																</span>
 															</button>
@@ -11464,6 +11448,13 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [syncFeedback, setSyncFeedback] = useState(null);
+	const [lastSyncTime, setLastSyncTime] = useState(() => {
+		try {
+			return localStorage.getItem('joint_loan_last_sync_time') || null;
+		} catch (e) {
+			return null;
+		}
+	});
 
 	const fetchingLoanIdRef = useRef(null);
 
@@ -11655,9 +11646,23 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				console.warn('Backend users unavailable:', err);
 			}
 		};
+		const loadSyncStatus = async () => {
+			try {
+				const status = await api.getSyncStatus();
+				if (isMounted && status?.last_sync_time) {
+					setLastSyncTime(status.last_sync_time);
+					try {
+						localStorage.setItem('joint_loan_last_sync_time', status.last_sync_time);
+					} catch (e) {}
+				}
+			} catch (err) {
+				console.warn('Sync status load warning:', err);
+			}
+		};
 		loadLoans();
 		loadAccountNames();
 		loadUsers();
+		loadSyncStatus();
 		return () => {
 			isMounted = false;
 		};
@@ -11753,10 +11758,16 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		setIsSyncing(true);
 		setSyncFeedback(null);
 		try {
-			await api.syncData();
+			const syncRes = await api.syncData();
 			const fresh = await api.getJointLoans();
 			if (Array.isArray(fresh) && fresh.length > 0) {
 				setLoans(fresh);
+				if (selectedLoan) {
+					const updated = fresh.find((l) => String(l.id) === String(selectedLoan.id));
+					if (updated) {
+						setSelectedLoan(updated);
+					}
+				}
 			}
 			try {
 				const freshAccs = await api.getAccountNames();
@@ -11767,6 +11778,27 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			} catch (accErr) {
 				console.warn('Sync account names warning:', accErr);
 			}
+
+			// Format current time as DD-MM-YYYY hh:mm AM/PM fallback if not returned by backend
+			let syncedTime = syncRes?.last_sync_time;
+			if (!syncedTime) {
+				const now = new Date();
+				const pad = (n) => String(n).padStart(2, '0');
+				const day = pad(now.getDate());
+				const month = pad(now.getMonth() + 1);
+				const year = now.getFullYear();
+				let hours = now.getHours();
+				const ampm = hours >= 12 ? 'PM' : 'AM';
+				hours = hours % 12 || 12;
+				const minutes = pad(now.getMinutes());
+				syncedTime = `${day}-${month}-${year} ${pad(hours)}:${minutes} ${ampm}`;
+			}
+
+			setLastSyncTime(syncedTime);
+			try {
+				localStorage.setItem('joint_loan_last_sync_time', syncedTime);
+			} catch (e) {}
+
 			setIsSyncing(false);
 			setSyncFeedback('DB Synced');
 			setTimeout(() => setSyncFeedback(null), 2500);
@@ -11835,6 +11867,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		}
 	}, [isCreateOpen]);
 
+	const [primaryAmountInput, setPrimaryAmountInput] = useState('');
+	const [primaryShareInput, setPrimaryShareInput] = useState('50');
 	const [secondaryAccounts, setSecondaryAccounts] = useState(() => [
 		{ id: 1, accountName: secondaryAccountOptions[0], amount: '', sharePercent: '' },
 	]);
@@ -11878,6 +11912,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		setNewAmount('');
 		setNewStatus('Pending');
 		setNewPrimaryType('SCS');
+		setPrimaryAmountInput('');
+		setPrimaryShareInput('50');
 		setSecondaryAccounts([{ id: 1, accountName: '', amount: '', sharePercent: '' }]);
 		setUploadedFiles([]);
 		setPdfParsed(null);
@@ -11970,6 +12006,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				if (baseLoanAmount > 0) {
 					const pct = (numVal / baseLoanAmount) * 100;
 					calculatedShare = pct === 0 ? '0' : Number(pct.toFixed(2)).toString();
+					const newPriAmt = Math.max(0, baseLoanAmount - (numVal + otherAccountsAmount));
+					setPrimaryAmountInput(formatIndianNumber(String(newPriAmt)));
+					const priPct = (newPriAmt / baseLoanAmount) * 100;
+					setPrimaryShareInput(priPct === 0 ? '0' : Number(priPct.toFixed(2)).toString());
 				}
 
 				return prev.map((acc) =>
@@ -12025,6 +12065,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						numAmount = maxAllowedAmount;
 					}
 					calculatedAmount = formatIndianNumber(String(numAmount));
+					const otherSecShare = prev.filter((a) => a.id !== id).reduce((sum, a) => sum + (parseFloat(a.sharePercent) || 0), 0);
+					const priPct = Math.max(0, 100 - (effectiveShare + otherSecShare));
+					setPrimaryShareInput(priPct === 0 ? '0' : Number(priPct.toFixed(2)).toString());
+					const newPriAmt = Math.round((priPct / 100) * baseLoanAmount);
+					setPrimaryAmountInput(formatIndianNumber(String(newPriAmt)));
 				}
 
 				return prev.map((acc) =>
@@ -12090,6 +12135,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						numAmount = maxAllowedAmount;
 					}
 					calculatedAmount = formatIndianNumber(String(numAmount));
+					const otherSecShare = prev.filter((a) => a.id !== id).reduce((sum, a) => sum + (parseFloat(a.sharePercent) || 0), 0);
+					const priPct = Math.max(0, 100 - (nextShare + otherSecShare));
+					setPrimaryShareInput(priPct === 0 ? '0' : Number(priPct.toFixed(2)).toString());
+					const newPriAmt = Math.round((priPct / 100) * baseLoanAmount);
+					setPrimaryAmountInput(formatIndianNumber(String(newPriAmt)));
 				}
 
 				return prev.map((acc) =>
@@ -12119,6 +12169,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				if (baseLoanAmount > 0) {
 					const pct = (nextAmt / baseLoanAmount) * 100;
 					calculatedShare = pct === 0 ? '0' : Number(pct.toFixed(2)).toString();
+					const newPriAmt = Math.max(0, baseLoanAmount - (nextAmt + otherAccountsAmount));
+					setPrimaryAmountInput(formatIndianNumber(String(newPriAmt)));
+					const priPct = (newPriAmt / baseLoanAmount) * 100;
+					setPrimaryShareInput(priPct === 0 ? '0' : Number(priPct.toFixed(2)).toString());
 				}
 
 				return prev.map((acc) =>
@@ -12136,6 +12190,128 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		});
 	};
 
+	const handleUpdatePrimaryAmount = (value) => {
+		const baseLoanAmount =
+			Number(pdfParsed?.loan_amount) ||
+			Number(String(newAmount || '').replace(/[^0-9.-]+/g, '')) ||
+			0;
+
+		let cleanAmt = String(value || '').replace(/[^0-9.]/g, '');
+		const parts = cleanAmt.split('.');
+		if (parts.length > 2) {
+			cleanAmt = parts[0] + '.' + parts.slice(1).join('');
+		}
+
+		if (!cleanAmt) {
+			setPrimaryAmountInput('');
+			setPrimaryShareInput('');
+			return;
+		}
+
+		let numVal = parseFloat(cleanAmt);
+		if (isNaN(numVal)) {
+			setPrimaryAmountInput(cleanAmt);
+			return;
+		}
+
+		if (baseLoanAmount > 0 && numVal > baseLoanAmount) {
+			numVal = baseLoanAmount;
+			cleanAmt = String(baseLoanAmount);
+		}
+
+		const formattedAmount = formatIndianNumber(cleanAmt);
+		setPrimaryAmountInput(formattedAmount);
+
+		if (baseLoanAmount > 0) {
+			const priPct = (numVal / baseLoanAmount) * 100;
+			setPrimaryShareInput(priPct === 0 ? '0' : Number(priPct.toFixed(2)).toString());
+
+			const secAmt = Math.max(0, baseLoanAmount - numVal);
+			const secPct = (secAmt / baseLoanAmount) * 100;
+
+			setSecondaryAccounts((prev) => {
+				if (!prev.length) return prev;
+				const updated = [...prev];
+				updated[0] = {
+					...updated[0],
+					amount: formatIndianNumber(String(secAmt)),
+					sharePercent: secPct === 0 ? '0' : Number(secPct.toFixed(2)).toString(),
+				};
+				return updated;
+			});
+		}
+	};
+
+	const handleUpdatePrimaryShare = (value) => {
+		const baseLoanAmount =
+			Number(pdfParsed?.loan_amount) ||
+			Number(String(newAmount || '').replace(/[^0-9.-]+/g, '')) ||
+			0;
+
+		let cleanShare = String(value || '').replace(/[^0-9.]/g, '');
+		const parts = cleanShare.split('.');
+		if (parts.length > 2) {
+			cleanShare = parts[0] + '.' + parts.slice(1).join('');
+		}
+
+		if (cleanShare === '') {
+			setPrimaryShareInput('');
+			setPrimaryAmountInput('');
+			return;
+		}
+
+		let numShare = parseFloat(cleanShare);
+		if (isNaN(numShare)) {
+			setPrimaryShareInput(cleanShare);
+			return;
+		}
+
+		if (numShare > 100) numShare = 100;
+		const finalShareStr = numShare === 0 ? '0' : Number(numShare.toFixed(2)).toString();
+		setPrimaryShareInput(finalShareStr);
+
+		if (baseLoanAmount > 0) {
+			const priAmt = Math.round((numShare / 100) * baseLoanAmount);
+			setPrimaryAmountInput(formatIndianNumber(String(priAmt)));
+
+			const secPct = Math.max(0, 100 - numShare);
+			const secAmt = Math.max(0, baseLoanAmount - priAmt);
+
+			setSecondaryAccounts((prev) => {
+				if (!prev.length) return prev;
+				const updated = [...prev];
+				updated[0] = {
+					...updated[0],
+					amount: formatIndianNumber(String(secAmt)),
+					sharePercent: secPct === 0 ? '0' : Number(secPct.toFixed(2)).toString(),
+				};
+				return updated;
+			});
+		}
+	};
+
+	const handleStepPrimaryAccount = (field, delta) => {
+		const baseLoanAmount =
+			Number(pdfParsed?.loan_amount) ||
+			Number(String(newAmount || '').replace(/[^0-9.-]+/g, '')) ||
+			0;
+		if (baseLoanAmount <= 0) return;
+
+		if (field === 'sharePercent') {
+			const currentShare = parseFloat(primaryShareInput) || 0;
+			let nextShare = Math.round((currentShare + delta) * 100) / 100;
+			nextShare = Math.max(0, Math.min(100, nextShare));
+			handleUpdatePrimaryShare(String(nextShare));
+		}
+
+		if (field === 'amount') {
+			const currentAmt = Number(String(primaryAmountInput || '').replace(/[^0-9.-]+/g, '')) || 0;
+			let nextAmt = Math.round((currentAmt + delta) * 100) / 100;
+			nextAmt = Math.max(0, Math.min(baseLoanAmount, nextAmt));
+			handleUpdatePrimaryAmount(String(nextAmt));
+		}
+	};
+
 	const handleResetUpload = () => {
 		setUploadedFiles([]);
 		setSelectedPdfFile(null);
@@ -12143,6 +12319,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		setPdfError('');
 		setDuplicateLoanError(null);
 		setUnauthorizedPrimaryError(null);
+		setPrimaryAmountInput('');
+		setPrimaryShareInput('50');
 		setSecondaryAccounts([{ id: 1, accountName: '', amount: '', sharePercent: '' }]);
 		if (fileInputRef.current) fileInputRef.current.value = '';
 	};
@@ -12150,26 +12328,29 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const handleFileSelect = async (e) => {
 		if (!e.target.files || e.target.files.length === 0) return;
 		const filesArr = Array.from(e.target.files);
-		const pdfFile = filesArr.find((f) => f.name.toLowerCase().endsWith('.pdf'));
+		const docFile = filesArr.find((f) => {
+			const n = f.name.toLowerCase();
+			return n.endsWith('.pdf') || n.endsWith('.docx') || n.endsWith('.doc');
+		});
 
-		if (!pdfFile) {
-			setPdfError('Please upload a valid PDF loan document.');
+		if (!docFile) {
+			setPdfError('Please upload a valid PDF or Word (.docx) loan document.');
 			return;
 		}
 
 		// Add to uploaded files list for display
 		setUploadedFiles([
-			{ name: pdfFile.name, size: (pdfFile.size / 1024).toFixed(1) + ' KB' },
+			{ name: docFile.name, size: (docFile.size / 1024).toFixed(1) + ' KB' },
 		]);
 
-		setSelectedPdfFile(pdfFile);
+		setSelectedPdfFile(docFile);
 		setPdfParsing(true);
 		setPdfParsed(null);
 		setPdfError('');
 		setDuplicateLoanError(null);
 
 		try {
-			const res = await api.uploadPdf(pdfFile);
+			const res = await api.uploadPdf(docFile);
 			if (res.success && res.data) {
 				const d = res.data;
 				const rawLoanId = d.loan_number;
@@ -12289,16 +12470,19 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						(opt) => !isPrimaryAccountMatch(opt, priName)
 					);
 					const defaultSecAccount = validSecondaryOptions[0] || '';
-					const initialAmount = d.loan_amount
-						? formatIndianNumber(String(Math.round(d.loan_amount * 0.5 * 100) / 100))
-						: '';
+					const baseLoanAmt = Number(d.loan_amount) || 0;
+					const halfAmt = baseLoanAmt ? Math.round(baseLoanAmt * 0.5 * 100) / 100 : 0;
+					const initialAmount = baseLoanAmt ? formatIndianNumber(String(halfAmt)) : '';
+
+					setPrimaryAmountInput(initialAmount);
+					setPrimaryShareInput(baseLoanAmt ? '50' : '');
 
 					setSecondaryAccounts([
 						{
 							id: 1,
 							accountName: defaultSecAccount,
 							amount: initialAmount,
-							sharePercent: d.loan_amount ? '50' : '',
+							sharePercent: baseLoanAmt ? '50' : '',
 						},
 					]);
 
@@ -13412,16 +13596,28 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						type="button"
 						onClick={handleDbSync}
 						disabled={isSyncing}
-						className="flex items-center gap-1.5 bg-surface-container-low hover:bg-surface-container text-slate-700 hover:text-slate-900 border border-slate-200/80 px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer"
-						title="Sync with Day Book"
+						className={`flex items-center gap-2 bg-surface-container-low hover:bg-surface-container text-slate-700 hover:text-slate-900 border border-slate-200/80 ${
+							lastSyncTime ? 'px-3 py-1.5' : 'px-3 py-2'
+						} rounded-xl shadow-xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer group`}
+						title={lastSyncTime ? `Last synced: ${lastSyncTime} • Click to sync Day Book` : 'Sync with Day Book'}
 					>
 						<span
-							className={`material-symbols-outlined text-[18px] ${isSyncing ? 'animate-spin text-primary' : 'text-slate-600'
-								}`}
+							className={`material-symbols-outlined text-[18px] transition-transform ${
+								isSyncing ? 'animate-spin text-primary' : 'text-slate-500 group-hover:text-primary'
+							}`}
 						>
 							sync
 						</span>
-						<span>{isSyncing ? 'Syncing...' : 'DB Sync'}</span>
+						<div className="flex flex-col text-left leading-tight">
+							<span className="font-bold text-[12px] whitespace-nowrap">
+								{isSyncing ? 'Syncing...' : syncFeedback || 'DB Sync'}
+							</span>
+							{lastSyncTime && (
+								<span className="text-[9px] text-slate-400 font-medium whitespace-nowrap font-mono tracking-tight">
+									{lastSyncTime}
+								</span>
+							)}
+						</div>
 					</button>
 
 					<button
@@ -14060,7 +14256,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 															type="file"
 															ref={fileInputRef}
 															onChange={handleFileSelect}
-															accept=".pdf"
+															accept=".pdf,.docx,.doc"
 															className="hidden"
 														/>
 														<div className="flex flex-col items-center justify-center gap-2">
@@ -14071,11 +14267,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 																Click to upload or drag &amp; drop loan document
 															</div>
 															<div className="text-[12px] text-slate-500">
-																Upload loan PDF to check uniqueness and extract facility details
+																Upload loan PDF or Word document (.docx) to check uniqueness and extract facility details
 															</div>
 															<span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200/70 text-slate-600 mt-1">
-																<span className="material-symbols-outlined text-[13px]">picture_as_pdf</span>
-																PDF files only (max. 10MB)
+																<span className="material-symbols-outlined text-[13px]">description</span>
+																PDF or Word (.docx) files (max. 10MB)
 															</span>
 														</div>
 													</div>
@@ -14360,7 +14556,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 										</div>
 
 										{/* Secondary Accounts & Amounts Section */}
-										<div className="pt-2">
+										<div className="pt-1">
 											<div className="flex items-center justify-between pb-2 mb-2">
 												<div>
 													<label className="block text-[12px] font-bold text-slate-700 uppercase tracking-wider">

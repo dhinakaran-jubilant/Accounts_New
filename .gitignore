@@ -105,6 +105,13 @@ frontend/.env.development.local
 frontend/.env.test.local
 frontend/.env.production.local
 
+# SSL Certificates & Keys
+*.pem
+*.key
+backend/*.pem
+backend/*.key
+
+
 # ------------------------------------------------------------------------------
 # Databases & Local Storage
 # ------------------------------------------------------------------------------

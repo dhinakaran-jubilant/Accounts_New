@@ -25,7 +25,7 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from models import db, Loan, RemainingAccount, RepaymentSchedule, User, Notification, ShortLoan, AccountName
 from werkzeug.security import generate_password_hash, check_password_hash
 try:
-    from read_pdf import extract_pdf_data, build_final_output
+    from read_pdf import extract_pdf_data, extract_document_data, build_final_output
     PDF_EXTRACTION_AVAILABLE = True
 except ImportError as e:
     PDF_EXTRACTION_AVAILABLE = False
@@ -260,7 +260,7 @@ def serialize_pg_loan_to_joint(l):
                 splits_data = None
 
 
-        row_status = 'Upcoming'
+        row_status = 'Active'
         if splits_data and not splits_data.get('isFinalSettled'):
             row_status = 'Partial'
         elif s.received_date:
@@ -286,18 +286,19 @@ def serialize_pg_loan_to_joint(l):
         has_pay = bool(s.payment_date and str(s.payment_date).strip() not in ('', '-', '—', 'None'))
         is_p_approved = has_pay and bool(getattr(s, 'payout_approved_by', None))
 
-        if p_status == 'PENDING':
+        if not has_recd and not has_pay:
+            p_status = None
+            p_target = None
+            p_role = None
+        elif is_p_approved or p_status == 'APPROVED':
+            p_status = 'APPROVED'
+            p_target = None
+        elif p_status == 'PENDING' or (has_recd and not is_p_approved):
+            p_status = 'PENDING'
             if not p_target:
                 p_target = 'PRIMARY' if p_role == 'SECONDARY' else 'SECONDARY'
             if not p_role:
                 p_role = 'SECONDARY' if p_target == 'PRIMARY' else 'PRIMARY'
-        elif is_p_approved:
-            p_status = 'APPROVED'
-            p_target = None
-        elif has_recd and not is_p_approved:
-            p_status = 'PENDING'
-            p_target = 'SECONDARY'
-            p_role = 'PRIMARY'
         elif not p_status and s.payment_date:
             p_status = 'APPROVED'
             p_target = None
@@ -343,7 +344,11 @@ def serialize_pg_loan_to_joint(l):
     all_settled = len(repayment_schedule_list) > 0
     for s_item in repayment_schedule_list:
         p_stat = (s_item.get('payout_approval_status') or s_item.get('payoutApprovalStatus') or '').upper()
-        if p_stat == 'PENDING':
+        p_approved_by = s_item.get('payout_approved_by') or s_item.get('payoutApprovedBy')
+        has_recd = bool(s_item.get('received_date') and str(s_item.get('received_date')).strip() not in ('', '-', '—', 'None'))
+        has_pay = bool(s_item.get('payment_date') and str(s_item.get('payment_date')).strip() not in ('', '-', '—', 'None'))
+
+        if (has_recd or has_pay) and (p_stat != 'APPROVED' and not p_approved_by):
             has_payout_pending = True
 
         sp_data = s_item.get('splits')
@@ -355,14 +360,16 @@ def serialize_pg_loan_to_joint(l):
                 due_b = sp_data.get('dueDateB')
                 recd_a = sp_data.get('recdDateA') or sp_data.get('recdDate')
                 recd_b = sp_data.get('recdDateB')
-                if stat_a == 'PENDING' or stat_b == 'PENDING':
+                has_a = bool((recd_a and str(recd_a).strip() not in ('', '-', '—', 'None')) or (due_a and str(due_a).strip() not in ('', '-', '—', 'None')))
+                has_b = bool((recd_b and str(recd_b).strip() not in ('', '-', '—', 'None')) or (due_b and str(due_b).strip() not in ('', '-', '—', 'None')))
+                if (has_a and stat_a != 'APPROVED') or (has_b and stat_b != 'APPROVED'):
                     has_payout_pending = True
                 if not recd_a or not due_a or stat_a != 'APPROVED':
                     all_settled = False
                 if (recd_b or due_b) and (not recd_b or not due_b or stat_b != 'APPROVED'):
                     all_settled = False
         else:
-            if not s_item.get('received_date') or not s_item.get('payment_date') or p_stat != 'APPROVED':
+            if not has_recd or not has_pay or (p_stat != 'APPROVED' and not p_approved_by):
                 all_settled = False
 
     if l.approval_status == 'REJECTED':
@@ -371,10 +378,10 @@ def serialize_pg_loan_to_joint(l):
         badge_status = 'Pending Secondary'
     elif l.approval_status in ['PENDING_ADMIN', 'VERIFIED']:
         badge_status = 'Pending Admin'
-    elif has_payout_pending:
-        badge_status = 'Pending'
     elif (all_settled or l.approval_status == 'CLOSED') and not has_payout_pending:
         badge_status = 'Closed'
+    elif has_payout_pending:
+        badge_status = 'Pending'
     elif has_overdue and l.approval_status == 'APPROVED':
         badge_status = 'Overdue'
     elif l.approval_status == 'APPROVED':
@@ -1920,13 +1927,27 @@ def handle_payout_approval(loan_id, s_no):
     return jsonify({'error': 'Invalid action. Expected APPROVE or REJECT.'}), 400
 
 # --- Database Sync / Refresh Endpoint ---
-@app.route('/api/sync', methods=['POST'])
+@app.route('/api/sync', methods=['GET', 'POST'])
 def sync_data():
+    from sftp_service import load_sftp_config, run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
+    sftp_res = None
+    if request.method == 'POST':
+        try:
+            sftp_cfg = load_sftp_config(hide_password=False)
+            if sftp_cfg.get('host') and sftp_cfg.get('enabled', True):
+                sftp_res = run_sftp_sync(process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
+        except Exception as e_sftp:
+            app.logger.warning(f"SFTP DayBook sync during /api/sync warning: {e_sftp}")
+
+    sftp_cfg_safe = load_sftp_config(hide_password=True)
     pg_loans = Loan.query.filter_by(is_deleted=False).order_by(Loan.id.desc()).all()
     return jsonify({
         "status": "synced",
         "totalLoans": len(pg_loans),
-        "database": "postgresql"
+        "database": "postgresql",
+        "last_sync_time": sftp_cfg_safe.get("last_sync_time"),
+        "last_sync_status": sftp_cfg_safe.get("last_sync_status"),
+        "sftp_result": sftp_res
     })
 
 # --- Accounts Name CRUD Endpoints ---
@@ -2761,21 +2782,25 @@ def handle_pdf_upload():
     # Accepts either 'docx_file' or 'file' for maximum compatibility
     file = request.files.get('docx_file') or request.files.get('file')
     if not file or not file.filename:
-        return jsonify({'error': 'No file uploaded. Please provide a PDF file.'}), 400
+        return jsonify({'error': 'No file uploaded. Please provide a PDF or Word document.'}), 400
 
-    if not file.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Only PDF files are supported.'}), 400
+    filename_lower = file.filename.lower()
+    is_pdf = filename_lower.endswith('.pdf')
+    is_docx = filename_lower.endswith('.docx') or filename_lower.endswith('.doc')
+    if not (is_pdf or is_docx):
+        return jsonify({'error': 'Only PDF and Word (.docx) files are supported.'}), 400
 
+    ext = '.docx' if is_docx else '.pdf'
     temp_dir = tempfile.gettempdir()
-    temp_pdf_path = os.path.join(temp_dir, f"loan_intake_{os.getpid()}_{int(datetime.datetime.utcnow().timestamp())}.pdf")
+    temp_file_path = os.path.join(temp_dir, f"loan_intake_{os.getpid()}_{int(datetime.datetime.utcnow().timestamp())}{ext}")
     try:
         try:
-            file.save(temp_pdf_path)
-            pdf_data = extract_pdf_data(temp_pdf_path)
+            file.save(temp_file_path)
+            pdf_data = extract_document_data(temp_file_path)
         finally:
-            if os.path.exists(temp_pdf_path):
+            if os.path.exists(temp_file_path):
                 try:
-                    os.remove(temp_pdf_path)
+                    os.remove(temp_file_path)
                 except Exception:
                     pass
 
@@ -2909,6 +2934,10 @@ def handle_pdf_upload():
         )
         db.session.add(loan)
         db.session.flush()
+
+        if not loan.loan_ref_id:
+            loan.loan_ref_id = f"JL-2026-{loan.id:04d}"
+            final_loan_ref_id = loan.loan_ref_id
 
         # Store secondary accounts
         for acc in final_output['remaining_accounts']:
@@ -3141,14 +3170,67 @@ def matchup_preview():
 
     except Exception as e:
         app.logger.error(f"Matchup preview error: {e}")
-        return jsonify({'error': f"Failed to generate matchup preview: {str(e)}"}), 500
+# ==============================================================================
+# SFTP Configuration & Daily Sync Routes
+# ==============================================================================
+
+@app.route('/api/sftp/config', methods=['GET', 'POST'])
+def handle_sftp_config():
+    from sftp_service import load_sftp_config, save_sftp_config
+    if request.method == 'GET':
+        return jsonify(load_sftp_config(hide_password=True))
+    
+    payload = request.get_json(force=True, silent=True) or {}
+    updated_config = save_sftp_config(payload)
+    return jsonify({
+        "success": True,
+        "message": "SFTP configuration saved successfully.",
+        "config": updated_config
+    })
 
 
+@app.route('/api/sftp/test', methods=['POST'])
+def handle_sftp_test():
+    from sftp_service import test_sftp_connection
+    payload = request.get_json(force=True, silent=True) or {}
+    result = test_sftp_connection(payload if payload else None)
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@app.route('/api/sftp/sync-now', methods=['POST'])
+def handle_sftp_sync_now():
+    from sftp_service import run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
+    try:
+        res = run_sftp_sync(process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
+        status_code = 200 if res.get('success') else 400
+        return jsonify(res), status_code
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# Start background SFTP scheduler on app startup
+try:
+    from sftp_service import start_sftp_scheduler, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
+    start_sftp_scheduler(app, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
+except Exception as _e_sched:
+    app.logger.warning(f"Could not start SFTP scheduler: {_e_sched}")
 
 
 if __name__ == '__main__':
     host = os.environ.get('HOST', '0.0.0.0')
     port = int(os.environ.get('PORT', os.environ.get('BACKEND_PORT', 1110)))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
-    print(f">> LoanDesk Flask Backend running on http://{host}:{port} (debug={debug})")
-    app.run(host=host, port=port, debug=debug)
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cert_path = os.environ.get('SSL_CERT_PATH', os.path.join(base_dir, 'cert.pem'))
+    key_path = os.environ.get('SSL_KEY_PATH', os.path.join(base_dir, 'key.pem'))
+    ssl_enabled = os.environ.get('ENABLE_SSL', 'true').lower() in ('true', '1', 't')
+
+    if ssl_enabled and os.path.exists(cert_path) and os.path.exists(key_path):
+        print(f">> LoanDesk Flask Backend running on https://{host}:{port} (SSL Enabled, debug={debug})")
+        app.run(host=host, port=port, debug=debug, ssl_context=(cert_path, key_path))
+    else:
+        print(f">> LoanDesk Flask Backend running on http://{host}:{port} (debug={debug})")
+        app.run(host=host, port=port, debug=debug)
+

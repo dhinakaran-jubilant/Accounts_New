@@ -95,7 +95,7 @@ export default function ThisWeekEmis({
 					diffDays,
 					sNo: inst.sNo || inst.installmentNumber || index + 1,
 					totalTenure: schedule.length,
-					status: inst.status || (isOverdue ? 'Overdue' : 'Upcoming'),
+					status: inst.status || (isOverdue ? 'Overdue' : 'Active'),
 					isCollected: false,
 					isOverdue,
 					isUpcoming: !isOverdue,

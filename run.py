@@ -202,31 +202,51 @@ def get_local_network_ip():
         except Exception:
             return '127.0.0.1'
 
+def ensure_ssl_certificates(venv_python):
+    """Ensures cert.pem and key.pem exist in backend directory, generating them if missing."""
+    cert_path = os.path.join(BACKEND_DIR, 'cert.pem')
+    key_path = os.path.join(BACKEND_DIR, 'key.pem')
+    if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+        gen_script = os.path.join(BACKEND_DIR, 'generate_ssl.py')
+        if os.path.exists(gen_script):
+            log("SSL", "Generating SSL certificate (cert.pem, key.pem)...", YELLOW)
+            subprocess.run([venv_python, gen_script], cwd=BACKEND_DIR)
+    
+    has_ssl = os.path.exists(cert_path) and os.path.exists(key_path)
+    if has_ssl:
+        log("SSL", f"SSL certificate verified at {cert_path}", GREEN)
+    return has_ssl
+
 def main():
     network_ip = get_local_network_ip()
     backend_host = os.environ.get('HOST', '0.0.0.0')
     backend_port = os.environ.get('PORT', os.environ.get('BACKEND_PORT', '1110'))
     frontend_port = os.environ.get('VITE_PORT', os.environ.get('FRONTEND_PORT', '1111'))
 
+    # 1. Activate or create virtual environment
+    venv_python = find_or_create_venv()
+
+    # 2. Check and ensure SSL certificates
+    use_ssl = ensure_ssl_certificates(venv_python)
+    proto = 'https' if use_ssl else 'http'
+
     print(f"""
 {CYAN}{BOLD}=======================================================
    LoanDesk - Unified Backend & Frontend
    Host Machine:      {socket.gethostname()}
    Server Network IP: {network_ip}
-   Frontend Local:    http://localhost:{frontend_port}
-   Frontend Network:  http://{network_ip}:{frontend_port}
-   Backend Local:     http://localhost:{backend_port}
-   Backend Network:   http://{network_ip}:{backend_port}
+   Security / SSL:    {'ENABLED (HTTPS)' if use_ssl else 'DISABLED (HTTP)'}
+   Frontend Local:    {proto}://localhost:{frontend_port}
+   Frontend Network:  {proto}://{network_ip}:{frontend_port}
+   Backend Local:     {proto}://localhost:{backend_port}
+   Backend Network:   {proto}://{network_ip}:{backend_port}
 ======================================================={RESET}
     """)
 
-    # 1. Activate or create virtual environment
-    venv_python = find_or_create_venv()
-
-    # 2. Check and migrate required tables & columns
+    # 3. Check and migrate required tables & columns
     check_and_migrate_database(venv_python)
 
-    # 3. Launch Backend and Frontend
+    # 4. Launch Backend and Frontend
     processes = []
 
     def shutdown(signum=None, frame=None):
@@ -246,7 +266,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     # Launch Backend
-    log("BACKEND", f"Starting Flask server on http://{network_ip}:{backend_port} ...", CYAN)
+    log("BACKEND", f"Starting Flask server on {proto}://{network_ip}:{backend_port} ...", CYAN)
     env_backend = os.environ.copy()
     env_backend['HOST'] = backend_host
     env_backend['PORT'] = str(backend_port)
@@ -263,7 +283,7 @@ def main():
 
     # Launch Frontend
     npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-    log("FRONTEND", f"Starting Vite frontend on http://{network_ip}:{frontend_port} ...", GREEN)
+    log("FRONTEND", f"Starting Vite frontend on {proto}://{network_ip}:{frontend_port} ...", GREEN)
     frontend_proc = subprocess.Popen(
         [npm_cmd, "run", "dev", "--", "--host", "0.0.0.0", "--port", str(frontend_port)],
         cwd=FRONTEND_DIR,

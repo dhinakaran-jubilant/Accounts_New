@@ -4,6 +4,7 @@
 	"version": "1.0.0",
 	"scripts": {
 		"start": "python run.py",
+		"postinstall": "npm install --prefix frontend",
 		"dev": "npm run dev --prefix frontend",
 		"dev:frontend": "npm run dev --prefix frontend",
 		"build:frontend": "npm run build --prefix frontend",

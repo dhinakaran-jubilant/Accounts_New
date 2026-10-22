@@ -153,11 +153,57 @@ export const api = {
 			method: 'POST',
 		}),
 
-	// Sync
-	syncData: () =>
-		request('/sync', {
-			method: 'POST',
-		}),
+	// Sync & SFTP
+	syncData: async () => {
+		let syncRes = {};
+		try {
+			syncRes = await request('/sync', { method: 'POST' });
+		} catch (err) {
+			console.warn('[API] /sync failed:', err);
+		}
+		// Also invoke SFTP sync-now to pull latest DayBook from SFTP server
+		try {
+			const sftpRes = await request('/sftp/sync-now', { method: 'POST' });
+			const cfg = await request('/sftp/config');
+			return {
+				...syncRes,
+				last_sync_time: cfg?.last_sync_time || syncRes?.last_sync_time,
+				last_sync_status: cfg?.last_sync_status || syncRes?.last_sync_status,
+				sftp_result: sftpRes,
+			};
+		} catch (sftpErr) {
+			console.warn('[API] SFTP sync-now warning:', sftpErr);
+		}
+		// If last_sync_time is not in syncRes, attempt fallback to sftp config
+		if (!syncRes?.last_sync_time) {
+			try {
+				const cfg = await request('/sftp/config');
+				if (cfg?.last_sync_time) {
+					return { ...syncRes, last_sync_time: cfg.last_sync_time, last_sync_status: cfg.last_sync_status };
+				}
+			} catch (e) {}
+		}
+		return syncRes;
+	},
+	getSyncStatus: async () => {
+		try {
+			const res = await request('/sync');
+			if (res && res.last_sync_time) return res;
+		} catch (e) {
+			// Fallback if GET /sync is not allowed on running backend instance
+		}
+		try {
+			const sftp = await request('/sftp/config');
+			return {
+				last_sync_time: sftp?.last_sync_time || null,
+				last_sync_status: sftp?.last_sync_status || null,
+			};
+		} catch (e) {
+			return { last_sync_time: null };
+		}
+	},
+	getSftpConfig: () => request('/sftp/config'),
+	syncSftpNow: () => request('/sftp/sync-now', { method: 'POST' }),
 
 	// Account Names from DB
 	getAccountNames: () => request('/account-names'),
@@ -283,6 +329,23 @@ export const api = {
 			throw err;
 		}
 	},
+
+	// SFTP Auto-Sync & DayBook Management
+	getSftpConfig: () => request('/sftp/config'),
+	saveSftpConfig: (config) =>
+		request('/sftp/config', {
+			method: 'POST',
+			body: JSON.stringify(config),
+		}),
+	testSftpConnection: (config) =>
+		request('/sftp/test', {
+			method: 'POST',
+			body: JSON.stringify(config),
+		}),
+	syncSftpNow: () =>
+		request('/sftp/sync-now', {
+			method: 'POST',
+		}),
 };
 
 export default api;

@@ -296,6 +296,102 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 		setTimeout(() => setToast(null), 3500);
 	};
 
+	// Settings Active Tab State: 'accounts' | 'sftp'
+	const [activeTab, setActiveTab] = useState('accounts');
+
+	// SFTP Auto-Sync State
+	const [sftpConfig, setSftpConfig] = useState({
+		enabled: false,
+		host: '',
+		port: 22,
+		username: '',
+		password: '',
+		key_path: '',
+		remote_dir: '/',
+		daily_sync_time: '09:00',
+		last_sync_time: null,
+		last_sync_status: null,
+		last_sync_details: null,
+	});
+	const [isSavingSftp, setIsSavingSftp] = useState(false);
+	const [isTestingSftp, setIsTestingSftp] = useState(false);
+	const [isSyncingSftp, setIsSyncingSftp] = useState(false);
+	const [testResult, setTestResult] = useState(null);
+	const [syncResult, setSyncResult] = useState(null);
+
+	const loadSftpConfig = async () => {
+		try {
+			const data = await api.getSftpConfig();
+			if (data) {
+				setSftpConfig((prev) => ({ ...prev, ...data }));
+			}
+		} catch (err) {
+			console.warn('Could not load SFTP configuration:', err);
+		}
+	};
+
+	useEffect(() => {
+		if (activeTab === 'sftp') {
+			loadSftpConfig();
+		}
+	}, [activeTab]);
+
+	const handleSaveSftp = async (e) => {
+		e?.preventDefault();
+		setIsSavingSftp(true);
+		try {
+			const res = await api.saveSftpConfig(sftpConfig);
+			if (res.config) {
+				setSftpConfig((prev) => ({ ...prev, ...res.config }));
+			}
+			showToast('SFTP configuration saved successfully!');
+		} catch (err) {
+			showToast(err.message || 'Failed to save SFTP configuration', 'error');
+		} finally {
+			setIsSavingSftp(false);
+		}
+	};
+
+	const handleTestSftp = async () => {
+		setIsTestingSftp(true);
+		setTestResult(null);
+		try {
+			const res = await api.testSftpConnection(sftpConfig);
+			setTestResult(res);
+			if (res.success) {
+				showToast('SFTP Connection verified successfully!');
+			} else {
+				showToast(res.error || 'Connection failed', 'error');
+			}
+		} catch (err) {
+			setTestResult({ success: false, error: err.message || 'Connection test failed' });
+			showToast(err.message || 'Connection test failed', 'error');
+		} finally {
+			setIsTestingSftp(false);
+		}
+	};
+
+	const handleSyncNow = async () => {
+		setIsSyncingSftp(true);
+		setSyncResult(null);
+		try {
+			const res = await api.syncSftpNow();
+			setSyncResult(res);
+			if (res.success) {
+				showToast(res.message || 'SFTP sync completed successfully!');
+				loadSftpConfig();
+				window.dispatchEvent(new Event('loan_updated'));
+			} else {
+				showToast(res.error || 'Sync failed', 'error');
+			}
+		} catch (err) {
+			setSyncResult({ success: false, error: err.message || 'Sync failed' });
+			showToast(err.message || 'Sync failed', 'error');
+		} finally {
+			setIsSyncingSftp(false);
+		}
+	};
+
 	// Fetch account names from PostgreSQL
 	const loadAccounts = async () => {
 		setIsLoading(true);
@@ -572,15 +668,62 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 				</div>
 
 				<div className="flex items-center gap-3">
-					<button
-						onClick={handleOpenCreate}
-						className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-primary-container hover:bg-primary text-on-primary font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0"
-					>
-						<span className="material-symbols-outlined text-[19px]">add</span>
-						<span>Add Account Name</span>
-					</button>
+					{activeTab === 'accounts' ? (
+						<button
+							onClick={handleOpenCreate}
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-primary-container hover:bg-primary text-on-primary font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0"
+						>
+							<span className="material-symbols-outlined text-[19px]">add</span>
+							<span>Add Account Name</span>
+						</button>
+					) : (
+						<button
+							onClick={handleSyncNow}
+							disabled={isSyncingSftp || !sftpConfig.host}
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 disabled:opacity-50"
+						>
+							{isSyncingSftp ? (
+								<span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+							) : (
+								<span className="material-symbols-outlined text-[18px]">sync</span>
+							)}
+							<span>Sync SFTP Now</span>
+						</button>
+					)}
 				</div>
 			</div>
+
+			{/* Tab Switcher */}
+			<div className="flex items-center gap-2 border-b border-slate-200">
+				<button
+					type="button"
+					onClick={() => setActiveTab('accounts')}
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+						activeTab === 'accounts'
+							? 'border-primary text-primary'
+							: 'border-transparent text-slate-500 hover:text-slate-800'
+					}`}
+				>
+					<span className="material-symbols-outlined text-[19px]">corporate_fare</span>
+					<span>Accounts</span>
+				</button>
+
+				<button
+					type="button"
+					onClick={() => setActiveTab('sftp')}
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+						activeTab === 'sftp'
+							? 'border-primary text-primary'
+							: 'border-transparent text-slate-500 hover:text-slate-800'
+					}`}
+				>
+					<span className="material-symbols-outlined text-[19px]">cloud_sync</span>
+					<span>SFTP Auto-Sync</span>
+				</button>
+			</div>
+
+			{activeTab === 'accounts' && (
+				<>
 					{/* Stat Highlights Row */}
 					<div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
 						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
@@ -1028,6 +1171,329 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 							</div>
 						</div>
 					</div>
+				</>
+			)}
+
+			{/* SFTP Auto-Sync & DayBook Sync Tab */}
+			{activeTab === 'sftp' && (
+				<div className="space-y-6">
+					{/* Top Summary / Status Cards */}
+					<div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+						<div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Auto-Sync Status</span>
+								<span className={`material-symbols-outlined text-[22px] ${sftpConfig.enabled ? 'text-emerald-500' : 'text-slate-400'}`}>
+									{sftpConfig.enabled ? 'check_circle' : 'do_not_disturb_on'}
+								</span>
+							</div>
+							<div className="mt-2 flex items-center gap-2">
+								<span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-extrabold ${
+									sftpConfig.enabled ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-slate-100 text-slate-600'
+								}`}>
+									<span className={`w-2 h-2 rounded-full ${sftpConfig.enabled ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+									{sftpConfig.enabled ? 'SCHEDULED ACTIVE' : 'DISABLED'}
+								</span>
+							</div>
+							<div className="text-[11px] text-slate-400 mt-2 font-medium">
+								{sftpConfig.enabled ? `Triggered daily at ${sftpConfig.daily_sync_time || '09:00'}` : 'Toggle on to activate daily sync'}
+							</div>
+						</div>
+
+						<div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Last Synchronized</span>
+								<span className="material-symbols-outlined text-primary text-[22px]">history</span>
+							</div>
+							<div className="mt-2 text-[18px] font-extrabold text-slate-900 tracking-tight">
+								{sftpConfig.last_sync_time || 'Never run'}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-1 flex items-center gap-1 font-medium">
+								Status:
+								<span className={`font-bold ${sftpConfig.last_sync_status === 'SUCCESS' ? 'text-emerald-600' : sftpConfig.last_sync_status === 'FAILED' ? 'text-rose-600' : 'text-slate-500'}`}>
+									{sftpConfig.last_sync_status || 'IDLE'}
+								</span>
+							</div>
+						</div>
+
+						<div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Remote Target</span>
+								<span className="material-symbols-outlined text-blue-500 text-[22px]">dns</span>
+							</div>
+							<div className="mt-2 text-[15px] font-extrabold text-slate-900 truncate tracking-tight">
+								{sftpConfig.host ? `${sftpConfig.username || 'user'}@${sftpConfig.host}` : 'Not configured'}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-1 font-medium truncate">
+								Directory: <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded font-mono">{sftpConfig.remote_dir || '/'}</code>
+							</div>
+						</div>
+					</div>
+
+					{/* SFTP Settings & Credentials Card */}
+					<div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+						<div className="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gradient-to-r from-slate-50/70 via-white to-white">
+							<div className="flex items-center gap-3">
+								<div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center ring-1 ring-primary/20 shrink-0">
+									<span className="material-symbols-outlined text-[22px]">cloud_sync</span>
+								</div>
+								<div>
+									<h3 className="font-extrabold text-[17px] text-slate-900 tracking-tight">
+										SFTP Server &amp; Automation Configuration
+									</h3>
+									<p className="text-[12px] text-slate-500 font-medium">
+										Automatically download latest DayBook Excel files and update Joint Loan received dates (`recd_date`).
+									</p>
+								</div>
+							</div>
+
+							{/* Enable/Disable Toggle */}
+							<label className="relative inline-flex items-center cursor-pointer select-none shrink-0">
+								<input
+									type="checkbox"
+									checked={sftpConfig.enabled}
+									onChange={(e) => setSftpConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
+									className="sr-only peer"
+								/>
+								<div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container" />
+								<span className="ml-3 text-[12.5px] font-bold text-slate-800">
+									{sftpConfig.enabled ? 'Daily Sync Enabled' : 'Daily Sync Disabled'}
+								</span>
+							</label>
+						</div>
+
+						<form onSubmit={handleSaveSftp} className="p-6 space-y-6">
+							<div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+								{/* Host */}
+								<div className="sm:col-span-2">
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										SFTP Host / IP Address <span className="text-rose-500">*</span>
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											dns
+										</span>
+										<input
+											type="text"
+											value={sftpConfig.host || ''}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, host: e.target.value }))}
+											placeholder="e.g. sftp.company.com or 192.168.1.100"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* Port */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Port
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											tag
+										</span>
+										<input
+											type="number"
+											value={sftpConfig.port || 22}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, port: parseInt(e.target.value) || 22 }))}
+											placeholder="22"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* Username */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Username <span className="text-rose-500">*</span>
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											person
+										</span>
+										<input
+											type="text"
+											value={sftpConfig.username || ''}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, username: e.target.value }))}
+											placeholder="sftp_user"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* Password */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Password
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											key
+										</span>
+										<input
+											type="password"
+											value={sftpConfig.password || ''}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, password: e.target.value }))}
+											placeholder="••••••••"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* Daily Sync Time */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Daily Trigger Time (24h)
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											schedule
+										</span>
+										<input
+											type="time"
+											value={sftpConfig.daily_sync_time || '09:00'}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, daily_sync_time: e.target.value }))}
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* Remote Directory */}
+								<div className="sm:col-span-2">
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Remote Directory on SFTP Server
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											folder_open
+										</span>
+										<input
+											type="text"
+											value={sftpConfig.remote_dir || '/'}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, remote_dir: e.target.value }))}
+											placeholder="/"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+
+								{/* SSH Key Path (Optional) */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										SSH Key Path <span className="text-slate-400 font-normal">(Optional)</span>
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											vpn_key
+										</span>
+										<input
+											type="text"
+											value={sftpConfig.key_path || ''}
+											onChange={(e) => setSftpConfig((prev) => ({ ...prev, key_path: e.target.value }))}
+											placeholder="C:\keys\id_rsa"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold"
+										/>
+									</div>
+								</div>
+							</div>
+
+							{/* Action Buttons */}
+							<div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+								<button
+									type="button"
+									onClick={handleTestSftp}
+									disabled={isTestingSftp || !sftpConfig.host}
+									className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-[13px] font-bold transition-all disabled:opacity-40"
+								>
+									{isTestingSftp ? (
+										<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+									) : (
+										<span className="material-symbols-outlined text-[18px]">network_check</span>
+									)}
+									<span>Test Connection</span>
+								</button>
+
+								<div className="flex items-center gap-2.5">
+									<button
+										type="button"
+										onClick={handleSyncNow}
+										disabled={isSyncingSftp || !sftpConfig.host}
+										className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-[13px] font-bold transition-all disabled:opacity-40"
+									>
+										{isSyncingSftp ? (
+											<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+										) : (
+											<span className="material-symbols-outlined text-[18px]">sync</span>
+										)}
+										<span>Sync Now</span>
+									</button>
+
+									<button
+										type="submit"
+										disabled={isSavingSftp}
+										className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary-container hover:bg-primary text-on-primary text-[13px] font-bold shadow-xs active:scale-98 transition-all disabled:opacity-50"
+									>
+										{isSavingSftp ? (
+											<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+										) : (
+											<span className="material-symbols-outlined text-[18px]">save</span>
+										)}
+										<span>Save Settings</span>
+									</button>
+								</div>
+							</div>
+						</form>
+					</div>
+
+					{/* Live Feedback / Test / Sync Result Cards */}
+					{testResult && (
+						<div className={`p-4 rounded-2xl border text-[13px] ${
+							testResult.success
+								? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+								: 'bg-rose-50 border-rose-200 text-rose-800'
+						}`}>
+							<div className="flex items-start gap-2.5">
+								<span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">
+									{testResult.success ? 'check_circle' : 'error'}
+								</span>
+								<div className="space-y-1">
+									<div className="font-extrabold">{testResult.success ? 'SFTP Connection Verified' : 'SFTP Connection Failed'}</div>
+									<div className="text-[12px] opacity-90">{testResult.message || testResult.error}</div>
+								</div>
+							</div>
+						</div>
+					)}
+
+					{syncResult && (
+						<div className={`p-5 rounded-2xl border text-[13px] ${
+							syncResult.success
+								? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+								: 'bg-rose-50 border-rose-200 text-rose-800'
+						}`}>
+							<div className="flex items-start gap-3">
+								<span className="material-symbols-outlined text-[24px] shrink-0 text-emerald-600">
+									sync_saved_locally
+								</span>
+								<div className="space-y-2 flex-1">
+									<div className="font-extrabold text-[15px]">Sync Summary</div>
+									<p className="text-[12.5px] font-medium opacity-90">{syncResult.message || syncResult.error}</p>
+									
+									{syncResult.updated_details && syncResult.updated_details.length > 0 && (
+										<div className="mt-2 space-y-1 bg-white/80 p-3 rounded-xl border border-emerald-200/60 max-h-48 overflow-y-auto">
+											<div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Updated Installments:</div>
+											{syncResult.updated_details.map((detail, idx) => (
+												<div key={idx} className="text-[11.5px] text-slate-800 flex items-center gap-1.5">
+													<span className="material-symbols-outlined text-emerald-600 text-[14px]">done</span>
+													<span>{detail}</span>
+												</div>
+											))}
+										</div>
+									)}
+								</div>
+							</div>
+						</div>
+					)}
+				</div>
+			)}
 
 			{/* Create / Edit Account Modal (Portaled to document.body to cover fixed header & sidebar with no top gap) */}
 			{isModalOpen && createPortal(

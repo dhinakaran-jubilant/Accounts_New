@@ -144,6 +144,14 @@ export default function Dashboard({ currentUser, onLogout }) {
 	// Joint Loan Data State (strictly live database records)
 	const [jointLoans, setJointLoans] = useState([]);
 	const [isSyncing, setIsSyncing] = useState(false);
+	const [syncFeedback, setSyncFeedback] = useState(null);
+	const [lastSyncTime, setLastSyncTime] = useState(() => {
+		try {
+			return localStorage.getItem('joint_loan_last_sync_time') || null;
+		} catch (e) {
+			return null;
+		}
+	});
 	const [dashboardTab, setDashboardTab] = useState('all'); // 'all' | 'overdue'
 	const [statusFilter, setStatusFilter] = useState('ALL');
 
@@ -234,6 +242,22 @@ export default function Dashboard({ currentUser, onLogout }) {
 	useEffect(() => {
 		loadJointLoans();
 		const handleRefresh = () => loadJointLoans();
+
+		const loadSyncStatus = async () => {
+			try {
+				const status = await api.getSyncStatus();
+				if (status?.last_sync_time) {
+					setLastSyncTime(status.last_sync_time);
+					try {
+						localStorage.setItem('joint_loan_last_sync_time', status.last_sync_time);
+					} catch (e) {}
+				}
+			} catch (err) {
+				console.warn('Sync status load warning in dashboard:', err);
+			}
+		};
+		loadSyncStatus();
+
 		window.addEventListener('loanDesk_loans_updated', handleRefresh);
 		window.addEventListener('loanDesk_notifications_updated', handleRefresh);
 		window.addEventListener('loan_updated', handleRefresh);
@@ -245,6 +269,57 @@ export default function Dashboard({ currentUser, onLogout }) {
 			window.removeEventListener('loan_approved', handleRefresh);
 		};
 	}, [loadJointLoans]);
+
+	// Handle full DayBook SFTP & DB Sync when user clicks the Sync button
+	const handleSync = useCallback(async () => {
+		setIsSyncing(true);
+		setSyncFeedback(null);
+		try {
+			const syncRes = await api.syncData();
+			const remoteLoans = await api.getJointLoans();
+			if (Array.isArray(remoteLoans)) {
+				setJointLoans(remoteLoans);
+			}
+			try {
+				const freshAccs = await api.getAccountNames();
+				if (Array.isArray(freshAccs) && freshAccs.length > 0) {
+					setRawAccounts(freshAccs);
+				}
+			} catch (accErr) {
+				console.warn('Sync account names warning:', accErr);
+			}
+
+			let syncedTime = syncRes?.last_sync_time;
+			if (!syncedTime) {
+				const now = new Date();
+				const pad = (n) => String(n).padStart(2, '0');
+				const day = pad(now.getDate());
+				const month = pad(now.getMonth() + 1);
+				const year = now.getFullYear();
+				let hours = now.getHours();
+				const ampm = hours >= 12 ? 'PM' : 'AM';
+				hours = hours % 12 || 12;
+				const minutes = pad(now.getMinutes());
+				syncedTime = `${day}-${month}-${year} ${pad(hours)}:${minutes} ${ampm}`;
+			}
+			setLastSyncTime(syncedTime);
+			try {
+				localStorage.setItem('joint_loan_last_sync_time', syncedTime);
+			} catch (e) {}
+
+			// Notify other listeners that loans/daybook were synced
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+
+			setIsSyncing(false);
+			setSyncFeedback('Synced');
+			setTimeout(() => setSyncFeedback(null), 2500);
+		} catch (err) {
+			console.error('Failed to sync daybook/database:', err);
+			setIsSyncing(false);
+			setSyncFeedback('Sync Failed');
+			setTimeout(() => setSyncFeedback(null), 2500);
+		}
+	}, []);
 
 	// If a non-admin user has selected an account not in their assigned accounts, reset to 'ALL'
 	useEffect(() => {
@@ -663,8 +738,10 @@ export default function Dashboard({ currentUser, onLogout }) {
 											setStatusFilter('ALL');
 										}
 									}}
-									onRefresh={loadJointLoans}
+									onRefresh={handleSync}
 									isRefreshing={isSyncing}
+									syncFeedback={syncFeedback}
+									lastSyncTime={lastSyncTime}
 									onExport={handleExport}
 									onNewLoan={() => handleSelectMenuItem('joint-loan')}
 									totalLoans={filteredJointLoans.length}

@@ -719,7 +719,30 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				} catch (_) {}
 			}
 
-			const payoutDateRaw = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
+			const payoutDateRaw = (item.paymentDate && item.paymentDate !== '-' && item.paymentDate !== '—')
+				? item.paymentDate
+				: ((item.payoutDate && item.payoutDate !== '-' && item.payoutDate !== '—')
+					? item.payoutDate
+					: ((item.payment_date && item.payment_date !== '-' && item.payment_date !== '—')
+						? item.payment_date
+						: ((item.payout_date && item.payout_date !== '-' && item.payout_date !== '—')
+							? item.payout_date
+							: ((item.dueDate && item.dueDate !== '-' && item.dueDate !== '—') ? item.dueDate : ''))));
+
+			let hasPayoutDateFilled = isDateFilled(payoutDateRaw);
+
+			if (item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp) {
+						const hasDueA = isDateFilled(sp.dueDateA) || (sp.dueDate && sp.dueDate !== '-' && sp.dueDate !== '—');
+						const hasDueB = isDateFilled(sp.dueDateB);
+						if (hasDueA || hasDueB) {
+							hasPayoutDateFilled = true;
+						}
+					}
+				} catch (_) {}
+			}
 
 			// Payout approval check: if payout date is filled but not approved from sec manager, consider it not filled
 			const pStatus = String(
@@ -730,7 +753,7 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				''
 			).trim().toUpperCase();
 			const isPayoutApproved = (pStatus === 'APPROVED' || item.status === 'Settled') && pStatus !== 'PENDING' && pStatus !== 'REJECTED';
-			const hasPayoutDate = isDateFilled(payoutDateRaw) && isPayoutApproved;
+			const hasPayoutDate = hasPayoutDateFilled && isPayoutApproved;
 
 			// Rule: only include pending payment entries where received date not filled OR payout date not filled/approved
 			// If BOTH received date is filled and payout date is filled & approved, payment is fully complete -> skip
@@ -739,30 +762,12 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 			}
 
 			// Determine payout approval status
-			let isPayoutPending = false;
-			if (isDateFilled(payoutDateRaw) && !isPayoutApproved) {
-				isPayoutPending = true;
-			} else if (pStatus === 'PENDING' || item.status === 'Pending Payout Approval' || item.status === 'pending payout approval') {
-				isPayoutPending = true;
-			} else if (item.splits) {
-				try {
-					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
-					if (sp) {
-						const sA = String(sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
-						const sB = String(sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
-						const sAll = String(sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
-						if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
-							isPayoutPending = true;
-						} else if (!sp.isFinalSettled && ((sp.recdDateA && sA !== 'APPROVED') || (sp.recdDateB && sB !== 'APPROVED'))) {
-							isPayoutPending = true;
-						}
-					}
-				} catch (_) {}
-			}
+			// Rule:
+			// 1. If payout date is filled with pending from sec manager for approval -> 'Approval pending'
+			// 2. If recd date only filled, payout date not filled -> 'Pending'
+			// 3. If recd date not filled -> 'Not received from client'
+			const isPayoutPending = hasPayoutDateFilled && !isPayoutApproved;
 
-			// Rule: If payout date is not approved, status is 'Approval pending'
-			// If recd date is filled, it means EMI amount received from client -> status is 'Need to send'
-			// If recd date is not filled, EMI amount is not yet received from client -> status is 'Not received from client'
 			let status = '';
 			let recdAmount = 0;
 			let outstandingAmount = 0;
@@ -773,7 +778,7 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				recdAmount = emiAmount;
 				outstandingAmount = 0;
 			} else if (hasRecdDate) {
-				status = 'Need to send';
+				status = 'Pending';
 				recdAmount = emiAmount;
 				outstandingAmount = 0;
 			} else {
@@ -866,11 +871,11 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 					if (meta.status === 'Not received from client' || meta.status === 'Overdue') {
 						fontColor = 'BE123C';
 						isBold = true;
-					} else if (meta.status === 'Approval pending' || meta.status === 'Partial') {
+					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial') {
 						fontColor = 'B45309';
 						isBold = true;
-					} else if (meta.status === 'Need to send') {
-						fontColor = '047857';
+					} else if (meta.status === 'Pending' || meta.status === 'Need to send') {
+						fontColor = 'D97706';
 						isBold = true;
 					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
 						fontColor = '047857';
@@ -1173,7 +1178,31 @@ function buildSecondaryOutstandingWorksheet(
 				} catch (_) {}
 			}
 
-			const payoutDateRaw = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
+			const payoutDateRaw = (item.paymentDate && item.paymentDate !== '-' && item.paymentDate !== '—')
+				? item.paymentDate
+				: ((item.payoutDate && item.payoutDate !== '-' && item.payoutDate !== '—')
+					? item.payoutDate
+					: ((item.payment_date && item.payment_date !== '-' && item.payment_date !== '—')
+						? item.payment_date
+						: ((item.payout_date && item.payout_date !== '-' && item.payout_date !== '—')
+							? item.payout_date
+							: ((item.dueDate && item.dueDate !== '-' && item.dueDate !== '—') ? item.dueDate : ''))));
+
+			let hasPayoutDateFilled = isDateFilled(payoutDateRaw);
+
+			if (item.splits) {
+				try {
+					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
+					if (sp) {
+						const hasDueA = isDateFilled(sp.dueDateA) || (sp.dueDate && sp.dueDate !== '-' && sp.dueDate !== '—');
+						const hasDueB = isDateFilled(sp.dueDateB);
+						if (hasDueA || hasDueB) {
+							hasPayoutDateFilled = true;
+						}
+					}
+				} catch (_) {}
+			}
+
 			const pStatus = String(
 				item.payout_approval_status ||
 				item.payoutApprovalStatus ||
@@ -1182,7 +1211,7 @@ function buildSecondaryOutstandingWorksheet(
 				''
 			).trim().toUpperCase();
 			const isPayoutApproved = (pStatus === 'APPROVED' || item.status === 'Settled') && pStatus !== 'PENDING' && pStatus !== 'REJECTED';
-			const hasPayoutDate = isDateFilled(payoutDateRaw) && isPayoutApproved;
+			const hasPayoutDate = hasPayoutDateFilled && isPayoutApproved;
 
 			// If both recd and payout are complete, it's not outstanding
 			if (hasRecdDate && hasPayoutDate) {
@@ -1190,26 +1219,11 @@ function buildSecondaryOutstandingWorksheet(
 			}
 
 			// Determine payout approval status
-			let isPayoutPending = false;
-			if (isDateFilled(payoutDateRaw) && !isPayoutApproved) {
-				isPayoutPending = true;
-			} else if (pStatus === 'PENDING' || item.status === 'Pending Payout Approval' || item.status === 'pending payout approval') {
-				isPayoutPending = true;
-			} else if (item.splits) {
-				try {
-					const sp = typeof item.splits === 'string' ? JSON.parse(item.splits) : item.splits;
-					if (sp) {
-						const sA = String(sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
-						const sB = String(sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
-						const sAll = String(sp.payoutApprovalStatus || sp.payout_approval_status || '').toUpperCase();
-						if (sA === 'PENDING' || sB === 'PENDING' || sAll === 'PENDING') {
-							isPayoutPending = true;
-						} else if (!sp.isFinalSettled && ((sp.recdDateA && sA !== 'APPROVED') || (sp.recdDateB && sB !== 'APPROVED'))) {
-							isPayoutPending = true;
-						}
-					}
-				} catch (_) {}
-			}
+			// Rule:
+			// 1. If payout date is filled with pending from sec manager for approval -> 'Approval pending'
+			// 2. If recd date only filled, payout date not filled -> 'Pending'
+			// 3. If recd date not filled -> 'Not received from client'
+			const isPayoutPending = hasPayoutDateFilled && !isPayoutApproved;
 
 			const emiAmount = Number(item.amount ?? item.totalEmi ?? 0);
 			let status = '';
@@ -1221,7 +1235,7 @@ function buildSecondaryOutstandingWorksheet(
 				recdAmount = emiAmount;
 				notRecdAmount = 0;
 			} else if (hasRecdDate) {
-				status = 'Need to receive';
+				status = 'Pending';
 				recdAmount = emiAmount;
 				notRecdAmount = 0;
 			} else {
@@ -1295,11 +1309,11 @@ function buildSecondaryOutstandingWorksheet(
 					if (meta.status === 'Not received from client' || meta.status === 'Overdue') {
 						fontColor = 'BE123C';
 						isBold = true;
-					} else if (meta.status === 'Approval pending' || meta.status === 'Partial') {
+					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial') {
 						fontColor = 'B45309';
 						isBold = true;
-					} else if (meta.status === 'Need to receive' || meta.status === 'Need to send') {
-						fontColor = '047857';
+					} else if (meta.status === 'Pending' || meta.status === 'Need to receive' || meta.status === 'Need to send') {
+						fontColor = 'D97706';
 						isBold = true;
 					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
 						fontColor = '047857';

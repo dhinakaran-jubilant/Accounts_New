@@ -181,7 +181,7 @@ export default function JointLoanDetailsModal({ loan, onClose, onOpenInServicing
 									{schedule.slice(0, 4).map((inst, i) => {
 										const st = (inst.status || '').toLowerCase();
 										const colorClass =
-											st === 'collected' || st === 'settled'
+											st === 'collected' || st === 'settled' || st === 'active'
 												? 'text-emerald-700 bg-emerald-50'
 												: st === 'overdue'
 													? 'text-rose-700 bg-rose-50'
@@ -198,7 +198,7 @@ export default function JointLoanDetailsModal({ loan, onClose, onOpenInServicing
 												</td>
 												<td className="py-2 px-3">
 													<span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${colorClass}`}>
-														{inst.status || 'Upcoming'}
+														{inst.status || 'Active'}
 													</span>
 												</td>
 											</tr>

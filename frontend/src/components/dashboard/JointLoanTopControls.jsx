@@ -14,6 +14,8 @@ export default function JointLoanTopControls({
 	onTabChange,
 	onRefresh,
 	isRefreshing = false,
+	syncFeedback = null,
+	lastSyncTime = null,
 	onExport,
 	onNewLoan,
 	totalLoans = 0,
@@ -69,13 +71,28 @@ export default function JointLoanTopControls({
 				type="button"
 				onClick={onRefresh}
 				disabled={isRefreshing}
-				className="h-9 inline-flex items-center gap-1.5 px-3 bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50 rounded-xl text-xs font-semibold border border-slate-200 shadow-2xs transition-all cursor-pointer select-none disabled:opacity-60"
-				title="Refresh database records"
+				className={`inline-flex items-center gap-2 bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50 rounded-xl border border-slate-200 shadow-2xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer select-none group ${
+					lastSyncTime ? 'px-3 py-1.5' : 'h-9 px-3 text-xs'
+				}`}
+				title={lastSyncTime ? `Last synced: ${lastSyncTime} • Click to sync Day Book` : 'Sync with Day Book'}
 			>
-				<span className={`material-symbols-outlined text-[17px] ${isRefreshing ? 'animate-spin text-primary' : ''}`}>
-					refresh
+				<span
+					className={`material-symbols-outlined text-[17px] transition-transform ${
+						isRefreshing ? 'animate-spin text-primary' : 'text-slate-500 group-hover:text-primary'
+					}`}
+				>
+					sync
 				</span>
-				<span className="hidden sm:inline">{isRefreshing ? 'Syncing...' : 'Sync'}</span>
+				<div className="flex flex-col text-left leading-tight">
+					<span className="font-bold text-[12px] whitespace-nowrap">
+						{isRefreshing ? 'Syncing...' : syncFeedback || 'DB Sync'}
+					</span>
+					{lastSyncTime && (
+						<span className="text-[9px] text-slate-400 font-medium whitespace-nowrap font-mono tracking-tight">
+							{lastSyncTime}
+						</span>
+					)}
+				</div>
 			</button>
 		</div>
 	);

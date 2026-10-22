@@ -14,9 +14,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------
-# Fix 2: Tesseract path configurable via env var, not hardcoded
-# ------------------------------------------------------------------
+try:
+    import docx
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+    logger.warning("python-docx not installed. Word document extraction will be disabled.")
+
 try:
     import pytesseract
 
@@ -181,7 +185,7 @@ def parse_ocr_schedule(schedule_text, expected_emi=None):
     return schedule
 
 
-def extract_pdf_data(pdf_path):
+def _extract_pdf_data_original(pdf_path):
     output = {
         "loan_number": None,
         "primary_account": None,
@@ -461,6 +465,170 @@ def extract_pdf_data(pdf_path):
         output["table"] = schedule
 
     return output
+
+
+def parse_docx_amount(val):
+    """
+    Parses amount expressions from docx documents.
+    Supports:
+      - 42.60L, 50L, 42.60 Lakh, 50 Lakhs
+      - 1.5Cr, 1.5 Crore
+      - 6,25,000.00, ₹6,25,000
+    """
+    if val is None:
+        return None
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    # Check Crore
+    cr_match = re.search(r'([\d,]+(?:\.\d+)?)\s*(?:cr|crore|crores)\b', val_str, re.I)
+    if cr_match:
+        num = float(cr_match.group(1).replace(',', ''))
+        return round(num * 10000000.0, 2)
+    # Check Lakh
+    l_match = re.search(r'([\d,]+(?:\.\d+)?)\s*(?:l|lac|lacs|lakh|lakhs)\b', val_str, re.I)
+    if l_match:
+        num = float(l_match.group(1).replace(',', ''))
+        return round(num * 100000.0, 2)
+    # Standard numeric
+    cleaned = re.sub(r'[^\d.]', '', val_str)
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def normalize_date_str(val):
+    """
+    Normalizes dates from text into DD-MM-YYYY format.
+    """
+    if not val:
+        return ""
+    m = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})', str(val))
+    if m:
+        d, mth, y = m.groups()
+        if len(y) == 2:
+            y = "20" + y
+        return f"{int(d):02d}-{int(mth):02d}-{y}"
+    return str(val).strip()
+
+
+def extract_docx_data(docx_path):
+    """
+    Parses loan details and repayment schedule from Word (.docx) documents.
+    Maps:
+      - PARTY NAME -> client_account
+      - PAYMENT DATE / DATE -> loan_date
+      - PAYMENT AMT / PRINCIPAL / LOAN AMT -> loan_amount
+      - REPAYMENT AMT -> total_repayment
+      - ACCOUNT / BRANCH -> primary_account
+      - Tables with date, cheque, amount -> repayment schedule table (EMIs)
+    """
+    if not DOCX_AVAILABLE:
+        raise ValueError("python-docx is not installed on this system.")
+
+    doc = docx.Document(docx_path)
+    output = {
+        "loan_number": None,
+        "primary_account": None,
+        "client_account": None,
+        "address": None,
+        "contact": None,
+        "loan_date": None,
+        "loan_amount": None,
+        "total_repayment": None,
+        "interest_rate": None,
+        "emi": None,
+        "total_installments": None,
+        "table": []
+    }
+
+    bank_info = []
+    for p in doc.paragraphs:
+        txt = p.text.strip()
+        if not txt:
+            continue
+        # Split on separators like '–', '—', '-', ':', '='
+        parts = re.split(r'[:–—\-\u2013\u2014=]\s*', txt, maxsplit=1)
+        if len(parts) == 2:
+            k, v = parts[0].strip().upper(), parts[1].strip()
+            # Note: check REPAYMENT before PAYMENT AMT because REPAYMENT AMT ends with PAYMENT AMT
+            if "REPAYMENT" in k:
+                output["total_repayment"] = parse_docx_amount(v)
+            elif any(x in k for x in ["PAYMENT AMT", "PRINCIPAL", "LOAN AMT", "LOAN AMOUNT"]):
+                output["loan_amount"] = parse_docx_amount(v)
+            elif any(x in k for x in ["PARTY NAME", "CLIENT", "BORROWER", "CUSTOMER"]):
+                output["client_account"] = clean_customer_name(v)
+            elif any(x in k for x in ["PAYMENT DATE", "LOAN DATE", "DATE"]):
+                output["loan_date"] = normalize_date_str(v)
+            elif any(x in k for x in ["ACCOUNT", "BRANCH"]):
+                output["primary_account"] = v.upper()
+            elif any(x in k for x in ["LOAN NO", "LOAN NUMBER", "REF NO"]):
+                output["loan_number"] = v
+            elif any(x in k for x in ["A/C", "IFSC", "BANK"]):
+                bank_info.append(f"{parts[0].strip()}: {v}")
+        elif any(x in txt.upper() for x in ["A/C", "IFSC", "BANK"]):
+            bank_info.append(txt)
+
+    if bank_info:
+        output["contact"] = " | ".join(bank_info)
+
+    # Process table for repayment schedule
+    for table in doc.tables:
+        if not table.rows:
+            continue
+        header = [c.text.strip().upper() for c in table.rows[0].cells]
+        date_col = next((i for i, h in enumerate(header) if any(x in h for x in ["DATE", "DUE"])), None)
+        amt_col = next((i for i, h in enumerate(header) if any(x in h for x in ["AMOUNT", "EMI", "INSTAL"])), None)
+        chq_col = next((i for i, h in enumerate(header) if any(x in h for x in ["CHEQUE", "CHQ"])), None)
+
+        for row in table.rows[1:]:
+            cells = [c.text.strip() for c in row.cells]
+            # Ignore summary rows like 'TOTAL' or non-data rows
+            if any("TOTAL" in c.upper() for c in cells):
+                continue
+            row_date = normalize_date_str(cells[date_col]) if date_col is not None and date_col < len(cells) else ""
+            row_amt = parse_docx_amount(cells[amt_col]) if amt_col is not None and amt_col < len(cells) else None
+            row_chq = cells[chq_col] if chq_col is not None and chq_col < len(cells) else ""
+
+            if row_date and row_amt is not None:
+                output["table"].append({
+                    "date": row_date,
+                    "amount": row_amt,
+                    "interest_amount": 0.0,
+                    "cheque_no": row_chq,
+                    "received_date": None,
+                    "payment_date": None
+                })
+
+    if output["table"]:
+        output["total_installments"] = len(output["table"])
+        output["emi"] = output["table"][0]["amount"]
+        if (
+            output["total_repayment"]
+            and output["loan_amount"]
+            and output["total_repayment"] >= output["loan_amount"]
+        ):
+            tot_int = output["total_repayment"] - output["loan_amount"]
+            per_int = round(tot_int / len(output["table"]), 2)
+            for r in output["table"]:
+                r["interest_amount"] = per_int
+
+    return output
+
+
+def extract_document_data(file_path):
+    """
+    Dispatcher to extract loan data from either PDF or Word (.docx/.doc) document.
+    """
+    path_lower = str(file_path).lower()
+    if path_lower.endswith(".docx") or path_lower.endswith(".doc"):
+        return extract_docx_data(file_path)
+    return _extract_pdf_data_original(file_path)
+
+
+# Backward-compatible alias
+extract_pdf_data = extract_document_data
 
 
 def build_final_output(data, remaining_accounts):
