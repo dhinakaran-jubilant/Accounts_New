@@ -11699,6 +11699,19 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const [currentPage, setCurrentPage] = useState(1);
 	const pageSize = 10;
 
+	// Sort state: defaultly sort by loan date descending (newest loans first)
+	const [sortField, setSortField] = useState('loan_date');
+	const [sortDirection, setSortDirection] = useState('desc');
+
+	const handleSort = (field) => {
+		if (sortField === field) {
+			setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+		} else {
+			setSortField(field);
+			setSortDirection(field === 'loan_date' ? 'desc' : 'asc');
+		}
+	};
+
 	const [availableAccountOptions, setAvailableAccountOptions] = useState(secondaryAccountOptions);
 	const [availableAccountObjects, setAvailableAccountObjects] = useState([]);
 	const [allUsers, setAllUsers] = useState([]);
@@ -12821,24 +12834,33 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		];
 	}, [availableAccountObjects, userPermittedLoans, userPermissions]);
 
-	// Reference date for calendar (use first loan's date so calendar opens at the right year)
+	// Reference date for calendar (use latest loan's date so calendar opens at the right year)
 	const calendarReferenceDate = useMemo(() => {
 		if (userPermittedLoans.length > 0) {
+			let latestLoan = userPermittedLoans[0];
+			let latestTime = getLoanDateObject(latestLoan)?.getTime() || 0;
+			for (let i = 1; i < userPermittedLoans.length; i++) {
+				const time = getLoanDateObject(userPermittedLoans[i])?.getTime() || 0;
+				if (time > latestTime) {
+					latestTime = time;
+					latestLoan = userPermittedLoans[i];
+				}
+			}
 			return (
-				userPermittedLoans[0].loan_date ||
-				userPermittedLoans[0].appliedDate ||
-				userPermittedLoans[0].loanDate ||
-				userPermittedLoans[0].date ||
-				userPermittedLoans[0].applied_date ||
+				latestLoan.loan_date ||
+				latestLoan.appliedDate ||
+				latestLoan.loanDate ||
+				latestLoan.date ||
+				latestLoan.applied_date ||
 				''
 			);
 		}
 		return '';
 	}, [userPermittedLoans]);
 
-	// Filter loans by status, account, date range, and search query
+	// Filter loans by status, account, date range, and search query, and defaultly sort by loan date
 	const filteredLoans = useMemo(() => {
-		return userPermittedLoans.filter((loan) => {
+		const filtered = userPermittedLoans.filter((loan) => {
 			const computedStatus = getComputedLoanStatus(loan);
 			const matchesStatus =
 				statusFilter === 'ALL' ||
@@ -12865,7 +12887,59 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 			return matchesStatus && matchesAccount && matchesDateRange && matchesQuery;
 		});
-	}, [userPermittedLoans, searchQuery, statusFilter, accountFilter, dateRangeFilter, availableAccountObjects]);
+
+		return filtered.sort((a, b) => {
+			let comparison = 0;
+			if (sortField === 'loan_date') {
+				const dateA = getLoanDateObject(a)?.getTime() || 0;
+				const dateB = getLoanDateObject(b)?.getTime() || 0;
+				if (dateA !== dateB) {
+					if (!dateA) return 1;
+					if (!dateB) return -1;
+					return sortDirection === 'desc' ? dateB - dateA : dateA - dateB;
+				}
+			} else if (sortField === 'id') {
+				const idA = String(a.id || a.loan_ref_id || '');
+				const idB = String(b.id || b.loan_ref_id || '');
+				const comp = idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+				if (comp !== 0) {
+					return sortDirection === 'desc' ? -comp : comp;
+				}
+			} else if (sortField === 'client_name') {
+				const nameA = String(a.primaryBorrower?.name || a.client_account_name || a.clientName || a.borrower_name || '');
+				const nameB = String(b.primaryBorrower?.name || b.client_account_name || b.clientName || b.borrower_name || '');
+				const comp = nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+				if (comp !== 0) {
+					return sortDirection === 'desc' ? -comp : comp;
+				}
+			} else if (sortField === 'primary') {
+				const priA = String(a.primary || a.primaryAccountName || '');
+				const priB = String(b.primary || b.primaryAccountName || '');
+				const comp = priA.localeCompare(priB, undefined, { sensitivity: 'base' });
+				if (comp !== 0) {
+					return sortDirection === 'desc' ? -comp : comp;
+				}
+			} else if (sortField === 'amount') {
+				const amtA = Number(a.amount || a.loanAmount || 0) || 0;
+				const amtB = Number(b.amount || b.loanAmount || 0) || 0;
+				if (amtA !== amtB) {
+					return sortDirection === 'desc' ? amtB - amtA : amtA - amtB;
+				}
+			} else if (sortField === 'status') {
+				const stA = String(getComputedLoanStatus(a) || '');
+				const stB = String(getComputedLoanStatus(b) || '');
+				const comp = stA.localeCompare(stB, undefined, { sensitivity: 'base' });
+				if (comp !== 0) {
+					return sortDirection === 'desc' ? -comp : comp;
+				}
+			}
+
+			// Deterministic fallback tie-breaker: loan ID descending
+			const fallbackIdA = String(a.id || a.loan_ref_id || '');
+			const fallbackIdB = String(b.id || b.loan_ref_id || '');
+			return fallbackIdB.localeCompare(fallbackIdA, undefined, { numeric: true });
+		});
+	}, [userPermittedLoans, searchQuery, statusFilter, accountFilter, dateRangeFilter, availableAccountObjects, sortField, sortDirection]);
 
 	// Pagination calculations
 	const totalItems = filteredLoans.length;
@@ -12878,10 +12952,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		}
 	}, [currentPage, totalPages]);
 
-	// Reset to page 1 whenever filters or search query change
+	// Reset to page 1 whenever filters, search query, or sorting change
 	useEffect(() => {
 		setCurrentPage(1);
-	}, [statusFilter, searchQuery, accountFilter, dateRangeFilter, accountRoleFilter]);
+	}, [statusFilter, searchQuery, accountFilter, dateRangeFilter, accountRoleFilter, sortField, sortDirection]);
 
 	const startIndex = (currentPage - 1) * pageSize;
 	const endIndex = Math.min(startIndex + pageSize, totalItems);
@@ -14027,12 +14101,126 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						<thead>
 							<tr className="bg-slate-50/90 text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200">
 								<th className="py-3 px-4 text-center w-14">#</th>
-								<th className="py-3 px-4 whitespace-nowrap">Loan ID</th>
-								<th className="py-3 px-4 whitespace-nowrap">Loan Date</th>
-								<th className="py-3 px-4 whitespace-nowrap">Client Name</th>
-								<th className="py-3 px-4 whitespace-nowrap">Primary</th>
-								<th className="py-3 px-4 whitespace-nowrap">Amount</th>
-								<th className="py-3 px-4 whitespace-nowrap">Status</th>
+								<th
+									onClick={() => handleSort('id')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'id' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Loan ID (${sortField === 'id' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Loan ID</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'id'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'id' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
+								<th
+									onClick={() => handleSort('loan_date')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'loan_date' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Loan Date (${sortField === 'loan_date' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Loan Date</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'loan_date'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'loan_date' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
+								<th
+									onClick={() => handleSort('client_name')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'client_name' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Client Name (${sortField === 'client_name' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Client Name</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'client_name'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'client_name' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
+								<th
+									onClick={() => handleSort('primary')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'primary' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Primary Account (${sortField === 'primary' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Primary</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'primary'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'primary' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
+								<th
+									onClick={() => handleSort('amount')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'amount' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Amount (${sortField === 'amount' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Amount</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'amount'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'amount' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
+								<th
+									onClick={() => handleSort('status')}
+									className={`py-3 px-4 whitespace-nowrap cursor-pointer select-none group/th transition-colors ${
+										sortField === 'status' ? 'text-blue-700 bg-blue-50/60' : 'hover:text-slate-800 hover:bg-slate-100/60'
+									}`}
+									title={`Sort by Status (${sortField === 'status' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
+								>
+									<div className="flex items-center gap-1.5">
+										<span>Status</span>
+										<span
+											className={`material-symbols-outlined text-[15px] transition-all ${
+												sortField === 'status'
+													? 'text-blue-600 font-bold opacity-100 scale-100'
+													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
+											}`}
+										>
+											{sortField === 'status' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
+										</span>
+									</div>
+								</th>
 								<th className="py-3 px-4 whitespace-nowrap text-right">Action</th>
 							</tr>
 						</thead>
