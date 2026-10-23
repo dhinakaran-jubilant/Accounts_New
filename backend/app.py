@@ -1649,6 +1649,9 @@ def save_schedule_override(loan_id):
                     if sub_part:
                         curr_splits = json.loads(sch.splits) if sch.splits else {}
                         if sub_part == 'A':
+                            is_a_approved = curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')
+                            if is_a_approved and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                                return jsonify({"error": "Payout date is already approved. Dates cannot be edited."}), 400
                             if field == 'receivedDate':
                                 curr_splits['recdDateA'] = value
                                 curr_splits['recdDate'] = value
@@ -1711,6 +1714,9 @@ def save_schedule_override(loan_id):
                             elif field == 'remarks':
                                 curr_splits['remarksA'] = value
                         elif sub_part == 'B':
+                            is_b_approved = curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, '')
+                            if is_b_approved and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                                return jsonify({"error": "Payout date is already approved. Dates cannot be edited."}), 400
                             if field == 'receivedDate':
                                 curr_splits['recdDateB'] = value
                                 if is_admin_user:
@@ -1772,6 +1778,14 @@ def save_schedule_override(loan_id):
                                 curr_splits['remarksB'] = value
                         sch.splits = json.dumps(curr_splits)
                     else:
+                        curr_splits = json.loads(sch.splits) if sch.splits else {}
+                        if curr_splits and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                            is_parent_split_approved = (
+                                (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
+                                (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
+                            )
+                            if is_parent_split_approved:
+                                return jsonify({"error": "Payout date is already approved for partial installment. Dates cannot be edited."}), 400
                         if field == 'receivedDate':
                             sch.received_date = value
                             if is_admin_user:

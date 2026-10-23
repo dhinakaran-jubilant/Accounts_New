@@ -6543,7 +6543,23 @@ export function JointLoanDetailsPage({
 							sub.payoutApprovalStatus === 'APPROVED')
 				)
 			);
-			if (!userPerms?.isAdmin && !isSystemAdmin && (isAlreadyApproved || isAnySubApproved)) {
+			// Determine if this is a partial payment row (sub-row, parent partial, or has splits)
+			const isPartialPayment = Boolean(
+				currentInst.isPartial ||
+				currentInst.isSubRow ||
+				currentInst.parentSNo ||
+				splitInstallments[sNo] ||
+				splitInstallments[Number(sNo)] ||
+				(currentInst.parentSNo && (splitInstallments[currentInst.parentSNo] || splitInstallments[Number(currentInst.parentSNo)]))
+			);
+
+			// For partial payments: once payout date approved, recd date and payout date are NOT editable, EVEN FOR SYSTEM ADMIN!
+			if (isPartialPayment && (isAlreadyApproved || isAnySubApproved)) {
+				return prev;
+			}
+
+			// For standard non-partial payments: locked once approved unless system admin
+			if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) {
 				return prev;
 			}
 
@@ -6912,7 +6928,18 @@ export function JointLoanDetailsPage({
 						sub.payoutApprovalStatus === 'APPROVED')
 			)
 		);
-		if (!userPerms?.isAdmin && !isSystemAdmin && (isAlreadyApproved || isAnySubApproved)) return;
+		const isPartialPayment = Boolean(
+			currentInst.isPartial ||
+			currentInst.isSubRow ||
+			currentInst.parentSNo ||
+			splitInstallments[sNo] ||
+			splitInstallments[Number(sNo)]
+		);
+
+		// For partial payments: once payout date approved, cannot clear/edit even system admin
+		if (isPartialPayment && (isAlreadyApproved || isAnySubApproved)) return;
+
+		if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) return;
 
 		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
@@ -9533,8 +9560,9 @@ export function JointLoanDetailsPage({
 											inst.subInstallments[0].payoutApprovalStatus === 'APPROVED')
 									);
 									const isMainRowPayoutApproved = Boolean(isPayoutApproved || isFirstSubPayoutApproved);
-									const canEditRecdDate = isFinallyApproved && !isSecEditor && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved) && (isPastEmiDate || isRecdDateFilled);
-									const canEditDueDate = isFinallyApproved && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved) && isRecdDateValid;
+									// For partial payments, once payout date approved, recd date and payout date are NOT editable even for system admin
+									const canEditRecdDate = isFinallyApproved && !isSecEditor && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && (isPastEmiDate || isRecdDateFilled);
+									const canEditDueDate = isFinallyApproved && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && isRecdDateValid;
 									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved);
 									const isAnySubApproved = Boolean(
 										inst.isPartial &&
@@ -9551,8 +9579,8 @@ export function JointLoanDetailsPage({
 									const canClearRow =
 										isFinallyApproved &&
 										!isSecEditor &&
-										!isMainRowPayoutApproved &&
 										!isAnySubApproved &&
+										(!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) &&
 										(isRecdDateFilled ||
 											isPayoutDateFilled ||
 											Boolean(
@@ -9969,10 +9997,9 @@ export function JointLoanDetailsPage({
 															: 'PRIMARY');
 													const canApproveSubPayout = getCanApprovePayoutForInst(sub);
 
-													// Primary manager can edit recd date; secondary manager CANNOT edit recd date; locked if payout date approved (unless admin)
-													const canEditSubRecdDate = isFinallyApproved && !isSecEditor && (userPerms?.isAdmin || isSystemAdmin || !isSubPayoutApproved) && (isPastEmiDate || isSubRecdDateFilled);
-													// Both primary and secondary managers can edit payout date once recd date is valid; locked if payout date approved (unless admin)
-													const canEditSubDueDate = isFinallyApproved && (userPerms?.isAdmin || isSystemAdmin || !isSubPayoutApproved) && isSubRecdDateValid;
+													// For partial payments, once payout date approved, recd and payout date are not editable even for system admin
+													const canEditSubRecdDate = isFinallyApproved && !isSecEditor && !isSubPayoutApproved && (isPastEmiDate || isSubRecdDateFilled);
+													const canEditSubDueDate = isFinallyApproved && !isSubPayoutApproved && isSubRecdDateValid;
 
 													// Determine minDate for recd date:
 													// For sub-installment A: inst.date
