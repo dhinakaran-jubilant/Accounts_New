@@ -14108,18 +14108,6 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 									}`}
 									title={`Sort by Loan ID (${sortField === 'id' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
 								>
-									<div className="flex items-center gap-1.5">
-										<span>Loan ID</span>
-										<span
-											className={`material-symbols-outlined text-[15px] transition-all ${
-												sortField === 'id'
-													? 'text-blue-600 font-bold opacity-100 scale-100'
-													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
-											}`}
-										>
-											{sortField === 'id' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
-										</span>
-									</div>
 								</th>
 								<th
 									onClick={() => handleSort('loan_date')}
@@ -14128,18 +14116,6 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 									}`}
 									title={`Sort by Loan Date (${sortField === 'loan_date' && sortDirection === 'asc' ? 'Descending' : 'Ascending'})`}
 								>
-									<div className="flex items-center gap-1.5">
-										<span>Loan Date</span>
-										<span
-											className={`material-symbols-outlined text-[15px] transition-all ${
-												sortField === 'loan_date'
-													? 'text-blue-600 font-bold opacity-100 scale-100'
-													: 'text-slate-400 opacity-0 group-hover/th:opacity-100 scale-90'
-											}`}
-										>
-											{sortField === 'loan_date' ? (sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'}
-										</span>
-									</div>
 								</th>
 								<th
 									onClick={() => handleSort('client_name')}
