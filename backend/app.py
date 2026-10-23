@@ -1657,13 +1657,33 @@ def revert_loan_split(loan_id, s_no):
     loan = find_pg_loan(loan_id)
     if loan and loan.repayment_schedule:
         try:
-            target_idx = int(s_no) - 1
-            if 0 <= target_idx < len(loan.repayment_schedule):
-                loan.repayment_schedule[target_idx].splits = None
-                loan.repayment_schedule[target_idx].received_date = None
-                loan.repayment_schedule[target_idx].payment_date = None
+            target_sch = None
+            try:
+                target_idx = int(s_no) - 1
+                if 0 <= target_idx < len(loan.repayment_schedule):
+                    target_sch = loan.repayment_schedule[target_idx]
+            except Exception:
+                pass
+            if not target_sch:
+                for s in loan.repayment_schedule:
+                    if getattr(s, 'installment_number', None) == int(s_no) or getattr(s, 's_no', None) == int(s_no):
+                        target_sch = s
+                        break
+            if target_sch:
+                target_sch.splits = None
+                target_sch.received_date = None
+                target_sch.payment_date = None
+                target_sch.payout_approval_status = None
+                target_sch.payout_approval_target = None
+                target_sch.payout_requested_role = None
+                target_sch.payout_requested_by = None
+                target_sch.payout_requested_at = None
+                target_sch.payout_approved_by = None
+                target_sch.payout_approved_at = None
+                target_sch.payout_notes = None
                 db.session.commit()
         except Exception as e:
+            app.logger.warning(f"Error reverting split in PostgreSQL: {e}")
             db.session.rollback()
 
     return jsonify({
@@ -1842,10 +1862,10 @@ def save_schedule_override(loan_id):
                                 (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
                                 (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
                             )
-                            if is_parent_split_approved:
+                            if is_parent_split_approved and value and str(value).strip() not in ('-', '—', ''):
                                 return jsonify({"error": "Payout date is already approved for partial installment. Dates cannot be edited."}), 400
                         if field == 'receivedDate':
-                            sch.received_date = value
+                            sch.received_date = value if value and str(value).strip() not in ('-', '—', '') else None
                             if is_admin_user:
                                 if value and str(value).strip() not in ('-', '—', ''):
                                     sch.payout_approval_status = 'APPROVED'
