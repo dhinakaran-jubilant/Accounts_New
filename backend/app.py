@@ -1487,6 +1487,11 @@ def get_loan_splits(loan_id):
                             overrides[key_a]['dueDate'] = split_data['dueDateA']
                         if split_data.get('remarksA'):
                             overrides[key_a]['remarks'] = split_data['remarksA']
+                        if split_data.get('payoutApprovalStatusA'):
+                            overrides[key_a]['payout_approval_status'] = split_data['payoutApprovalStatusA']
+                            overrides[key_a]['payoutApprovalStatus'] = split_data['payoutApprovalStatusA']
+                        if split_data.get('payout_approved_by'):
+                            overrides[key_a]['payout_approved_by'] = split_data['payout_approved_by']
                     if split_data.get('recdDateB') or split_data.get('dueDateB'):
                         key_b = f"{s_no_str}B"
                         if key_b not in overrides:
@@ -1497,6 +1502,11 @@ def get_loan_splits(loan_id):
                             overrides[key_b]['dueDate'] = split_data['dueDateB']
                         if split_data.get('remarksB'):
                             overrides[key_b]['remarks'] = split_data['remarksB']
+                        if split_data.get('payoutApprovalStatusB'):
+                            overrides[key_b]['payout_approval_status'] = split_data['payoutApprovalStatusB']
+                            overrides[key_b]['payoutApprovalStatus'] = split_data['payoutApprovalStatusB']
+                        if split_data.get('payout_approved_by'):
+                            overrides[key_b]['payout_approved_by'] = split_data['payout_approved_by']
                 except Exception:
                     pass
 
@@ -1559,6 +1569,15 @@ def save_loan_split(loan_id):
                     sch.payment_date = first_payout
                 if payload.get('remarks') is not None:
                     sch.remarks = payload['remarks']
+
+                p_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
+                if p_status:
+                    sch.payout_approval_status = p_status
+                    if p_status == 'APPROVED':
+                        sch.payout_approval_target = None
+                        sch.payout_approved_by = payload.get('payout_approved_by') or 'System Admin'
+                        sch.payout_approved_at = payload.get('payout_approved_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                        sch.payout_notes = payload.get('payout_notes') or 'Auto-approved by System Admin'
                 
                 if payload.get('historyEntry'):
                     try:
@@ -1614,19 +1633,40 @@ def save_schedule_override(loan_id):
                 sub_part = m.group(2).upper() if m.group(2) else None
                 if 0 <= target_idx < len(loan.repayment_schedule):
                     sch = loan.repayment_schedule[target_idx]
+
+                    user_name_val = str(payload.get('userName') or payload.get('user_name') or payload.get('payout_requested_by') or payload.get('payout_approved_by') or '').strip().lower()
+                    user_role_val = str(payload.get('userRole') or payload.get('user_role') or payload.get('payout_editor_role') or '').strip().lower()
+                    payout_status_val = str(payload.get('payout_approval_status') or payload.get('payoutApprovalStatus') or '').strip().upper()
+
+                    is_admin_user = (
+                        user_name_val in ('system admin', 'admin') or
+                        user_role_val in ('admin', 'super admin') or
+                        payout_status_val == 'APPROVED'
+                    )
+                    admin_approver = payload.get('payout_approved_by') or payload.get('userName') or payload.get('user_name') or 'System Admin'
+                    now_str = payload.get('payout_approved_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+
                     if sub_part:
                         curr_splits = json.loads(sch.splits) if sch.splits else {}
                         if sub_part == 'A':
                             if field == 'receivedDate':
                                 curr_splits['recdDateA'] = value
                                 curr_splits['recdDate'] = value
-                                if value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusA') != 'APPROVED':
+                                if is_admin_user:
+                                    if value and str(value).strip() not in ('-', '—', ''):
+                                        curr_splits['payoutApprovalStatusA'] = 'APPROVED'
+                                        curr_splits['payoutApprovalStatus'] = 'APPROVED'
+                                        sch.payout_approval_status = 'APPROVED'
+                                        sch.payout_approval_target = None
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                elif value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusA') != 'APPROVED':
                                     curr_splits['payoutApprovalStatusA'] = 'PENDING'
                                     sch.payout_approval_status = 'PENDING'
                                     sch.payout_approval_target = 'SECONDARY'
                                     sch.payout_requested_role = 'PRIMARY'
                                     sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
-                                    sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                    sch.payout_requested_at = now_str
                             elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
                                 curr_splits['dueDateA'] = value
                                 payout_override_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
@@ -1635,7 +1675,7 @@ def save_schedule_override(loan_id):
                                 if not payout_target:
                                     payout_target = 'PRIMARY' if payout_role == 'SECONDARY' else 'SECONDARY'
 
-                                is_auto_app = payout_override_status == 'APPROVED'
+                                is_auto_app = is_admin_user or payout_override_status == 'APPROVED'
                                 if is_auto_app:
                                     if value and str(value).strip() not in ('-', '—', ''):
                                         curr_splits['payoutApprovalStatusA'] = 'APPROVED'
@@ -1643,8 +1683,9 @@ def save_schedule_override(loan_id):
                                         sch.payout_approval_status = 'APPROVED'
                                         sch.payout_approval_target = None
                                         sch.payout_requested_role = payout_role
-                                        sch.payout_approved_by = payload.get('payout_approved_by') or 'Auto Approved'
-                                        sch.payout_approved_at = payload.get('payout_approved_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                        sch.payout_notes = payload.get('payout_notes') or 'Auto-approved by System Admin'
                                 elif value and str(value).strip() not in ('-', '—', ''):
                                     curr_splits['payoutApprovalStatusA'] = 'PENDING'
                                     sch.payout_approval_status = 'PENDING'
@@ -1655,7 +1696,7 @@ def save_schedule_override(loan_id):
                                     sch.payout_notes = None
                                     req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                     sch.payout_requested_by = req_by
-                                    sch.payout_requested_at = payload.get('payout_requested_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                    sch.payout_requested_at = payload.get('payout_requested_at') or now_str
                                     send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
                                 else:
                                     curr_splits['payoutApprovalStatusA'] = None
@@ -1672,13 +1713,20 @@ def save_schedule_override(loan_id):
                         elif sub_part == 'B':
                             if field == 'receivedDate':
                                 curr_splits['recdDateB'] = value
-                                if value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusB') != 'APPROVED':
+                                if is_admin_user:
+                                    if value and str(value).strip() not in ('-', '—', ''):
+                                        curr_splits['payoutApprovalStatusB'] = 'APPROVED'
+                                        sch.payout_approval_status = 'APPROVED'
+                                        sch.payout_approval_target = None
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                elif value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusB') != 'APPROVED':
                                     curr_splits['payoutApprovalStatusB'] = 'PENDING'
                                     sch.payout_approval_status = 'PENDING'
                                     sch.payout_approval_target = 'SECONDARY'
                                     sch.payout_requested_role = 'PRIMARY'
                                     sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
-                                    sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                    sch.payout_requested_at = now_str
                             elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
                                 curr_splits['dueDateB'] = value
                                 payout_override_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
@@ -1687,7 +1735,7 @@ def save_schedule_override(loan_id):
                                 if not payout_target:
                                     payout_target = 'PRIMARY' if payout_role == 'SECONDARY' else 'SECONDARY'
 
-                                is_auto_app = payout_override_status == 'APPROVED'
+                                is_auto_app = is_admin_user or payout_override_status == 'APPROVED'
                                 if is_auto_app:
                                     if value and str(value).strip() not in ('-', '—', ''):
                                         curr_splits['payoutApprovalStatusB'] = 'APPROVED'
@@ -1695,8 +1743,9 @@ def save_schedule_override(loan_id):
                                         sch.payout_approval_status = 'APPROVED'
                                         sch.payout_approval_target = None
                                         sch.payout_requested_role = payout_role
-                                        sch.payout_approved_by = payload.get('payout_approved_by') or 'Auto Approved'
-                                        sch.payout_approved_at = payload.get('payout_approved_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                        sch.payout_notes = payload.get('payout_notes') or 'Auto-approved by System Admin'
                                 elif value and str(value).strip() not in ('-', '—', ''):
                                     curr_splits['payoutApprovalStatusB'] = 'PENDING'
                                     sch.payout_approval_status = 'PENDING'
@@ -1707,7 +1756,7 @@ def save_schedule_override(loan_id):
                                     sch.payout_notes = None
                                     req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                     sch.payout_requested_by = req_by
-                                    sch.payout_requested_at = payload.get('payout_requested_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                    sch.payout_requested_at = payload.get('payout_requested_at') or now_str
                                     send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
                                 else:
                                     curr_splits['payoutApprovalStatusB'] = None
@@ -1725,12 +1774,18 @@ def save_schedule_override(loan_id):
                     else:
                         if field == 'receivedDate':
                             sch.received_date = value
-                            if value and str(value).strip() not in ('-', '—', '') and not getattr(sch, 'payout_approved_by', None):
+                            if is_admin_user:
+                                if value and str(value).strip() not in ('-', '—', ''):
+                                    sch.payout_approval_status = 'APPROVED'
+                                    sch.payout_approval_target = None
+                                    sch.payout_approved_by = admin_approver
+                                    sch.payout_approved_at = now_str
+                            elif value and str(value).strip() not in ('-', '—', '') and not getattr(sch, 'payout_approved_by', None):
                                 sch.payout_approval_status = 'PENDING'
                                 sch.payout_approval_target = 'SECONDARY'
                                 sch.payout_requested_role = 'PRIMARY'
                                 sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
-                                sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                sch.payout_requested_at = now_str
                         elif field == 'date':
                             sch.date = value
                         elif field == 'chequeNo':
@@ -1743,15 +1798,15 @@ def save_schedule_override(loan_id):
                             if not payout_target:
                                 payout_target = 'PRIMARY' if payout_role == 'SECONDARY' else 'SECONDARY'
 
-                            is_auto_app = payout_override_status == 'APPROVED'
+                            is_auto_app = is_admin_user or payout_override_status == 'APPROVED'
                             if is_auto_app:
                                 if value and str(value).strip() not in ('-', '—', ''):
                                     sch.payout_approval_status = 'APPROVED'
                                     sch.payout_approval_target = None
                                     sch.payout_requested_role = payout_role
-                                    sch.payout_approved_by = payload.get('payout_approved_by') or 'Auto Approved'
-                                    sch.payout_approved_at = payload.get('payout_approved_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
-                                    sch.payout_notes = payload.get('payout_notes') or None
+                                    sch.payout_approved_by = admin_approver
+                                    sch.payout_approved_at = now_str
+                                    sch.payout_notes = payload.get('payout_notes') or 'Auto-approved by System Admin'
                                 else:
                                     sch.payout_approval_status = None
                                     sch.payout_approval_target = None
@@ -1770,7 +1825,7 @@ def save_schedule_override(loan_id):
                                 sch.payout_notes = None
                                 req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                 sch.payout_requested_by = req_by
-                                sch.payout_requested_at = payload.get('payout_requested_at') or datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                                sch.payout_requested_at = payload.get('payout_requested_at') or now_str
                                 send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
                             else:
                                 sch.payout_approval_status = None

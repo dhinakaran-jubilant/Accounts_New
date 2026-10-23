@@ -4981,8 +4981,15 @@ export function JointLoanDetailsPage({
 		}
 	}, [availableAccountObjects]);
 
+	const isSystemAdmin = useMemo(() => {
+		const role = (activeUser?.role || '').trim().toLowerCase();
+		const name = (activeUser?.name || '').trim().toLowerCase();
+		const username = (activeUser?.username || '').trim().toLowerCase();
+		return ['admin', 'super admin'].includes(role) || Boolean(activeUser?.permissions?.isAdmin) || name === 'system admin' || username === 'system admin';
+	}, [activeUser]);
+
 	const userPerms = useMemo(() => {
-		const isAdmin = ['admin', 'super admin'].includes((activeUser?.role || '').toLowerCase()) || Boolean(activeUser?.permissions?.isAdmin);
+		const isAdmin = isSystemAdmin;
 		let primary = [];
 		let secondary = [];
 		if (activeUser?.permissions) {
@@ -4994,7 +5001,7 @@ export function JointLoanDetailsPage({
 			}
 		}
 		return { isAdmin, primary, secondary };
-	}, [activeUser]);
+	}, [activeUser, isSystemAdmin]);
 
 	const hasPayoutPending = isLoanPayoutPending(loan);
 	const isFinallyApproved = loan?.approval_status === 'APPROVED' || loan?.status === 'Active' || loan?.status === 'Closed' || hasPayoutPending;
@@ -5019,8 +5026,10 @@ export function JointLoanDetailsPage({
 	// Payout date approval access is per installment:
 	// If primary manager edit payout date -> approve/reject access to secondary manager.
 	// If secondary manager edit payout date -> approve/reject access to primary manager.
+	// System admin has immediate approval authority.
 	const getCanApprovePayoutForInst = useCallback((inst) => {
-		if (!inst || userPerms?.isAdmin) return false;
+		if (!inst) return false;
+		if (userPerms?.isAdmin || isSystemAdmin) return true;
 		const targetRole = inst.payout_approval_target || inst.payoutApprovalTarget;
 		if (targetRole === 'PRIMARY') return isUserPriManager;
 		if (targetRole === 'SECONDARY') return isUserSecManager;
@@ -5032,7 +5041,7 @@ export function JointLoanDetailsPage({
 		if (editorRole === 'SECONDARY') return isUserPriManager;
 		if (editorRole === 'PRIMARY') return isUserSecManager;
 		return isUserSecManager;
-	}, [userPerms?.isAdmin, isUserPriManager, isUserSecManager]);
+	}, [userPerms?.isAdmin, isSystemAdmin, isUserPriManager, isUserSecManager]);
 
 	const hasAccess = useMemo(() => {
 		return canUserAccessLoan(loan, activeUser, userPerms, availableAccountObjects, usersList);
@@ -5323,16 +5332,15 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 
 		try {
-			const targetRole = inst.payout_approval_target || inst.payoutApprovalTarget;
-			const isPrimaryApprover = targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan);
-			const approverRole = isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager';
-			const approverName = activeUser?.name || (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
+			const isPrimaryApprover = isSystemAdmin ? true : (targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan));
+			const approverRole = isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
+			const approverName = activeUser?.name || (isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager'));
 			const approverCode = activeUser?.employee_code || '';
 			const payload = {
 				action: 'APPROVE',
 				approver_employee_code: approverCode,
 				approver_name: approverName,
-				approver_role: isPrimaryApprover ? 'PRIMARY' : 'SECONDARY',
+				approver_role: isSystemAdmin ? 'ADMIN' : (isPrimaryApprover ? 'PRIMARY' : 'SECONDARY'),
 				notes: '',
 			};
 
@@ -5418,16 +5426,15 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 
 		try {
-			const targetRole = payoutModalData.row?.payout_approval_target || payoutModalData.row?.payoutApprovalTarget;
-			const isPrimaryApprover = targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan);
-			const approverRole = isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager';
-			const approverName = activeUser?.name || (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
+			const isPrimaryApprover = isSystemAdmin ? true : (targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan));
+			const approverRole = isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
+			const approverName = activeUser?.name || (isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager'));
 			const approverCode = activeUser?.employee_code || '';
 			const payload = {
 				action,
 				approver_employee_code: approverCode,
 				approver_name: approverName,
-				approver_role: isPrimaryApprover ? 'PRIMARY' : 'SECONDARY',
+				approver_role: isSystemAdmin ? 'ADMIN' : (isPrimaryApprover ? 'PRIMARY' : 'SECONDARY'),
 				notes,
 			};
 
@@ -6226,10 +6233,11 @@ export function JointLoanDetailsPage({
 
 			const currentAccounts = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
 			const secRequiresApproval = checkLoanSecondaryRequiresApproval(loan, currentAccounts);
-			const payoutAppStatus = secRequiresApproval ? 'PENDING' : 'APPROVED';
-			const payoutAppBy = secRequiresApproval ? null : 'Auto Approved';
-			const payoutAppAt = secRequiresApproval ? null : getFormattedNow();
-			const payoutAppNotes = secRequiresApproval ? null : 'Auto approved: Secondary account approval access is disabled';
+			const isAutoApprove = isSystemAdmin || userPerms?.isAdmin || !secRequiresApproval;
+			const payoutAppStatus = isAutoApprove ? 'APPROVED' : 'PENDING';
+			const payoutAppBy = isAutoApprove ? (isSystemAdmin || userPerms?.isAdmin ? (activeUser?.name || 'System Admin') : 'Auto Approved') : null;
+			const payoutAppAt = isAutoApprove ? getFormattedNow() : null;
+			const payoutAppNotes = isSystemAdmin || userPerms?.isAdmin ? 'Auto-approved by System Admin' : (secRequiresApproval ? null : 'Auto approved: Secondary account approval access is disabled');
 
 			const splitPayload = {
 				sNo,
@@ -6354,10 +6362,11 @@ export function JointLoanDetailsPage({
 		// 1st partial payment
 		const currentAccounts = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
 		const secRequiresApproval = checkLoanSecondaryRequiresApproval(loan, currentAccounts);
-		const payoutAppStatus = secRequiresApproval ? 'PENDING' : 'APPROVED';
-		const payoutAppBy = secRequiresApproval ? null : 'Auto Approved';
-		const payoutAppAt = secRequiresApproval ? null : getFormattedNow();
-		const payoutAppNotes = secRequiresApproval ? null : 'Auto approved: Secondary account approval access is disabled';
+		const isAutoApprove = isSystemAdmin || userPerms?.isAdmin || !secRequiresApproval;
+		const payoutAppStatus = isAutoApprove ? 'APPROVED' : 'PENDING';
+		const payoutAppBy = isAutoApprove ? (isSystemAdmin || userPerms?.isAdmin ? (activeUser?.name || 'System Admin') : 'Auto Approved') : null;
+		const payoutAppAt = isAutoApprove ? getFormattedNow() : null;
+		const payoutAppNotes = isSystemAdmin || userPerms?.isAdmin ? 'Auto-approved by System Admin' : (secRequiresApproval ? null : 'Auto approved: Secondary account approval access is disabled');
 
 		const splitPayload = {
 			sNo,
@@ -6534,7 +6543,7 @@ export function JointLoanDetailsPage({
 							sub.payoutApprovalStatus === 'APPROVED')
 				)
 			);
-			if (isAlreadyApproved || isAnySubApproved) {
+			if (!userPerms?.isAdmin && !isSystemAdmin && (isAlreadyApproved || isAnySubApproved)) {
 				return prev;
 			}
 
@@ -6557,7 +6566,7 @@ export function JointLoanDetailsPage({
 					}
 				}
 
-				// If client paid (recd date entered), remittance to secondary partner is pending approval
+				// If client paid (recd date entered), remittance to secondary partner is pending approval (or auto-approved if System Admin)
 				if (finalVal && finalVal.length === 10) {
 					const isAlreadyApproved = Boolean(
 						currentInst.payout_approved_by ||
@@ -6565,24 +6574,44 @@ export function JointLoanDetailsPage({
 						currentInst.status === 'Settled'
 					);
 					if (!isAlreadyApproved) {
-						const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
-						const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
-						const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
-						const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
+						if (isSystemAdmin || userPerms?.isAdmin) {
+							const adminName = activeUser?.name || 'System Admin';
+							const nowStr = getFormattedNow();
+							instOverrides.payout_approval_status = 'APPROVED';
+							instOverrides.payoutApprovalStatus = 'APPROVED';
+							instOverrides.payout_approval_target = null;
+							instOverrides.payoutApprovalTarget = null;
+							instOverrides.payout_editor_role = 'ADMIN';
+							instOverrides.payoutEditorRole = 'ADMIN';
+							instOverrides.payout_requested_role = 'ADMIN';
+							instOverrides.payoutRequestedRole = 'ADMIN';
+							instOverrides.payout_requested_by = adminName;
+							instOverrides.payout_requested_at = nowStr;
+							instOverrides.payout_approved_by = adminName;
+							instOverrides.payoutApprovedBy = adminName;
+							instOverrides.payout_approved_at = nowStr;
+							instOverrides.payoutApprovedAt = nowStr;
+							instOverrides.payout_notes = 'Auto-approved by System Admin';
+						} else {
+							const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+							const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
+							const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
+							const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
 
-						instOverrides.payout_approval_status = 'PENDING';
-						instOverrides.payoutApprovalStatus = 'PENDING';
-						instOverrides.payout_approval_target = targetRole;
-						instOverrides.payoutApprovalTarget = targetRole;
-						instOverrides.payout_editor_role = editorRole;
-						instOverrides.payoutEditorRole = editorRole;
-						instOverrides.payout_requested_role = editorRole;
-						instOverrides.payoutRequestedRole = editorRole;
-						instOverrides.payout_requested_by = editorName;
-						instOverrides.payout_requested_at = getFormattedNow();
-						instOverrides.payout_approved_by = null;
-						instOverrides.payout_approved_at = null;
-						instOverrides.payout_notes = null;
+							instOverrides.payout_approval_status = 'PENDING';
+							instOverrides.payoutApprovalStatus = 'PENDING';
+							instOverrides.payout_approval_target = targetRole;
+							instOverrides.payoutApprovalTarget = targetRole;
+							instOverrides.payout_editor_role = editorRole;
+							instOverrides.payoutEditorRole = editorRole;
+							instOverrides.payout_requested_role = editorRole;
+							instOverrides.payoutRequestedRole = editorRole;
+							instOverrides.payout_requested_by = editorName;
+							instOverrides.payout_requested_at = getFormattedNow();
+							instOverrides.payout_approved_by = null;
+							instOverrides.payout_approved_at = null;
+							instOverrides.payout_notes = null;
+						}
 					}
 				}
 
@@ -6616,28 +6645,49 @@ export function JointLoanDetailsPage({
 					}
 				}
 
-				if (finalVal && finalVal.length === 10 && finalVal !== '-' && finalVal !== '-') {
-					// Every time any manager edits payout date:
-					// - If secondary manager edits -> approval request sent to primary manager (target: 'PRIMARY')
-					// - If primary manager edits -> approval request sent to secondary manager (target: 'SECONDARY')
-					const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
-					const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
-					const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
-					const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
+				if (finalVal && finalVal.length === 10 && finalVal !== '-' && finalVal !== '—') {
+					if (isSystemAdmin || userPerms?.isAdmin) {
+						// System Admin auto-approves payout date immediately
+						const adminName = activeUser?.name || 'System Admin';
+						const nowStr = getFormattedNow();
+						instOverrides.payout_approval_status = 'APPROVED';
+						instOverrides.payoutApprovalStatus = 'APPROVED';
+						instOverrides.payout_approval_target = null;
+						instOverrides.payoutApprovalTarget = null;
+						instOverrides.payout_editor_role = 'ADMIN';
+						instOverrides.payoutEditorRole = 'ADMIN';
+						instOverrides.payout_requested_role = 'ADMIN';
+						instOverrides.payoutRequestedRole = 'ADMIN';
+						instOverrides.payout_requested_by = adminName;
+						instOverrides.payout_requested_at = nowStr;
+						instOverrides.payout_approved_by = adminName;
+						instOverrides.payoutApprovedBy = adminName;
+						instOverrides.payout_approved_at = nowStr;
+						instOverrides.payoutApprovedAt = nowStr;
+						instOverrides.payout_notes = 'Auto-approved by System Admin';
+					} else {
+						// Every time any manager edits payout date:
+						// - If secondary manager edits -> approval request sent to primary manager (target: 'PRIMARY')
+						// - If primary manager edits -> approval request sent to secondary manager (target: 'SECONDARY')
+						const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+						const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
+						const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
+						const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
 
-					instOverrides.payout_approval_status = 'PENDING';
-					instOverrides.payoutApprovalStatus = 'PENDING';
-					instOverrides.payout_approval_target = targetRole;
-					instOverrides.payoutApprovalTarget = targetRole;
-					instOverrides.payout_editor_role = editorRole;
-					instOverrides.payoutEditorRole = editorRole;
-					instOverrides.payout_requested_role = editorRole;
-					instOverrides.payoutRequestedRole = editorRole;
-					instOverrides.payout_requested_by = editorName;
-					instOverrides.payout_requested_at = getFormattedNow();
-					instOverrides.payout_approved_by = null;
-					instOverrides.payout_approved_at = null;
-					instOverrides.payout_notes = null;
+						instOverrides.payout_approval_status = 'PENDING';
+						instOverrides.payoutApprovalStatus = 'PENDING';
+						instOverrides.payout_approval_target = targetRole;
+						instOverrides.payoutApprovalTarget = targetRole;
+						instOverrides.payout_editor_role = editorRole;
+						instOverrides.payoutEditorRole = editorRole;
+						instOverrides.payout_requested_role = editorRole;
+						instOverrides.payoutRequestedRole = editorRole;
+						instOverrides.payout_requested_by = editorName;
+						instOverrides.payout_requested_at = getFormattedNow();
+						instOverrides.payout_approved_by = null;
+						instOverrides.payout_approved_at = null;
+						instOverrides.payout_notes = null;
+					}
 				} else {
 					instOverrides.payout_approval_status = null;
 					instOverrides.payoutApprovalStatus = null;
@@ -6686,21 +6736,25 @@ export function JointLoanDetailsPage({
 					id: `hist_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
 					type: isRecd ? 'recd_date_update' : 'payout_date_update',
 					title: field === 'dueDate'
-						? (isSecEditor
-							? `EMI #${sNo} Payout Date Updated by Secondary Manager`
-							: `EMI #${sNo} Payout Date Updated by Primary Manager`)
+						? (isSystemAdmin || userPerms?.isAdmin
+							? `EMI #${sNo} Payout Date Auto-Approved by System Admin`
+							: (isSecEditor
+								? `EMI #${sNo} Payout Date Updated by Secondary Manager`
+								: `EMI #${sNo} Payout Date Updated by Primary Manager`))
 						: `EMI #${sNo} ${fieldLabel} Updated`,
 					description: field === 'dueDate'
-						? (isSecEditor
-							? `Secondary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to primary manager.`
-							: `Primary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to secondary manager.`)
+						? (isSystemAdmin || userPerms?.isAdmin
+							? `System Admin set EMI #${sNo} payout date to "${finalVal}". Auto-approved.`
+							: (isSecEditor
+								? `Secondary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to primary manager.`
+								: `Primary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to secondary manager.`))
 						: (displayOld !== 'None'
 							? `EMI #${sNo} ${fieldLabel.toLowerCase()} updated from "${displayOld}" to "${displayNew}".`
 							: `EMI #${sNo} ${fieldLabel.toLowerCase()} updated to "${displayNew}".`),
 					timestamp: nowStr,
 					isoDate: new Date().toISOString(),
-					userName: activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager'),
-					userRole: activeUser?.role || (isSecEditor ? 'sec_manager' : 'primary_manager'),
+					userName: activeUser?.name || activeUser?.employee_code || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : (isSecEditor ? 'Secondary Manager' : 'Primary Manager')),
+					userRole: activeUser?.role || (isSystemAdmin || userPerms?.isAdmin ? 'admin' : (isSecEditor ? 'sec_manager' : 'primary_manager')),
 					userEmployeeCode: activeUser?.employee_code || '',
 					emiNo: sNo,
 					fieldName: field,
@@ -6766,6 +6820,8 @@ export function JointLoanDetailsPage({
 					payout_approved_by: instOverrides.payout_approved_by,
 					payout_approved_at: instOverrides.payout_approved_at,
 					payout_notes: instOverrides.payout_notes,
+					userName: activeUser?.name || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : ''),
+					userRole: activeUser?.role || (isSystemAdmin || userPerms?.isAdmin ? 'admin' : ''),
 					historyEntry: histEntry,
 				}).catch((err) =>
 					console.warn('Could not save schedule override to backend:', err)
@@ -6856,7 +6912,7 @@ export function JointLoanDetailsPage({
 						sub.payoutApprovalStatus === 'APPROVED')
 			)
 		);
-		if (isAlreadyApproved || isAnySubApproved) return;
+		if (!userPerms?.isAdmin && !isSystemAdmin && (isAlreadyApproved || isAnySubApproved)) return;
 
 		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
@@ -9477,9 +9533,9 @@ export function JointLoanDetailsPage({
 											inst.subInstallments[0].payoutApprovalStatus === 'APPROVED')
 									);
 									const isMainRowPayoutApproved = Boolean(isPayoutApproved || isFirstSubPayoutApproved);
-									const canEditRecdDate = isFinallyApproved && !isSecEditor && !isMainRowPayoutApproved && (isPastEmiDate || isRecdDateFilled);
-									const canEditDueDate = isFinallyApproved && !isMainRowPayoutApproved && isRecdDateValid;
-									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && !isMainRowPayoutApproved;
+									const canEditRecdDate = isFinallyApproved && !isSecEditor && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved) && (isPastEmiDate || isRecdDateFilled);
+									const canEditDueDate = isFinallyApproved && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved) && isRecdDateValid;
+									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved);
 									const isAnySubApproved = Boolean(
 										inst.isPartial &&
 										inst.subInstallments?.some(
@@ -9913,10 +9969,10 @@ export function JointLoanDetailsPage({
 															: 'PRIMARY');
 													const canApproveSubPayout = getCanApprovePayoutForInst(sub);
 
-													// Primary manager can edit recd date; secondary manager CANNOT edit recd date; locked if payout date approved
-													const canEditSubRecdDate = isFinallyApproved && !isSecEditor && !isSubPayoutApproved && (isPastEmiDate || isSubRecdDateFilled);
-													// Both primary and secondary managers can edit payout date once recd date is valid; locked if payout date approved
-													const canEditSubDueDate = isFinallyApproved && !isSubPayoutApproved && isSubRecdDateValid;
+													// Primary manager can edit recd date; secondary manager CANNOT edit recd date; locked if payout date approved (unless admin)
+													const canEditSubRecdDate = isFinallyApproved && !isSecEditor && (userPerms?.isAdmin || isSystemAdmin || !isSubPayoutApproved) && (isPastEmiDate || isSubRecdDateFilled);
+													// Both primary and secondary managers can edit payout date once recd date is valid; locked if payout date approved (unless admin)
+													const canEditSubDueDate = isFinallyApproved && (userPerms?.isAdmin || isSystemAdmin || !isSubPayoutApproved) && isSubRecdDateValid;
 
 													// Determine minDate for recd date:
 													// For sub-installment A: inst.date
