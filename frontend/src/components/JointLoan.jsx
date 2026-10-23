@@ -3541,7 +3541,10 @@ export function PartialPaymentModal({
 	});
 
 	const [remarks, setRemarks] = useState(() => {
-		return inst.subInstallments?.[0]?.remarks || inst.remarks || '';
+		if (isCurrentlyPartial) {
+			return inst.subInstallments?.[1]?.remarks || inst.splits?.remarksB || '';
+		}
+		return inst.subInstallments?.[0]?.remarks || inst.splits?.remarksA || inst.remarks || '';
 	});
 
 	const [chqNoA, setChqNoA] = useState(() => inst.subInstallments?.[0]?.chqNo || `${inst.chqNo || 'CHQ-000000'}-A`);
@@ -3732,7 +3735,9 @@ export function PartialPaymentModal({
 			firstSecAmounts: alreadyPaidSecAccounts,
 			firstRecdDate: inst.subInstallments?.[0]?.receivedDate || '',
 			firstPayoutDate: inst.subInstallments?.[0]?.dueDate || '',
-			firstRemarks: inst.subInstallments?.[0]?.remarks || '',
+			firstRemarks: inst.subInstallments?.[0]?.remarks !== undefined
+				? inst.subInstallments[0].remarks
+				: (inst.splits?.remarksA || ''),
 			priAmount: cumulativePri,
 			secAmount: cumulativeSecTotal,
 			secAmounts: cumulativeSecAmounts,
@@ -5942,11 +5947,13 @@ export function JointLoanDetailsPage({
 					: (overrideMain.dueDate !== undefined ? overrideMain.dueDate : (splitInfo.dueDateA || splitInfo.dueDate || splitInfo.payoutDate || '-'));
 				const remarksA = overrideA.remarks !== undefined
 					? overrideA.remarks
-					: (overrideMain.remarks !== undefined ? overrideMain.remarks : (splitInfo.remarksA || splitInfo.remarks || ''));
+					: (splitInfo.remarksA !== undefined ? splitInfo.remarksA : '');
 
 				const recdDateB = overrideB.receivedDate !== undefined ? overrideB.receivedDate : (splitInfo.recdDateB || '');
 				const dueDateB = overrideB.dueDate !== undefined ? overrideB.dueDate : (splitInfo.dueDateB || '-');
-				const remarksB = overrideB.remarks !== undefined ? overrideB.remarks : (splitInfo.remarksB || '');
+				const remarksB = overrideB.remarks !== undefined
+					? overrideB.remarks
+					: (splitInfo.remarksB !== undefined ? splitInfo.remarksB : '');
 
 				const isPartBPaid = Boolean(
 					splitInfo.isFinalSettled ||
@@ -5973,7 +5980,7 @@ export function JointLoanDetailsPage({
 					chqNo: splitInfo.chqNoA || `${inst.chqNo}-A`,
 					receivedDate: recdDateA,
 					dueDate: dueDateA,
-					remarks: remarksA,
+					remarks: remarksA || '',
 					payout_approval_status: overrideA.payout_approval_status || splitInfo.payoutApprovalStatusA || splitInfo.payout_approval_status || inst.payout_approval_status || 'APPROVED',
 					payoutApprovalStatus: overrideA.payoutApprovalStatus || splitInfo.payoutApprovalStatusA || splitInfo.payoutApprovalStatus || inst.payoutApprovalStatus || 'APPROVED',
 					payout_approval_target: overrideA.payout_approval_target || splitInfo.payoutApprovalTargetA || splitInfo.payout_approval_target || inst.payout_approval_target,
@@ -6002,7 +6009,7 @@ export function JointLoanDetailsPage({
 					chqNo: splitInfo.chqNoB || `${inst.chqNo}-B`,
 					receivedDate: recdDateB,
 					dueDate: dueDateB,
-					remarks: remarksB,
+					remarks: isPartBPaid ? (remarksB || '') : '',
 					payout_approval_status: isPartBPaid ? (overrideB.payout_approval_status || splitInfo.payoutApprovalStatusB || (splitInfo.isFinalSettled ? 'APPROVED' : null)) : null,
 					payoutApprovalStatus: isPartBPaid ? (overrideB.payoutApprovalStatus || splitInfo.payoutApprovalStatusB || (splitInfo.isFinalSettled ? 'APPROVED' : null)) : null,
 					payout_approval_target: isPartBPaid ? (overrideB.payout_approval_target || splitInfo.payoutApprovalTargetB || splitInfo.payout_approval_target || inst.payout_approval_target) : null,
@@ -6117,16 +6124,43 @@ export function JointLoanDetailsPage({
 							: ((splitInfo.dueDateA && splitInfo.dueDateA !== '-' && splitInfo.dueDateA !== '-')
 								? splitInfo.dueDateA
 								: (splitInfo.dueDate || splitInfo.payoutDate || '-'))),
-					remarks: overrideMain.remarks !== undefined ? overrideMain.remarks : (remarksB || remarksA || inst.remarks || ''),
+					remarks: overrideMain.remarks !== undefined
+						? overrideMain.remarks
+						: (remarksA && remarksB ? `${remarksA} | ${remarksB}` : (remarksA || remarksB || inst.remarks || '')),
+					splits: splitInfo,
 					subInstallments: [partA, partB],
 				};
 
 				result.push(mainRow);
 			} else {
-				const override = scheduleOverrides[inst.sNo];
+				const override = scheduleOverrides[inst.sNo] || scheduleOverrides[Number(inst.sNo)] || scheduleOverrides[String(inst.sNo)];
 				const merged = override ? { ...inst, ...override } : { ...inst };
 				merged.displaySNo = `#${String(inst.sNo).padStart(2, '0')}`;
 				merged.isPartial = false;
+
+				if (override?.amount !== undefined && override.amount !== null && !isNaN(Number(override.amount))) {
+					const newAmt = Number(override.amount);
+					merged.amount = newAmt;
+					const priPct = merged.primarySharePct ?? primarySharePct ?? 0;
+					const newPriAmt = Math.round((newAmt * priPct) / 100);
+					merged.primaryAmount = newPriAmt;
+					const remainingSec = newAmt - newPriAmt;
+					const secArr = merged.secAccounts || secAccounts || [];
+					const totalSecShare = secArr.reduce((sum, sa) => sum + (Number(sa.share) || 0), 0) || (100 - priPct) || 1;
+					let allocatedSec = 0;
+					merged.secAccounts = secArr.map((sa, idx, arr) => {
+						if (idx === arr.length - 1) {
+							return { ...sa, amount: Math.max(0, remainingSec - allocatedSec) };
+						}
+						const saShare = Number(sa.share) || Math.round((100 - priPct) / arr.length);
+						const saAmt = Math.round((remainingSec * saShare) / totalSecShare);
+						allocatedSec += saAmt;
+						return { ...sa, amount: saAmt };
+					});
+				}
+				if (override?.date) {
+					merged.date = override.date;
+				}
 
 				const currentRecd = merged.receivedDate ? String(merged.receivedDate).trim() : '';
 				const currentDue = merged.dueDate ? String(merged.dueDate).trim() : '';
@@ -6137,7 +6171,7 @@ export function JointLoanDetailsPage({
 					currentRecd !== '-' &&
 					currentRecd !== '-' &&
 					parseDDMMYYYY(currentRecd) !== null &&
-					!isDateBefore(currentRecd, inst.date)
+					!isDateBefore(currentRecd, merged.date || inst.date)
 				);
 
 				const isValidDue = Boolean(
@@ -6171,7 +6205,7 @@ export function JointLoanDetailsPage({
 					merged.badgeClass = 'bg-blue-50 text-blue-700 ring-blue-200';
 					merged.dotClass = 'bg-blue-500';
 				} else {
-					const isOverdue = isDueDateCrossed(inst.date);
+					const isOverdue = isDueDateCrossed(merged.date || inst.date);
 					merged.status = isOverdue ? 'Overdue' : 'Active';
 					merged.badgeClass = isOverdue
 						? 'bg-rose-50 text-rose-700 ring-rose-200'
@@ -6225,7 +6259,13 @@ export function JointLoanDetailsPage({
 			const amtB = thisPaidAmount || (fullAmt - amtA);
 			const dateRecdA = firstRecdDate || existingOverrideA.receivedDate || existingSplit.recdDateA || existingSplit.recdDate || '';
 			const dateDueA = firstPayoutDate || existingOverrideA.dueDate || existingSplit.dueDateA || existingSplit.dueDate || '-';
-			const remA = firstRemarks !== undefined ? firstRemarks : (existingOverrideA.remarks || existingSplit.remarksA || existingSplit.remarks || '');
+			const remA = (firstRemarks !== undefined && firstRemarks !== null)
+				? firstRemarks
+				: (existingSplit.remarksA !== undefined && existingSplit.remarksA !== null
+					? existingSplit.remarksA
+					: (existingOverrideA.remarks !== undefined && existingOverrideA.remarks !== null
+						? existingOverrideA.remarks
+						: ''));
 
 			const dateRecdB = recdDate || getTodayDDMMYYYY();
 			const dateDueB = effectiveDueDate;
@@ -6260,7 +6300,7 @@ export function JointLoanDetailsPage({
 				payoutApprovalStatusB: payoutAppStatus,
 				payout_approved_by: payoutAppBy,
 				payout_approved_at: payoutAppAt,
-				remarks: remB || remA || '',
+				remarks: remA || remB || '',
 				priAmountA: firstPriAmount !== undefined ? firstPriAmount : existingSplit.priAmountA,
 				priAmountB: thisPriAmount,
 				secAmountsA: firstSecAmounts || existingSplit.secAmountsA,
@@ -6286,7 +6326,7 @@ export function JointLoanDetailsPage({
 					...(prev[sNo] || {}),
 					receivedDate: dateRecdA,
 					dueDate: dateDueA,
-					remarks: remB || remA || '',
+					remarks: remA || remB || '',
 					payout_approval_status: payoutAppStatus,
 					payoutApprovalStatus: payoutAppStatus,
 					payout_approved_by: payoutAppBy,
@@ -6558,8 +6598,13 @@ export function JointLoanDetailsPage({
 				return prev;
 			}
 
+			// If editing EMI date: once payout date is approved, date is NOT editable
+			if (field === 'date' && (isAlreadyApproved || isAnySubApproved)) {
+				return prev;
+			}
+
 			// For standard non-partial payments: locked once approved unless system admin
-			if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) {
+			if (!isPartialPayment && field !== 'date' && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) {
 				return prev;
 			}
 
@@ -6742,7 +6787,8 @@ export function JointLoanDetailsPage({
 			let histEntry = null;
 			if (isFullyChanged && finalVal !== baselineVal) {
 				const isRecd = field === 'receivedDate';
-				const fieldLabel = isRecd ? 'Received Date' : 'Payout Date';
+				const isDate = field === 'date';
+				const fieldLabel = isDate ? 'EMI Date' : (isRecd ? 'Received Date' : 'Payout Date');
 				const nowStr = getFormattedNow();
 				const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
 				const displayOld = baselineVal || 'None';
@@ -6750,23 +6796,29 @@ export function JointLoanDetailsPage({
 
 				histEntry = {
 					id: `hist_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-					type: isRecd ? 'recd_date_update' : 'payout_date_update',
-					title: field === 'dueDate'
-						? (isSystemAdmin || userPerms?.isAdmin
-							? `EMI #${sNo} Payout Date Auto-Approved by System Admin`
-							: (isSecEditor
-								? `EMI #${sNo} Payout Date Updated by Secondary Manager`
-								: `EMI #${sNo} Payout Date Updated by Primary Manager`))
-						: `EMI #${sNo} ${fieldLabel} Updated`,
-					description: field === 'dueDate'
-						? (isSystemAdmin || userPerms?.isAdmin
-							? `System Admin set EMI #${sNo} payout date to "${finalVal}". Auto-approved.`
-							: (isSecEditor
-								? `Secondary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to primary manager.`
-								: `Primary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to secondary manager.`))
-						: (displayOld !== 'None'
-							? `EMI #${sNo} ${fieldLabel.toLowerCase()} updated from "${displayOld}" to "${displayNew}".`
-							: `EMI #${sNo} ${fieldLabel.toLowerCase()} updated to "${displayNew}".`),
+					type: isDate ? 'emi_date_update' : (isRecd ? 'recd_date_update' : 'payout_date_update'),
+					title: isDate
+						? `EMI #${sNo} Date Updated`
+						: (field === 'dueDate'
+							? (isSystemAdmin || userPerms?.isAdmin
+								? `EMI #${sNo} Payout Date Auto-Approved by System Admin`
+								: (isSecEditor
+									? `EMI #${sNo} Payout Date Updated by Secondary Manager`
+									: `EMI #${sNo} Payout Date Updated by Primary Manager`))
+							: `EMI #${sNo} ${fieldLabel} Updated`),
+					description: isDate
+						? (displayOld !== 'None'
+							? `EMI #${sNo} date updated from "${displayOld}" to "${displayNew}".`
+							: `EMI #${sNo} date updated to "${displayNew}".`)
+						: (field === 'dueDate'
+							? (isSystemAdmin || userPerms?.isAdmin
+								? `System Admin set EMI #${sNo} payout date to "${finalVal}". Auto-approved.`
+								: (isSecEditor
+									? `Secondary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to primary manager.`
+									: `Primary Manager updated EMI #${sNo} payout date to "${finalVal}". Approval request sent to secondary manager.`))
+							: (displayOld !== 'None'
+								? `EMI #${sNo} ${fieldLabel.toLowerCase()} updated from "${displayOld}" to "${displayNew}".`
+								: `EMI #${sNo} ${fieldLabel.toLowerCase()} updated to "${displayNew}".`)),
 					timestamp: nowStr,
 					isoDate: new Date().toISOString(),
 					userName: activeUser?.name || activeUser?.employee_code || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : (isSecEditor ? 'Secondary Manager' : 'Primary Manager')),
@@ -6788,7 +6840,7 @@ export function JointLoanDetailsPage({
 						top &&
 						String(top.emiNo) === String(sNo) &&
 						top.fieldName === field &&
-						(top.type === 'recd_date_update' || top.type === 'payout_date_update') &&
+						(top.type === 'recd_date_update' || top.type === 'payout_date_update' || top.type === 'emi_date_update') &&
 						top.timestamp === nowStr
 					) {
 						const updatedTop = {
@@ -6796,21 +6848,45 @@ export function JointLoanDetailsPage({
 							...histEntry,
 							id: top.id,
 							oldValue: top.oldValue,
-							description: field === 'dueDate'
-								? histEntry.description
-								: (top.oldValue && top.oldValue !== 'None'
-									? `EMI #${sNo} ${fieldLabel.toLowerCase()} updated from "${top.oldValue}" to "${displayNew}".`
-									: `EMI #${sNo} ${fieldLabel.toLowerCase()} updated to "${displayNew}".`),
+							description: isDate
+								? (top.oldValue && top.oldValue !== 'None'
+									? `EMI #${sNo} date updated from "${top.oldValue}" to "${displayNew}".`
+									: `EMI #${sNo} date updated to "${displayNew}".`)
+								: (field === 'dueDate'
+									? histEntry.description
+									: (top.oldValue && top.oldValue !== 'None'
+										? `EMI #${sNo} ${fieldLabel.toLowerCase()} updated from "${top.oldValue}" to "${displayNew}".`
+										: `EMI #${sNo} ${fieldLabel.toLowerCase()} updated to "${displayNew}".`)),
 						};
 						const nextHist = [updatedTop, ...prevHist.slice(1)];
 						if (onUpdateLoan) {
-							onUpdateLoan({ ...loan, history: nextHist });
+							if (field === 'date') {
+								const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
+									if (sch.sNo === sNo || sch.sNo === Number(sNo)) {
+										return { ...sch, date: finalVal };
+									}
+									return sch;
+								});
+								onUpdateLoan({ ...loan, repaymentSchedule: updatedSchedule, history: nextHist });
+							} else {
+								onUpdateLoan({ ...loan, history: nextHist });
+							}
 						}
 						return nextHist;
 					}
 					const nextHist = [histEntry, ...prevHist];
 					if (onUpdateLoan) {
-						onUpdateLoan({ ...loan, history: nextHist });
+						if (field === 'date') {
+							const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
+								if (sch.sNo === sNo || sch.sNo === Number(sNo)) {
+									return { ...sch, date: finalVal };
+								}
+								return sch;
+							});
+							onUpdateLoan({ ...loan, repaymentSchedule: updatedSchedule, history: nextHist });
+						} else {
+							onUpdateLoan({ ...loan, history: nextHist });
+						}
 					}
 					return nextHist;
 				});
@@ -6897,6 +6973,98 @@ export function JointLoanDetailsPage({
 
 			return nextOverrides;
 		});
+	};
+
+	const handleScheduleAmountChange = (sNo, newAmount) => {
+		const isSecEditor = !userPerms?.isAdmin && !isSystemAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+		if (isSecEditor) return;
+
+		const numAmt = Number(newAmount);
+		if (isNaN(numAmt) || numAmt <= 0) return;
+
+		const sNoStr = String(sNo);
+		const currentInst = allScheduleItems.find((item) => String(item.sNo) === sNoStr) || {};
+		const isAlreadyApproved = Boolean(
+			currentInst.payout_approved_by ||
+			currentInst.payoutApprovedBy ||
+			currentInst.status === 'Settled' ||
+			currentInst.payout_approval_status === 'APPROVED' ||
+			currentInst.payoutApprovalStatus === 'APPROVED'
+		);
+		// Once payout date is approved or if it's already a partial payment, amount cannot be edited
+		if (isAlreadyApproved || currentInst.isPartial) return;
+
+		setScheduleOverrides((prev) => {
+			const instOverrides = { ...(prev[sNo] || {}) };
+			instOverrides.amount = numAmt;
+			const priPct = currentInst.primarySharePct ?? primarySharePct ?? 0;
+			const newPriAmt = Math.round((numAmt * priPct) / 100);
+			instOverrides.primaryAmount = newPriAmt;
+			const remainingSec = numAmt - newPriAmt;
+			const secArr = currentInst.secAccounts || secAccounts || [];
+			const totalSecShare = secArr.reduce((sum, sa) => sum + (Number(sa.share) || 0), 0) || (100 - priPct) || 1;
+			let allocatedSec = 0;
+			instOverrides.secAccounts = secArr.map((sa, idx, arr) => {
+				if (idx === arr.length - 1) {
+					return { ...sa, amount: Math.max(0, remainingSec - allocatedSec) };
+				}
+				const saShare = Number(sa.share) || Math.round((100 - priPct) / arr.length);
+				const saAmt = Math.round((remainingSec * saShare) / totalSecShare);
+				allocatedSec += saAmt;
+				return { ...sa, amount: saAmt };
+			});
+
+			return {
+				...prev,
+				[sNo]: instOverrides,
+				[Number(sNo)]: instOverrides,
+				[String(sNo)]: instOverrides,
+			};
+		});
+
+		const nowStr = getFormattedNow();
+		const oldAmtDisplay = currentInst.amount ? `₹${Number(currentInst.amount).toLocaleString('en-IN')}` : 'None';
+		const newAmtDisplay = `₹${numAmt.toLocaleString('en-IN')}`;
+
+		const histEntry = {
+			id: `hist_${Date.now()}_amt`,
+			type: 'emi_amount_update',
+			title: `EMI #${sNo} Amount Updated`,
+			description: `EMI #${sNo} amount updated from ${oldAmtDisplay} to ${newAmtDisplay} by ${activeUser?.name || 'Admin'}.`,
+			timestamp: nowStr,
+			isoDate: new Date().toISOString(),
+			userName: activeUser?.name || activeUser?.employee_code || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : 'Primary Manager'),
+			userRole: activeUser?.role || (isSystemAdmin || userPerms?.isAdmin ? 'admin' : 'primary_manager'),
+			userEmployeeCode: activeUser?.employee_code || '',
+			emiNo: sNo,
+			fieldName: 'amount',
+			oldValue: oldAmtDisplay,
+			newValue: newAmtDisplay,
+		};
+
+		setLoanHistory((prevHist) => [histEntry, ...prevHist]);
+
+		const loanIdentifier = loan?.db_id || loan?.id;
+		if (loanIdentifier) {
+			api.saveScheduleOverride(loanIdentifier, {
+				sNo,
+				field: 'amount',
+				value: numAmt,
+				userName: activeUser?.name || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : ''),
+				userRole: activeUser?.role || (isSystemAdmin || userPerms?.isAdmin ? 'admin' : ''),
+				historyEntry: histEntry,
+			}).catch((err) => console.warn('Could not save amount override to backend:', err));
+		}
+
+		if (onUpdateLoan && loan) {
+			const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
+				if (sch.sNo === sNo || sch.sNo === Number(sNo) || String(sch.sNo) === sNoStr) {
+					return { ...sch, amount: numAmt };
+				}
+				return sch;
+			});
+			onUpdateLoan({ ...loan, repaymentSchedule: updatedSchedule });
+		}
 	};
 
 	const handleClearRowDates = (sNo) => {
@@ -9506,9 +9674,9 @@ export function JointLoanDetailsPage({
 							<thead>
 								<tr className="border-b border-slate-200/80 bg-surface-container-low/60 text-slate-600 font-bold text-[11.5px] uppercase tracking-wider">
 									<th className="py-3 px-3 min-w-[70px] text-left">#</th>
-									<th className="py-3 px-3.5">Date</th>
+									<th className="py-3 px-3.5 text-center min-w-[145px]">Date</th>
 									{isDetailedView && <th className="py-3 px-3 min-w-[100px] text-center">Chq No</th>}
-									<th className="py-3 px-3.5 text-right">Amount</th>
+									<th className="py-3 px-3.5 text-right min-w-[130px]">Amount</th>
 									{isDetailedView && <th className="py-3 px-3.5 text-right">Interest</th>}
 									<th className="py-3 px-3 text-center min-w-[145px]">Recd Date</th>
 									<th className="py-3 px-3.5 text-right">{primaryTag}</th>
@@ -9590,6 +9758,9 @@ export function JointLoanDetailsPage({
 											inst.subInstallments[0].payoutApprovalStatus === 'APPROVED')
 									);
 									const isMainRowPayoutApproved = Boolean(isPayoutApproved || isFirstSubPayoutApproved);
+									// Once payout date is approved, that EMI date and amount are locked and NOT editable
+									const canEditEmiDate = isFinallyApproved && !isSecEditor && !isMainRowPayoutApproved && !inst.isPartial;
+									const canEditEmiAmount = isFinallyApproved && !isSecEditor && !isMainRowPayoutApproved && !inst.isPartial;
 									// For partial payments, once payout date approved, recd date and payout date are NOT editable even for system admin
 									const canEditRecdDate = isFinallyApproved && !isSecEditor && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && (isPastEmiDate || isRecdDateFilled);
 									const canEditDueDate = isFinallyApproved && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && isRecdDateValid;
@@ -9729,8 +9900,21 @@ export function JointLoanDetailsPage({
 												</td>
 
 												{/* 2. Date */}
-												<td className="py-3 px-3.5 font-semibold text-slate-800 text-[12.5px] whitespace-nowrap">
-													{inst.date}
+												<td className="py-2 px-3 text-center whitespace-nowrap">
+													<EditableDateCell
+														id={`schedule-date-${inst.sNo}`}
+														value={inst.date}
+														disabled={!canEditEmiDate}
+														tooltip={
+															isMainRowPayoutApproved
+																? 'Payout date is approved and settled - EMI date cannot be edited'
+																: !canEditEmiDate
+																	? (inst.isPartial ? 'EMI date cannot be edited for partial payments' : 'Only primary loan editor can edit EMI date')
+																	: 'Click or type to edit EMI Date'
+														}
+														onChange={(newVal) => handleScheduleDateChange(inst.sNo, 'date', newVal)}
+														openUpward="auto"
+													/>
 												</td>
 
 												{/* 3. Chq No */}
@@ -9746,26 +9930,77 @@ export function JointLoanDetailsPage({
 													</td>
 												)}
 
-												{/* 4. Amount - ORIGINAL AMOUNT (Click to create partial payment only for past EMIs with unfilled dates) */}
-												<td
-													className={`py-3 px-3.5 text-right font-black text-[13px] whitespace-nowrap ${canCreatePartial
-														? 'cursor-pointer hover:bg-amber-100/60 transition-colors group/amt'
-														: 'text-slate-900'
-														}`}
-													onClick={(e) => {
-														if (canCreatePartial) {
-															e.stopPropagation();
-															setSplitModalTarget(inst);
-														}
-													}}
-													title={canCreatePartial ? 'Click to create partial payment' : undefined}
-												>
-													<div
-														className={`inline-flex items-center justify-end gap-1 ${canCreatePartial ? 'text-slate-900 group-hover/amt:text-amber-800' : 'text-slate-900'
+												{/* 4. Amount - ORIGINAL AMOUNT */}
+												<td className="py-2 px-3 text-right whitespace-nowrap">
+													{canEditEmiAmount ? (
+														<div className="inline-flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+															<div className="relative inline-flex items-center">
+																<span className="absolute left-2 text-slate-400 font-bold text-[11px] pointer-events-none select-none">₹</span>
+																<input
+																	type="text"
+																	id={`schedule-amount-${inst.sNo}`}
+																	defaultValue={inst.amount}
+																	key={`amt-${inst.sNo}-${inst.amount}`}
+																	onKeyDown={(e) => {
+																		if (e.key === 'Enter') {
+																			e.target.blur();
+																		}
+																	}}
+																	onBlur={(e) => {
+																		const cleanVal = e.target.value.replace(/[^0-9.]/g, '');
+																		const num = Number(cleanVal);
+																		if (cleanVal && !isNaN(num) && num > 0 && num !== Number(inst.amount)) {
+																			handleScheduleAmountChange(inst.sNo, num);
+																		} else {
+																			e.target.value = inst.amount;
+																		}
+																	}}
+																	className="w-[102px] h-[28px] pl-5 pr-2 text-right font-black font-mono text-[12px] text-slate-900 bg-white hover:bg-slate-50 focus:bg-white border border-slate-200 hover:border-slate-300 focus:border-primary focus:ring-1 focus:ring-primary rounded-md shadow-2xs transition-all focus:outline-none"
+																	title="Click or type to edit EMI Amount"
+																/>
+															</div>
+															{canCreatePartial && (
+																<button
+																	type="button"
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		setSplitModalTarget(inst);
+																	}}
+																	className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-amber-600 hover:bg-amber-100/60 transition-colors cursor-pointer"
+																	title="Split into Partial Payment"
+																>
+																	<span className="material-symbols-outlined" style={{ fontSize: '15px' }}>call_split</span>
+																</button>
+															)}
+														</div>
+													) : (
+														<div
+															className={`inline-flex items-center justify-end gap-1 ${
+																isMainRowPayoutApproved
+																	? 'cursor-not-allowed select-none'
+																	: canCreatePartial
+																		? 'cursor-pointer hover:bg-amber-100/60 transition-colors group/amt'
+																		: ''
 															}`}
-													>
-														<span>{formatCurrency(inst.amount)}</span>
-													</div>
+															title={
+																isMainRowPayoutApproved
+																	? 'Payout date is approved and settled - EMI amount cannot be edited'
+																	: canCreatePartial
+																		? 'Click to create partial payment'
+																		: undefined
+															}
+															onClick={(e) => {
+																if (canCreatePartial) {
+																	e.stopPropagation();
+																	setSplitModalTarget(inst);
+																}
+															}}
+														>
+															<span className={`font-black text-[13px] ${isMainRowPayoutApproved ? 'text-slate-500 font-mono text-[12px]' : canCreatePartial ? 'text-slate-900 group-hover/amt:text-amber-800' : 'text-slate-900'}`}>
+																{formatCurrency(inst.amount)}
+															</span>
+														</div>
+													)}
 												</td>
 
 												{/* 5. Interest - ORIGINAL INTEREST */}

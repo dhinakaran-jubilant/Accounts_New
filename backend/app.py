@@ -1535,46 +1535,49 @@ def get_loan_splits(loan_id):
                     split_data = json.loads(sch.splits)
                     splits[s_no_str] = split_data
                     # Populate overrides from split data for Part A and Part B
-                    if split_data.get('recdDateA') or split_data.get('dueDateA'):
-                        key_a = f"{s_no_str}A"
-                        if key_a not in overrides:
-                            overrides[key_a] = {}
-                        if split_data.get('recdDateA'):
-                            overrides[key_a]['receivedDate'] = split_data['recdDateA']
-                        if split_data.get('dueDateA'):
-                            overrides[key_a]['dueDate'] = split_data['dueDateA']
-                        if split_data.get('remarksA'):
-                            overrides[key_a]['remarks'] = split_data['remarksA']
-                        if split_data.get('payoutApprovalStatusA'):
-                            overrides[key_a]['payout_approval_status'] = split_data['payoutApprovalStatusA']
-                            overrides[key_a]['payoutApprovalStatus'] = split_data['payoutApprovalStatusA']
-                        if split_data.get('payout_approved_by'):
-                            overrides[key_a]['payout_approved_by'] = split_data['payout_approved_by']
-                    if split_data.get('recdDateB') or split_data.get('dueDateB'):
-                        key_b = f"{s_no_str}B"
-                        if key_b not in overrides:
-                            overrides[key_b] = {}
-                        if split_data.get('recdDateB'):
-                            overrides[key_b]['receivedDate'] = split_data['recdDateB']
-                        if split_data.get('dueDateB'):
-                            overrides[key_b]['dueDate'] = split_data['dueDateB']
-                        if split_data.get('remarksB'):
-                            overrides[key_b]['remarks'] = split_data['remarksB']
-                        if split_data.get('payoutApprovalStatusB'):
-                            overrides[key_b]['payout_approval_status'] = split_data['payoutApprovalStatusB']
-                            overrides[key_b]['payoutApprovalStatus'] = split_data['payoutApprovalStatusB']
-                        if split_data.get('payout_approved_by'):
-                            overrides[key_b]['payout_approved_by'] = split_data['payout_approved_by']
+                    key_a = f"{s_no_str}A"
+                    if key_a not in overrides:
+                        overrides[key_a] = {}
+                    if split_data.get('recdDateA'):
+                        overrides[key_a]['receivedDate'] = split_data['recdDateA']
+                    if split_data.get('dueDateA'):
+                        overrides[key_a]['dueDate'] = split_data['dueDateA']
+                    if 'remarksA' in split_data:
+                        overrides[key_a]['remarks'] = split_data['remarksA'] or ''
+                    if split_data.get('payoutApprovalStatusA'):
+                        overrides[key_a]['payout_approval_status'] = split_data['payoutApprovalStatusA']
+                        overrides[key_a]['payoutApprovalStatus'] = split_data['payoutApprovalStatusA']
+                    if split_data.get('payout_approved_by'):
+                        overrides[key_a]['payout_approved_by'] = split_data['payout_approved_by']
+
+                    key_b = f"{s_no_str}B"
+                    if key_b not in overrides:
+                        overrides[key_b] = {}
+                    if split_data.get('recdDateB'):
+                        overrides[key_b]['receivedDate'] = split_data['recdDateB']
+                    if split_data.get('dueDateB'):
+                        overrides[key_b]['dueDate'] = split_data['dueDateB']
+                    if 'remarksB' in split_data:
+                        overrides[key_b]['remarks'] = split_data['remarksB'] or ''
+                    if split_data.get('payoutApprovalStatusB'):
+                        overrides[key_b]['payout_approval_status'] = split_data['payoutApprovalStatusB']
+                        overrides[key_b]['payoutApprovalStatus'] = split_data['payoutApprovalStatusB']
+                    if split_data.get('payout_approved_by'):
+                        overrides[key_b]['payout_approved_by'] = split_data['payout_approved_by']
                 except Exception:
                     pass
 
-            if sch.payment_date or sch.received_date or getattr(sch, 'payout_approval_status', None):
+            if sch.payment_date or sch.received_date or getattr(sch, 'payout_approval_status', None) or sch.date or sch.amount:
                 if s_no_str not in overrides:
                     overrides[s_no_str] = {}
                 if sch.received_date:
                     overrides[s_no_str]['receivedDate'] = sch.received_date
                 if sch.payment_date:
                     overrides[s_no_str]['dueDate'] = sch.payment_date
+                if sch.date:
+                    overrides[s_no_str]['date'] = sch.date
+                if sch.amount:
+                    overrides[s_no_str]['amount'] = float(sch.amount)
                 if getattr(sch, 'payout_approval_status', None):
                     overrides[s_no_str]['payout_approval_status'] = sch.payout_approval_status
                     overrides[s_no_str]['payoutApprovalStatus'] = sch.payout_approval_status
@@ -1857,13 +1860,13 @@ def save_schedule_override(loan_id):
                         sch.splits = json.dumps(curr_splits)
                     else:
                         curr_splits = json.loads(sch.splits) if sch.splits else {}
-                        if curr_splits and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                        if curr_splits and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate', 'date', 'amount'):
                             is_parent_split_approved = (
                                 (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
                                 (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
                             )
                             if is_parent_split_approved and value and str(value).strip() not in ('-', '—', ''):
-                                return jsonify({"error": "Payout date is already approved for partial installment. Dates cannot be edited."}), 400
+                                return jsonify({"error": "Payout date is already approved. Cannot be edited."}), 400
                         if field == 'receivedDate':
                             sch.received_date = value if value and str(value).strip() not in ('-', '—', '') else None
                             if is_admin_user:
@@ -1879,7 +1882,18 @@ def save_schedule_override(loan_id):
                                 sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
                                 sch.payout_requested_at = now_str
                         elif field == 'date':
+                            is_already_approved = sch.payout_approval_status == 'APPROVED' and sch.payment_date not in ('-', '—', None, '')
+                            if is_already_approved:
+                                return jsonify({"error": "Payout date is already approved. EMI date cannot be edited."}), 400
                             sch.date = value
+                        elif field == 'amount':
+                            is_already_approved = sch.payout_approval_status == 'APPROVED' and sch.payment_date not in ('-', '—', None, '')
+                            if is_already_approved:
+                                return jsonify({"error": "Payout date is already approved. EMI amount cannot be edited."}), 400
+                            try:
+                                sch.amount = float(value)
+                            except Exception:
+                                pass
                         elif field == 'chequeNo':
                             sch.cheque_no = value
                         elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
