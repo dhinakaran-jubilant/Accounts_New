@@ -255,14 +255,19 @@ export const api = {
 		}
 	},
 
-	// PDF Upload + Store to DB (with secondary accounts and optional employee_code)
-	uploadPdfAndStore: async (file, remainingAccounts, loanRefId, employeeCode) => {
+	// PDF Upload + Store to DB (with secondary accounts, employee_code, super admin status)
+	uploadPdfAndStore: async (file, remainingAccounts, loanRefId, employeeCode, isSuperAdmin, role, userName) => {
 		const url = `${API_BASE_URL}/upload-pdf`;
 		const formData = new FormData();
 		formData.append('file', file);
 		formData.append('remaining_accounts', JSON.stringify(remainingAccounts));
 		if (loanRefId) formData.append('loan_ref_id', loanRefId);
 		if (employeeCode) formData.append('employee_code', employeeCode);
+		if (isSuperAdmin !== undefined && isSuperAdmin !== null) {
+			formData.append('is_super_admin', isSuperAdmin ? 'true' : 'false');
+		}
+		if (role) formData.append('role', role);
+		if (userName) formData.append('user_name', userName);
 		try {
 			const res = await fetch(url, { method: 'POST', body: formData });
 			const json = await res.json().catch(() => ({}));

@@ -980,16 +980,57 @@ def create_joint_loan():
 
         raw_status = payload.get('status')
         req_approval = payload.get('approval_status') or payload.get('approvalStatus')
-        if req_approval == 'APPROVED':
+        req_super_admin = payload.get('is_super_admin') or payload.get('isSuperAdmin')
+        req_role = payload.get('role') or payload.get('userRole')
+        emp_code = payload.get('employee_code') or payload.get('userCode')
+        user_name = payload.get('requester_name') or payload.get('requesterName') or payload.get('userName')
+
+        user = None
+        if emp_code:
+            user = User.query.filter_by(employee_code=emp_code).first()
+
+        is_super = False
+        if str(req_super_admin).lower() in ('true', '1', 'yes') or req_super_admin is True:
+            is_super = True
+        elif user and ((getattr(user, 'role', '') or '').strip().lower() in ('admin', 'super admin') or getattr(user, 'employee_code', '').lower() in ('admin', 'jc0033') or getattr(user, 'name', '') == 'System Admin'):
+            is_super = True
+        elif req_role and str(req_role).strip().lower() in ('admin', 'super admin'):
+            is_super = True
+        elif emp_code and str(emp_code).strip().lower() in ('admin', 'jc0033'):
+            is_super = True
+        elif user_name and str(user_name).strip().lower() in ('system admin', 'super admin'):
+            is_super = True
+
+        now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+
+        if is_super:
             init_approval = 'APPROVED'
+            super_name = user.name if user and user.name else (user_name or 'Super Admin')
+            actioned_by = super_name
+            actioned_at = now_str
+            target_verifier = super_name
+        elif req_approval == 'APPROVED':
+            init_approval = 'APPROVED'
+            actioned_by = payload.get('actioned_by') or 'Administrator'
+            actioned_at = now_str
+            target_verifier = payload.get('verified_by') or 'Secondary Manager'
         elif raw_status == 'Closed' or req_approval in ['CLOSED', 'Closed']:
             init_approval = 'CLOSED'
+            actioned_by = None
+            actioned_at = None
+            target_verifier = None
         elif req_approval == 'PENDING_ADMIN':
             init_approval = 'PENDING_ADMIN'
+            actioned_by = None
+            actioned_at = None
+            target_verifier = payload.get('verified_by') or 'Secondary Manager'
         else:
             init_approval = 'PENDING_SECONDARY'
+            actioned_by = None
+            actioned_at = None
+            target_verifier = 'Secondary Manager'
 
-        req_user = payload.get('requester_name') or payload.get('requesterName') or 'Staff Officer'
+        req_user = payload.get('requester_name') or payload.get('requesterName') or (user.name if user else 'Staff Officer')
 
         loan = Loan(
             loan_ref_id=ref_id,
@@ -1005,11 +1046,27 @@ def create_joint_loan():
             total_repayment_amount=total_repayment,
             total_interest=total_interest,
             interest_rate=payload.get('interest_rate') or payload.get('rate') or None,
+            verified_by=target_verifier,
             approval_status=init_approval,
             is_deleted=False,
             requester_name=req_user,
-            requested_at=datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+            requested_at=now_str,
+            actioned_by=actioned_by,
+            actioned_at=actioned_at
         )
+        if is_super:
+            hist_entry = {
+                'id': f"hist_{int(datetime.datetime.now().timestamp()*1000)}_auto_approved",
+                'type': 'super_admin_created_auto_approved',
+                'title': 'Loan Created & Auto-Approved by Super Admin',
+                'description': f"Facility created and immediately approved/activated by Super Admin {actioned_by}. Secondary and Admin approval bypassed.",
+                'timestamp': now_str,
+                'isoDate': datetime.datetime.now().isoformat(),
+                'userName': actioned_by,
+                'userRole': 'super admin',
+                'userEmployeeCode': emp_code or ''
+            }
+            loan.history = json.dumps([hist_entry])
         db.session.add(loan)
         db.session.flush()
 
@@ -1054,6 +1111,7 @@ def create_joint_loan():
 
         return jsonify({
             "success": True,
+            "is_auto_approved": is_super,
             "loan": serialize_pg_loan_to_joint(loan),
             "sec_manager_name": sec_manager_display
         }), 201
@@ -3018,10 +3076,35 @@ def handle_pdf_upload():
         # -----------------------------
 
         # Determine status and verifier based on configuration
-        loan_status = 'PENDING_SECONDARY'
-        target_verifier = 'Secondary Manager'
-        actioned_by = None
-        actioned_at = None
+        req_super_admin = request.form.get('is_super_admin')
+        req_role = request.form.get('role')
+        req_user_name = request.form.get('user_name')
+
+        is_super = False
+        if str(req_super_admin).lower() in ('true', '1', 'yes') or req_super_admin is True:
+            is_super = True
+        elif user and ((getattr(user, 'role', '') or '').strip().lower() in ('admin', 'super admin') or getattr(user, 'employee_code', '').lower() in ('admin', 'jc0033') or getattr(user, 'name', '') == 'System Admin'):
+            is_super = True
+        elif req_role and str(req_role).strip().lower() in ('admin', 'super admin'):
+            is_super = True
+        elif emp_code and str(emp_code).strip().lower() in ('admin', 'jc0033'):
+            is_super = True
+        elif req_user_name and str(req_user_name).strip().lower() in ('system admin', 'super admin'):
+            is_super = True
+
+        now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+
+        if is_super:
+            loan_status = 'APPROVED'
+            super_name = user.name if user and user.name else (req_user_name or 'Super Admin')
+            target_verifier = super_name
+            actioned_by = super_name
+            actioned_at = now_str
+        else:
+            loan_status = 'PENDING_SECONDARY'
+            target_verifier = 'Secondary Manager'
+            actioned_by = None
+            actioned_at = None
 
         # --- DUPLICATE LOAN CHECK ---
         existing_duplicate = check_loan_ref_id_exists(
@@ -3064,11 +3147,24 @@ def handle_pdf_upload():
             interest_rate=final_output.get('interest_rate') or pdf_data.get('interest_rate') or None,
             verified_by=target_verifier,
             approval_status=loan_status,
-            requester_name=user.name if user else 'Anonymous',
-            requested_at=datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p"),
+            requester_name=user.name if user else (req_user_name or ('Super Admin' if is_super else 'Anonymous')),
+            requested_at=now_str,
             actioned_by=actioned_by,
             actioned_at=actioned_at
         )
+        if is_super:
+            hist_entry = {
+                'id': f"hist_{int(datetime.datetime.now().timestamp()*1000)}_auto_approved",
+                'type': 'super_admin_created_auto_approved',
+                'title': 'Loan Created & Auto-Approved by Super Admin',
+                'description': f"Facility created and immediately approved/activated by Super Admin {actioned_by}. Secondary and Admin review bypassed.",
+                'timestamp': now_str,
+                'isoDate': datetime.datetime.now().isoformat(),
+                'userName': actioned_by,
+                'userRole': 'super admin',
+                'userEmployeeCode': emp_code or ''
+            }
+            loan.history = json.dumps([hist_entry])
         db.session.add(loan)
         db.session.flush()
 
@@ -3115,6 +3211,8 @@ def handle_pdf_upload():
             'loan_id': loan.id,
             'loan_ref_id': final_loan_ref_id,
             'data': final_output,
+            'approval_status': loan.approval_status,
+            'is_auto_approved': is_super,
             'sec_manager_name': sec_manager_display,
             'message': 'PDF data processed correctly and loan stored on database!'
         }), 200

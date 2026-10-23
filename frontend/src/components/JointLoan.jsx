@@ -11730,8 +11730,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		}, 5000);
 	};
 
-	const showCreateSuccessAlert = (loanId, secManagerName) => {
-		const msg = `joint loan ${loanId} created successfully. approval request send to ${secManagerName}.`;
+	const showCreateSuccessAlert = (loanId, secManagerName, isAutoApproved = false) => {
+		const msg = isAutoApproved
+			? `Joint loan ${loanId} created and approved successfully. Facility is active immediately.`
+			: `joint loan ${loanId} created successfully. approval request send to ${secManagerName}.`;
 		showBottomRightAlert(msg);
 	};
 
@@ -11762,6 +11764,14 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			return null;
 		}
 	}, [propCurrentUser]);
+
+	const isSuperAdmin = useMemo(() => {
+		if (!activeUser) return false;
+		const role = (activeUser.role || '').trim().toLowerCase();
+		const code = (activeUser.employee_code || '').trim().toLowerCase();
+		const name = (activeUser.name || '').trim().toLowerCase();
+		return role === 'super admin' || role === 'admin' || code === 'jc0033' || code === 'admin' || name === 'system admin' || Boolean(activeUser?.permissions?.isAdmin);
+	}, [activeUser]);
 
 	const userPermissions = useMemo(() => {
 		if (!activeUser) return { isAdmin: true, primary: [], secondary: [] };
@@ -13132,7 +13142,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 		// Verify that primary account is assigned to current user
 		const priAccountCandidate = pdfParsed?.primary_account || newPrimaryName;
-		if (!isUserAssignedPrimaryAccount(priAccountCandidate, userPermissions, availableAccountObjects)) {
+		if (!isSuperAdmin && !isUserAssignedPrimaryAccount(priAccountCandidate, userPermissions, availableAccountObjects)) {
 			setPdfError(
 				`You are only authorized to create loans for your assigned primary account(s): ${(userPermissions.primary || []).join(', ') || 'None assigned'}.`
 			);
@@ -13222,7 +13232,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					selectedPdfFile,
 					remAccounts,
 					candidateId,
-					activeUser?.employee_code
+					activeUser?.employee_code,
+					isSuperAdmin,
+					activeUser?.role,
+					activeUser?.name
 				);
 				if (storeRes.success) {
 					// Reload loans from backend to get the properly stored record
@@ -13244,7 +13257,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						fresh.find((l) => l.loan_ref_id === createdLoanId || l.id === createdLoanId || String(l.db_id) === String(storeRes.loan_id)) || fresh[0]
 					)) || { secondaryAccounts, remaining_accounts: remAccounts.map((a) => ({ account_name: a.name })) };
 					const secMgrName = getRespectedSecManagerName(matchedLoan, storeRes.sec_manager_name);
-					showCreateSuccessAlert(createdLoanId, secMgrName);
+					const isAuto = Boolean(storeRes.is_auto_approved || isSuperAdmin);
+					showCreateSuccessAlert(createdLoanId, secMgrName, isAuto);
 				} else {
 					if (storeRes.loan_exists || (storeRes.error && storeRes.error.toLowerCase().includes('already exists'))) {
 						setDuplicateLoanError({
@@ -13336,13 +13350,19 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			monthlyPayment: formatCurrency(hasSchedule && pdfParsed.table[0]?.amount ? pdfParsed.table[0].amount : (numAmount / 48)),
 			riskGrade: 'Grade A',
 			riskColor: 'bg-emerald-50 text-emerald-700 ring-emerald-300',
-			status: 'Pending',
-			approval_status: 'PENDING_SECONDARY',
-			approvalStatus: 'PENDING_SECONDARY',
+			status: isSuperAdmin ? 'Active' : 'Pending',
+			approval_status: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
+			approvalStatus: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
+			verified_by: isSuperAdmin ? (activeUser?.name || 'Super Admin') : undefined,
+			actioned_by: isSuperAdmin ? (activeUser?.name || 'Super Admin') : undefined,
+			actioned_at: isSuperAdmin ? (getFormattedNow ? getFormattedNow() : new Date().toLocaleString()) : undefined,
+			is_super_admin: isSuperAdmin,
+			userRole: activeUser?.role,
+			employee_code: activeUser?.employee_code,
 			requester_name: activeUser?.name || 'Staff Officer',
 			requested_at: getFormattedNow ? getFormattedNow() : new Date().toLocaleString(),
-			statusColor: 'bg-amber-50 text-amber-800 ring-amber-300',
-			statusDot: 'bg-amber-500',
+			statusColor: isSuperAdmin ? 'bg-emerald-50 text-emerald-700 ring-emerald-300' : 'bg-amber-50 text-amber-800 ring-amber-300',
+			statusDot: isSuperAdmin ? 'bg-emerald-500' : 'bg-amber-500',
 			appliedDate: pdfParsed?.loan_date || `${String(new Date().getDate()).padStart(2, '0')}-${String(
 				new Date().getMonth() + 1
 			).padStart(2, '0')}-${new Date().getFullYear()}`,
@@ -13372,7 +13392,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				fresh.find((l) => l.loan_ref_id === createdLoanId || l.id === createdLoanId) || fresh[0]
 			)) || createRes?.loan || newItem;
 			const secMgrName = getRespectedSecManagerName(matchedLoan, createRes?.sec_manager_name);
-			showCreateSuccessAlert(createdLoanId, secMgrName);
+			const isAuto = Boolean(createRes?.is_auto_approved || isSuperAdmin);
+			showCreateSuccessAlert(createdLoanId, secMgrName, isAuto);
 		} catch (err) {
 			const errMsg = err.message || '';
 			if (errMsg.toLowerCase().includes('already exists') || errMsg.toLowerCase().includes('duplicate')) {
