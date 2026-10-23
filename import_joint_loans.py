@@ -119,7 +119,7 @@ def find_source_loan(source_cur, loan_number=None, client_name=None, override_lo
     Matches the loan in source accounts_db database using loan_id, loan_ref_id, or client name.
     """
     if override_loan_id:
-        source_cur.execute("SELECT * FROM loans WHERE id = %s", (override_loan_id,))
+        source_cur.execute("SELECT * FROM loans WHERE id = %s AND is_deleted = false", (override_loan_id,))
         return source_cur.fetchone()
 
     # Match by loan_ref_id variations (e.g. FC000072 matches JLFC000072)
@@ -128,9 +128,12 @@ def find_source_loan(source_cur, loan_number=None, client_name=None, override_lo
         source_cur.execute(
             """
             SELECT * FROM loans 
-            WHERE loan_ref_id = %s 
-               OR loan_ref_id = %s 
-               OR UPPER(loan_ref_id) LIKE %s
+            WHERE (
+                loan_ref_id = %s 
+                OR loan_ref_id = %s 
+                OR UPPER(loan_ref_id) LIKE %s
+            )
+            AND is_deleted = false
             ORDER BY id ASC LIMIT 1
             """,
             (clean_no, f"JL{clean_no}", f"%{clean_no}%")
@@ -145,8 +148,11 @@ def find_source_loan(source_cur, loan_number=None, client_name=None, override_lo
         source_cur.execute(
             """
             SELECT * FROM loans 
-            WHERE UPPER(client_account_name) = UPPER(%s)
-               OR UPPER(client_account_name) LIKE UPPER(%s)
+            WHERE (
+                UPPER(client_account_name) = UPPER(%s)
+                OR UPPER(client_account_name) LIKE UPPER(%s)
+            )
+            AND is_deleted = false
             ORDER BY id ASC LIMIT 1
             """,
             (clean_name, f"%{clean_name}%")
