@@ -226,7 +226,7 @@ def fetch_source_loan_details(source_cur, loan_id):
     return secondary_accounts, regular_schedule, penal_interest_rows
 
 
-def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_account_name, secondary_accounts, recd_date=None, payout_date=None, remarks=None):
+def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_account_name, secondary_accounts, recd_date=None, payout_date=None, remarks=None, now_str=None):
     """
     Normalizes legacy splits format (account-to-slices dict) into standard split keys
     (amountA, paidAmount, amountB, priAmountA, priAmountB, secAmountA, secAmountB, etc.)
