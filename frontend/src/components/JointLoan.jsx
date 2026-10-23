@@ -6903,80 +6903,45 @@ export function JointLoanDetailsPage({
 		const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
 		if (isSecEditor) return;
 
-		const isSubRow = typeof sNo === 'string' && /^\d+[A-Za-z]$/.test(sNo);
-		const parentSNo = isSubRow ? parseInt(sNo.replace(/\D/g, ''), 10) : sNo;
-		const loanIdentifier = loan?.db_id || loan?.id;
-
 		const currentInst = allScheduleItems.find((item) => String(item.sNo) === String(sNo)) || {};
+		const instOverrides = scheduleOverrides[sNo] || {};
+		const effectiveDueDate = instOverrides.dueDate !== undefined ? instOverrides.dueDate : currentInst.dueDate;
+		const isAlreadyApproved = Boolean(
+			effectiveDueDate &&
+			effectiveDueDate !== '-' &&
+			effectiveDueDate !== '-' &&
+			(instOverrides.payout_approval_status === 'APPROVED' ||
+				instOverrides.payoutApprovalStatus === 'APPROVED' ||
+				currentInst.status === 'Settled' ||
+				(!instOverrides.payout_approval_status && currentInst.payout_approval_status === 'APPROVED') ||
+				(!instOverrides.payoutApprovalStatus && currentInst.payoutApprovalStatus === 'APPROVED'))
+		);
+		const isAnySubApproved = Boolean(
+			currentInst.isPartial &&
+			currentInst.subInstallments?.some(
+				(sub) =>
+					sub.dueDate &&
+					sub.dueDate !== '-' &&
+					sub.dueDate !== '-' &&
+					(sub.status === 'Settled' ||
+						sub.payout_approval_status === 'APPROVED' ||
+						sub.payoutApprovalStatus === 'APPROVED')
+			)
+		);
+		const isPartialPayment = Boolean(
+			currentInst.isPartial ||
+			currentInst.isSubRow ||
+			currentInst.parentSNo ||
+			splitInstallments[sNo] ||
+			splitInstallments[Number(sNo)]
+		);
 
-		if (isSubRow) {
-			// Clear specific sub-installment row dates (e.g. 2A or 2B)
-			setScheduleOverrides((prev) => {
-				const next = { ...prev };
-				next[sNo] = {
-					...(next[sNo] || {}),
-					receivedDate: '',
-					dueDate: '-',
-					payout_approval_status: null,
-					payoutApprovalStatus: null,
-				};
-				return next;
-			});
+		// For partial payments: once payout date approved, cannot clear/edit even system admin
+		if (isPartialPayment && (isAlreadyApproved || isAnySubApproved)) return;
 
-			delete committedDatesRef.current[`${sNo}_receivedDate`];
-			delete committedDatesRef.current[`${sNo}_dueDate`];
+		if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) return;
 
-			setSplitInstallments((prev) => {
-				const currentSplit = prev[parentSNo] || prev[Number(parentSNo)];
-				if (!currentSplit) return prev;
-				const isPartA = String(sNo).toUpperCase().endsWith('A');
-				const next = { ...prev };
-				const updated = { ...currentSplit };
-				if (isPartA) {
-					updated.recdDateA = '';
-					updated.dueDateA = '-';
-					updated.payoutApprovalStatusA = null;
-					updated.recdDate = '';
-					updated.dueDate = '-';
-				} else {
-					updated.recdDateB = '';
-					updated.dueDateB = '-';
-					updated.payoutApprovalStatusB = null;
-				}
-				next[parentSNo] = updated;
-				if (typeof parentSNo === 'number') next[String(parentSNo)] = updated;
-				return next;
-			});
-
-			const histEntry = {
-				id: `hist_${Date.now()}_clear`,
-				type: 'recd_date_update',
-				title: `EMI #${sNo} Dates Cleared`,
-				description: `EMI #${sNo} received date and payout date cleared by ${activeUser?.name || 'Staff'}.`,
-				timestamp: getFormattedNow(),
-				isoDate: new Date().toISOString(),
-				userName: activeUser?.name || activeUser?.employee_code || 'Staff Officer',
-				userRole: activeUser?.role || 'user',
-				userEmployeeCode: activeUser?.employee_code || '',
-				emiNo: sNo,
-			};
-
-			setLoanHistory((prevHist) => {
-				const nextHist = [histEntry, ...prevHist];
-				if (onUpdateLoan) onUpdateLoan({ ...loan, history: nextHist });
-				return nextHist;
-			});
-
-			if (loanIdentifier) {
-				api.saveScheduleOverride(loanIdentifier, { sNo, field: 'receivedDate', value: '', historyEntry: histEntry }).catch(() => { });
-				api.saveScheduleOverride(loanIdentifier, { sNo, field: 'dueDate', value: '-' }).catch(() => { });
-			}
-			return;
-		}
-
-		// Clearing main EMI row (if partial, resets to full standard EMI)
-		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)] || currentInst.isPartial);
-
+		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
 		setSplitInstallments((prev) => {
 			if (!prev[sNo] && !prev[Number(sNo)]) return prev;
@@ -7018,10 +6983,8 @@ export function JointLoanDetailsPage({
 		const histEntry = {
 			id: `hist_${Date.now()}_clear`,
 			type: 'recd_date_update',
-			title: isPartial ? `EMI #${sNo} Split Reverted & Dates Cleared` : `EMI #${sNo} Dates Cleared`,
-			description: isPartial
-				? `EMI #${sNo} partial split removed and reverted back to full EMI by ${activeUser?.name || 'Staff'}.`
-				: `EMI #${sNo} client received date and partner payout dates cleared by ${activeUser?.name || 'Staff'}.`,
+			title: `EMI #${sNo} Dates Cleared`,
+			description: `EMI #${sNo} client received date and partner payout dates cleared by ${activeUser?.name || 'Staff'}.`,
 			timestamp: getFormattedNow(),
 			isoDate: new Date().toISOString(),
 			userName: activeUser?.name || activeUser?.employee_code || 'Staff Officer',
@@ -7035,6 +6998,7 @@ export function JointLoanDetailsPage({
 			return nextHist;
 		});
 
+		const loanIdentifier = loan?.db_id || loan?.id;
 		if (loanIdentifier) {
 			if (isPartial) {
 				api.revertLoanSplit(loanIdentifier, sNo).catch(() => { });
@@ -9511,7 +9475,7 @@ export function JointLoanDetailsPage({
 						<table className={`w-full text-left border-collapse ${isDetailedView ? 'min-w-[1300px]' : 'min-w-[880px]'}`}>
 							<thead>
 								<tr className="border-b border-slate-200/80 bg-surface-container-low/60 text-slate-600 font-bold text-[11.5px] uppercase tracking-wider">
-									<th className="py-3 px-3 min-w-[70px] text-left">#</th>
+									<th className="py-3 px-3 w-14 text-left">#</th>
 									<th className="py-3 px-3.5">Date</th>
 									{isDetailedView && <th className="py-3 px-3 min-w-[100px] text-center">Chq No</th>}
 									<th className="py-3 px-3.5 text-right">Amount</th>
@@ -9615,10 +9579,12 @@ export function JointLoanDetailsPage({
 									const canClearRow =
 										isFinallyApproved &&
 										!isSecEditor &&
-										(inst.isPartial ||
-											isRecdDateFilled ||
+										!isAnySubApproved &&
+										(!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) &&
+										(isRecdDateFilled ||
 											isPayoutDateFilled ||
 											Boolean(
+												inst.isPartial &&
 												inst.subInstallments?.some(
 													(sub) =>
 														(sub.receivedDate &&
@@ -9689,8 +9655,8 @@ export function JointLoanDetailsPage({
 												}
 											>
 												{/* 1. S.No with expand/collapse chevron if partial & absolute clear button */}
-												<td className="py-3 px-3 text-left text-slate-700 font-extrabold text-[12px] font-mono whitespace-nowrap relative min-w-[70px]">
-													<div className="relative flex items-center gap-1.5 pr-6">
+												<td className="py-3 px-3 text-left text-slate-700 font-extrabold text-[12px] font-mono whitespace-nowrap relative">
+													<div className="relative flex items-center gap-2 pr-5">
 														<span className="text-slate-400">{inst.sNo}</span>
 														{inst.isPartial && (
 															<button
@@ -9723,9 +9689,9 @@ export function JointLoanDetailsPage({
 																	handleClearRowDates(inst.sNo);
 																}}
 																className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-95 cursor-pointer z-10"
-																title={inst.isPartial ? "Clear Partial Payment & Revert to Full EMI" : "Clear Recd Date & Payout Date"}
+																title="Clear Recd Date & Payout Date"
 															>
-																<span className="material-symbols-outlined" style={{ fontSize: "15px" }}>
+																<span className="material-symbols-outlined" style={{fontSize: "15px"}}>
 																	close
 																</span>
 															</button>
@@ -10058,11 +10024,6 @@ export function JointLoanDetailsPage({
 														]
 														: null;
 
-													const canClearSubRow =
-														isFinallyApproved &&
-														!isSecEditor &&
-														(isSubRecdDateFilled || hasValidSubDueDate);
-
 													return (
 														<tr
 															key={sub.sNo}
@@ -10072,12 +10033,12 @@ export function JointLoanDetailsPage({
 																}`}
 														>
 															{/* Sub-row S.No */}
-															<td className="py-2.5 px-3 text-left whitespace-nowrap min-w-[70px] relative">
-																<div className="relative flex items-center h-5 text-slate-400 pl-2 pr-6">
+															<td className="py-2.5 px-3 text-left whitespace-nowrap w-14">
+																<div className="relative flex items-center h-5 text-slate-400 pl-3">
 																	<span className="material-symbols-outlined text-slate-400 shrink-0" style={{ fontSize: '14px' }}>
 																		subdirectory_arrow_right
 																	</span>
-																	<div className="flex items-center gap-1.5 whitespace-nowrap z-10 pl-1">
+																	<div className="absolute left-8 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap z-10">
 																		{!isPaidPart ? (
 																			<span className="text-[8px] font-extrabold px-1.5 rounded uppercase tracking-wider bg-rose-100 text-rose-800 ring-1 ring-rose-300">
 																				Balance
@@ -10096,21 +10057,6 @@ export function JointLoanDetailsPage({
 																			</span>
 																		)}
 																	</div>
-																	{canClearSubRow && (
-																		<button
-																			type="button"
-																			onClick={(e) => {
-																				e.stopPropagation();
-																				handleClearRowDates(sub.sNo);
-																			}}
-																			className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-95 cursor-pointer z-10"
-																			title="Clear Recd Date & Payout Date"
-																		>
-																			<span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
-																				close
-																			</span>
-																		</button>
-																	)}
 																</div>
 															</td>
 
