@@ -6553,13 +6553,8 @@ export function JointLoanDetailsPage({
 				(currentInst.parentSNo && (splitInstallments[currentInst.parentSNo] || splitInstallments[Number(currentInst.parentSNo)]))
 			);
 
-			// For partial payments: once payout date approved, recd date and payout date are NOT editable, EVEN FOR SYSTEM ADMIN!
-			if (isPartialPayment && (isAlreadyApproved || isAnySubApproved)) {
-				return prev;
-			}
-
-			// For standard non-partial payments: locked once approved unless system admin
-			if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) {
+			// Once payout date approved, recd date and payout date are NOT editable, EVEN FOR SYSTEM ADMIN!
+			if (isAlreadyApproved || isAnySubApproved) {
 				return prev;
 			}
 
@@ -6936,10 +6931,8 @@ export function JointLoanDetailsPage({
 			splitInstallments[Number(sNo)]
 		);
 
-		// For partial payments: once payout date approved, cannot clear/edit even system admin
-		if (isPartialPayment && (isAlreadyApproved || isAnySubApproved)) return;
-
-		if (!isPartialPayment && !userPerms?.isAdmin && !isSystemAdmin && isAlreadyApproved) return;
+		// Once payout date approved, cannot clear/edit even system admin
+		if (isAlreadyApproved || isAnySubApproved) return;
 
 		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
@@ -9560,10 +9553,10 @@ export function JointLoanDetailsPage({
 											inst.subInstallments[0].payoutApprovalStatus === 'APPROVED')
 									);
 									const isMainRowPayoutApproved = Boolean(isPayoutApproved || isFirstSubPayoutApproved);
-									// For partial payments, once payout date approved, recd date and payout date are NOT editable even for system admin
-									const canEditRecdDate = isFinallyApproved && !isSecEditor && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && (isPastEmiDate || isRecdDateFilled);
-									const canEditDueDate = isFinallyApproved && (!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) && isRecdDateValid;
-									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && (userPerms?.isAdmin || isSystemAdmin || !isMainRowPayoutApproved);
+									// Once payout date approved, recd date and payout date are NOT editable even for system admin
+									const canEditRecdDate = isFinallyApproved && !isSecEditor && !isMainRowPayoutApproved && (isPastEmiDate || isRecdDateFilled);
+									const canEditDueDate = isFinallyApproved && !isMainRowPayoutApproved && isRecdDateValid;
+									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && !isMainRowPayoutApproved;
 									const isAnySubApproved = Boolean(
 										inst.isPartial &&
 										inst.subInstallments?.some(
@@ -9579,8 +9572,8 @@ export function JointLoanDetailsPage({
 									const canClearRow =
 										isFinallyApproved &&
 										!isSecEditor &&
+										!isMainRowPayoutApproved &&
 										!isAnySubApproved &&
-										(!isMainRowPayoutApproved || (!inst.isPartial && (userPerms?.isAdmin || isSystemAdmin))) &&
 										(isRecdDateFilled ||
 											isPayoutDateFilled ||
 											Boolean(

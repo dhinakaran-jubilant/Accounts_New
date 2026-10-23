@@ -1837,13 +1837,16 @@ def save_schedule_override(loan_id):
                         sch.splits = json.dumps(curr_splits)
                     else:
                         curr_splits = json.loads(sch.splits) if sch.splits else {}
-                        if curr_splits and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
-                            is_parent_split_approved = (
-                                (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
-                                (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
+                        if field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                            is_already_approved = (
+                                (sch.payout_approval_status == 'APPROVED' and sch.payment_date not in ('-', '—', None, '')) or
+                                (curr_splits and (
+                                    (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
+                                    (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
+                                ))
                             )
-                            if is_parent_split_approved:
-                                return jsonify({"error": "Payout date is already approved for partial installment. Dates cannot be edited."}), 400
+                            if is_already_approved:
+                                return jsonify({"error": "Payout date is already approved. Dates cannot be edited."}), 400
                         if field == 'receivedDate':
                             sch.received_date = value
                             if is_admin_user:
