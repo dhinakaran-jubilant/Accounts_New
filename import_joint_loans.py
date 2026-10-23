@@ -168,6 +168,7 @@ def fetch_source_loan_details(source_cur, loan_id):
     """
     Fetches secondary accounts, repayment schedule, and penal interest (manual type)
     from source accounts_db database using loan_id.
+    Does not collect payout approval columns from source accounts_db, allowing auto-approval under System Admin.
     """
     # 1. Secondary accounts (name, principal/share, percentage/share %)
     source_cur.execute(
@@ -181,37 +182,46 @@ def fetch_source_loan_details(source_cur, loan_id):
     )
     secondary_accounts = source_cur.fetchall()
 
-    # 2. Regular repayment schedule (type != 'manual' or type IS NULL)
+    # Query only core repayment schedule columns from source DB
+    # (avoiding missing approval columns like payout_approval_status)
     source_cur.execute(
         """
-        SELECT id, amount, interest_amount, cheque_no, date, received_date, payment_date,
-               remarks, type, splits, date_approval_status, date_editor_role, date_editor_name,
-               payout_approval_status, payout_approved_by, payout_approved_at,
-               payout_requested_by, payout_requested_at, payout_notes,
-               payout_approval_target, payout_requested_role
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'repayment_schedule'
+        """
+    )
+    col_rows = source_cur.fetchall()
+    existing_cols = set(r['column_name'] if isinstance(r, dict) else r[0] for r in col_rows)
+
+    core_cols = ['id', 'amount', 'interest_amount', 'cheque_no', 'date', 'received_date', 'payment_date', 'remarks', 'type', 'splits']
+    select_cols = [c for c in core_cols if c in existing_cols]
+    select_clause = ", ".join(select_cols) if select_cols else "*"
+
+    type_condition = "AND (type IS NULL OR type != 'manual')" if 'type' in existing_cols else ""
+    source_cur.execute(
+        f"""
+        SELECT {select_clause}
         FROM repayment_schedule
-        WHERE loan_id = %s AND (type IS NULL OR type != 'manual')
+        WHERE loan_id = %s {type_condition}
         ORDER BY id ASC
         """,
         (loan_id,)
     )
     regular_schedule = source_cur.fetchall()
 
-    # 3. Penal Interest data (type = 'manual')
-    source_cur.execute(
-        """
-        SELECT id, amount, interest_amount, cheque_no, date, received_date, payment_date,
-               remarks, type, splits, date_approval_status, date_editor_role, date_editor_name,
-               payout_approval_status, payout_approved_by, payout_approved_at,
-               payout_requested_by, payout_requested_at, payout_notes,
-               payout_approval_target, payout_requested_role
-        FROM repayment_schedule
-        WHERE loan_id = %s AND type = 'manual'
-        ORDER BY id ASC
-        """,
-        (loan_id,)
-    )
-    penal_interest_rows = source_cur.fetchall()
+    penal_interest_rows = []
+    if 'type' in existing_cols:
+        source_cur.execute(
+            f"""
+            SELECT {select_clause}
+            FROM repayment_schedule
+            WHERE loan_id = %s AND type = 'manual'
+            ORDER BY id ASC
+            """,
+            (loan_id,)
+        )
+        penal_interest_rows = source_cur.fetchall()
 
     return secondary_accounts, regular_schedule, penal_interest_rows
 
@@ -302,6 +312,9 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
     r_date_a = recd_date or ''
     d_date_a = payout_date or '-'
 
+    if not now_str:
+        now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+
     normalized = dict(data)  # Preserve original account keys
     normalized.update({
         'sNo': s_no,
@@ -329,7 +342,20 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
         'isFinalSettled': False,
         'payout_approval_status': 'APPROVED',
         'payoutApprovalStatus': 'APPROVED',
-        'payoutApprovalStatusA': 'APPROVED'
+        'payoutApprovalStatusA': 'APPROVED',
+        'payoutApprovalStatusB': 'APPROVED',
+        'payoutApprovedBy': 'System Admin',
+        'payoutApprovedByA': 'System Admin',
+        'payoutApprovedByB': 'System Admin',
+        'payoutApprovedAt': now_str,
+        'payoutApprovedAtA': now_str,
+        'payoutApprovedAtB': now_str,
+        'payoutRequestedBy': 'System Admin',
+        'payoutRequestedByA': 'System Admin',
+        'payoutRequestedByB': 'System Admin',
+        'payoutRequestedAt': now_str,
+        'payoutRequestedAtA': now_str,
+        'payoutRequestedAtB': now_str
     })
 
     return json.dumps(normalized)
@@ -550,7 +576,8 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
             secondary_accounts=secondary_accounts,
             recd_date=sch.get('received_date'),
             payout_date=sch.get('payment_date'),
-            remarks=sch.get('remarks')
+            remarks=sch.get('remarks'),
+            now_str=now_str
         )
         target_cur.execute(
             insert_sch_query,
@@ -565,17 +592,17 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
                 sch.get('remarks'),
                 sch.get('type') or 'system',
                 splits_json,
-                sch.get('date_approval_status') or 'APPROVED',
-                sch.get('date_editor_role'),
-                sch.get('date_editor_name'),
-                sch.get('payout_approval_status') or 'APPROVED',
-                sch.get('payout_approved_by'),
-                sch.get('payout_approved_at'),
-                sch.get('payout_requested_by'),
-                sch.get('payout_requested_at'),
-                sch.get('payout_notes'),
-                sch.get('payout_approval_target'),
-                sch.get('payout_requested_role')
+                'APPROVED',              # date_approval_status (auto-approved)
+                'admin',                 # date_editor_role
+                'System Admin',          # date_editor_name
+                'APPROVED',              # payout_approval_status (auto-approved)
+                'System Admin',          # payout_approved_by
+                now_str,                 # payout_approved_at
+                'System Admin',          # payout_requested_by
+                now_str,                 # payout_requested_at
+                None,                    # payout_notes
+                None,                    # payout_approval_target
+                'admin'                  # payout_requested_role
             )
         )
     print(f" Inserted {len(schedule_to_insert)} regular repayment schedule rows.")
@@ -595,17 +622,17 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
                 penal.get('remarks'),
                 'manual',  # Explicit manual type for penal interest
                 penal.get('splits'),
-                penal.get('date_approval_status') or 'APPROVED',
-                penal.get('date_editor_role'),
-                penal.get('date_editor_name'),
-                penal.get('payout_approval_status') or 'APPROVED',
-                penal.get('payout_approved_by'),
-                penal.get('payout_approved_at'),
-                penal.get('payout_requested_by'),
-                penal.get('payout_requested_at'),
-                penal.get('payout_notes'),
-                penal.get('payout_approval_target'),
-                penal.get('payout_requested_role')
+                'APPROVED',              # date_approval_status (auto-approved)
+                'admin',                 # date_editor_role
+                'System Admin',          # date_editor_name
+                'APPROVED',              # payout_approval_status (auto-approved)
+                'System Admin',          # payout_approved_by
+                now_str,                 # payout_approved_at
+                'System Admin',          # payout_requested_by
+                now_str,                 # payout_requested_at
+                None,                    # payout_notes
+                None,                    # payout_approval_target
+                'admin'                  # payout_requested_role
             )
         )
     print(f" Inserted {len(penal_interest_rows)} penal interest rows (type='manual').")
