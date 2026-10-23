@@ -6900,85 +6900,120 @@ export function JointLoanDetailsPage({
 	};
 
 	const handleClearRowDates = (sNo) => {
-		const isSecEditor = !userPerms?.isAdmin && !isSystemAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+		const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
 		if (isSecEditor) return;
 
-		const sNoStr = String(sNo);
-		const sNoNum = Number(sNo);
+		const isSubRow = typeof sNo === 'string' && /^\d+[A-Za-z]$/.test(sNo);
+		const parentSNo = isSubRow ? parseInt(sNo.replace(/\D/g, ''), 10) : sNo;
 		const loanIdentifier = loan?.db_id || loan?.id;
 
-		const currentInst = allScheduleItems.find((item) => String(item.sNo) === sNoStr) || {};
+		const currentInst = allScheduleItems.find((item) => String(item.sNo) === String(sNo)) || {};
+
+		if (isSubRow) {
+			// Clear specific sub-installment row dates (e.g. 2A or 2B)
+			setScheduleOverrides((prev) => {
+				const next = { ...prev };
+				next[sNo] = {
+					...(next[sNo] || {}),
+					receivedDate: '',
+					dueDate: '-',
+					payout_approval_status: null,
+					payoutApprovalStatus: null,
+				};
+				return next;
+			});
+
+			delete committedDatesRef.current[`${sNo}_receivedDate`];
+			delete committedDatesRef.current[`${sNo}_dueDate`];
+
+			setSplitInstallments((prev) => {
+				const currentSplit = prev[parentSNo] || prev[Number(parentSNo)];
+				if (!currentSplit) return prev;
+				const isPartA = String(sNo).toUpperCase().endsWith('A');
+				const next = { ...prev };
+				const updated = { ...currentSplit };
+				if (isPartA) {
+					updated.recdDateA = '';
+					updated.dueDateA = '-';
+					updated.payoutApprovalStatusA = null;
+					updated.recdDate = '';
+					updated.dueDate = '-';
+				} else {
+					updated.recdDateB = '';
+					updated.dueDateB = '-';
+					updated.payoutApprovalStatusB = null;
+				}
+				next[parentSNo] = updated;
+				if (typeof parentSNo === 'number') next[String(parentSNo)] = updated;
+				return next;
+			});
+
+			const histEntry = {
+				id: `hist_${Date.now()}_clear`,
+				type: 'recd_date_update',
+				title: `EMI #${sNo} Dates Cleared`,
+				description: `EMI #${sNo} received date and payout date cleared by ${activeUser?.name || 'Staff'}.`,
+				timestamp: getFormattedNow(),
+				isoDate: new Date().toISOString(),
+				userName: activeUser?.name || activeUser?.employee_code || 'Staff Officer',
+				userRole: activeUser?.role || 'user',
+				userEmployeeCode: activeUser?.employee_code || '',
+				emiNo: sNo,
+			};
+
+			setLoanHistory((prevHist) => {
+				const nextHist = [histEntry, ...prevHist];
+				if (onUpdateLoan) onUpdateLoan({ ...loan, history: nextHist });
+				return nextHist;
+			});
+
+			if (loanIdentifier) {
+				api.saveScheduleOverride(loanIdentifier, { sNo, field: 'receivedDate', value: '', historyEntry: histEntry }).catch(() => { });
+				api.saveScheduleOverride(loanIdentifier, { sNo, field: 'dueDate', value: '-' }).catch(() => { });
+			}
+			return;
+		}
 
 		// Clearing main EMI row (if partial, resets to full standard EMI)
-		const isPartial = Boolean(
-			splitInstallments[sNo] ||
-			splitInstallments[sNoNum] ||
-			splitInstallments[sNoStr] ||
-			currentInst.isPartial ||
-			currentInst.splits ||
-			(loan?.repaymentSchedule && loan.repaymentSchedule.some((sch) => String(sch.sNo || sch.s_no || sch.installmentNumber) === sNoStr && sch.splits))
-		);
+		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)] || currentInst.isPartial);
 
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
 		setSplitInstallments((prev) => {
+			if (!prev[sNo] && !prev[Number(sNo)]) return prev;
 			const next = { ...prev };
 			delete next[sNo];
-			delete next[sNoNum];
-			delete next[sNoStr];
+			delete next[Number(sNo)];
 			return next;
 		});
 
 		setExpandedRows((prev) => {
+			if (!prev[sNo] && !prev[Number(sNo)]) return prev;
 			const next = { ...prev };
 			delete next[sNo];
-			delete next[sNoNum];
-			delete next[sNoStr];
+			delete next[Number(sNo)];
 			return next;
 		});
 
 		setScheduleOverrides((prev) => {
 			const next = { ...prev };
-			delete next[`${sNoStr}A`];
-			delete next[`${sNoStr}B`];
-			delete next[`${sNoNum}A`];
-			delete next[`${sNoNum}B`];
-			const clearedOverride = {
-				...(next[sNoStr] || next[sNoNum] || next[sNo] || {}),
+			delete next[`${sNo}A`];
+			delete next[`${sNo}B`];
+			next[sNo] = {
+				...(next[sNo] || {}),
 				receivedDate: '',
 				dueDate: '-',
 				payout_approval_status: null,
 				payoutApprovalStatus: null,
-				payout_approval_target: null,
-				payoutApprovalTarget: null,
-				payout_editor_role: null,
-				payoutEditorRole: null,
-				payout_requested_role: null,
-				payoutRequestedRole: null,
-				payout_requested_by: null,
-				payout_requested_at: null,
-				payout_approved_by: null,
-				payoutApprovedBy: null,
-				payout_approved_at: null,
-				payoutApprovedAt: null,
-				payout_notes: null,
-				splits: null,
 			};
-			next[sNo] = clearedOverride;
-			next[sNoNum] = clearedOverride;
-			next[sNoStr] = clearedOverride;
 			return next;
 		});
 
 		delete committedDatesRef.current[`${sNo}_receivedDate`];
 		delete committedDatesRef.current[`${sNo}_dueDate`];
-		delete committedDatesRef.current[`${sNoNum}_receivedDate`];
-		delete committedDatesRef.current[`${sNoNum}_dueDate`];
-		delete committedDatesRef.current[`${sNoStr}_receivedDate`];
-		delete committedDatesRef.current[`${sNoStr}_dueDate`];
-		delete committedDatesRef.current[`${sNoStr}A_receivedDate`];
-		delete committedDatesRef.current[`${sNoStr}A_dueDate`];
-		delete committedDatesRef.current[`${sNoStr}B_receivedDate`];
-		delete committedDatesRef.current[`${sNoStr}B_dueDate`];
+		delete committedDatesRef.current[`${sNo}A_receivedDate`];
+		delete committedDatesRef.current[`${sNo}A_dueDate`];
+		delete committedDatesRef.current[`${sNo}B_receivedDate`];
+		delete committedDatesRef.current[`${sNo}B_dueDate`];
 
 		const histEntry = {
 			id: `hist_${Date.now()}_clear`,
@@ -6989,62 +7024,33 @@ export function JointLoanDetailsPage({
 				: `EMI #${sNo} client received date and partner payout dates cleared by ${activeUser?.name || 'Staff'}.`,
 			timestamp: getFormattedNow(),
 			isoDate: new Date().toISOString(),
-			userName: activeUser?.name || activeUser?.employee_code || (isSystemAdmin || userPerms?.isAdmin ? 'System Admin' : 'Staff Officer'),
-			userRole: activeUser?.role || (isSystemAdmin || userPerms?.isAdmin ? 'admin' : 'user'),
+			userName: activeUser?.name || activeUser?.employee_code || 'Staff Officer',
+			userRole: activeUser?.role || 'user',
 			userEmployeeCode: activeUser?.employee_code || '',
 			emiNo: sNo,
 		};
-
-		const nextHist = [histEntry, ...loanHistory];
-		setLoanHistory(nextHist);
+		setLoanHistory((prevHist) => {
+			const nextHist = [histEntry, ...prevHist];
+			if (onUpdateLoan) onUpdateLoan({ ...loan, history: nextHist });
+			return nextHist;
+		});
 
 		if (loanIdentifier) {
 			if (isPartial) {
-				api.revertLoanSplit(loanIdentifier, sNo).catch((err) => {
-					console.warn('Could not revert split on backend:', err);
-				});
+				api.revertLoanSplit(loanIdentifier, sNo).catch(() => { });
 			}
 			api.saveScheduleOverride(loanIdentifier, { sNo, field: 'receivedDate', value: '', historyEntry: histEntry }).catch(() => { });
 			api.saveScheduleOverride(loanIdentifier, { sNo, field: 'dueDate', value: '-' }).catch(() => { });
 		}
 
-		if (onUpdateLoan && loan) {
+		if (onUpdateLoan && loan && isPartial) {
 			const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
-				const matchSNo = String(sch.sNo || sch.s_no || sch.installmentNumber) === sNoStr;
-				if (matchSNo) {
-					return {
-						...sch,
-						splits: null,
-						receivedDate: '',
-						received_date: '',
-						dueDate: '-',
-						paymentDate: '',
-						payment_date: '',
-						payout_approval_status: null,
-						payoutApprovalStatus: null,
-						payout_approval_target: null,
-						payoutApprovalTarget: null,
-						payout_editor_role: null,
-						payoutEditorRole: null,
-						payout_requested_role: null,
-						payoutRequestedRole: null,
-						payout_requested_by: null,
-						payout_requested_at: null,
-						payout_approved_by: null,
-						payoutApprovedBy: null,
-						payout_approved_at: null,
-						payoutApprovedAt: null,
-						payout_notes: null,
-						status: 'Active',
-					};
+				if (sch.sNo === sNo || sch.sNo === Number(sNo)) {
+					return { ...sch, splits: null };
 				}
 				return sch;
 			});
-			onUpdateLoan({
-				...loan,
-				history: nextHist,
-				repaymentSchedule: updatedSchedule,
-			});
+			onUpdateLoan({ ...loan, repaymentSchedule: updatedSchedule });
 		}
 	};
 
@@ -9607,7 +9613,7 @@ export function JointLoanDetailsPage({
 										)
 									);
 									const canClearRow =
-										(isFinallyApproved || userPerms?.isAdmin || isSystemAdmin) &&
+										isFinallyApproved &&
 										!isSecEditor &&
 										(inst.isPartial ||
 											isRecdDateFilled ||
@@ -9714,7 +9720,6 @@ export function JointLoanDetailsPage({
 																type="button"
 																onClick={(e) => {
 																	e.stopPropagation();
-																	e.preventDefault();
 																	handleClearRowDates(inst.sNo);
 																}}
 																className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-95 cursor-pointer z-10"
@@ -10053,6 +10058,11 @@ export function JointLoanDetailsPage({
 														]
 														: null;
 
+													const canClearSubRow =
+														isFinallyApproved &&
+														!isSecEditor &&
+														(isSubRecdDateFilled || hasValidSubDueDate);
+
 													return (
 														<tr
 															key={sub.sNo}
@@ -10062,12 +10072,12 @@ export function JointLoanDetailsPage({
 																}`}
 														>
 															{/* Sub-row S.No */}
-															<td className="py-2.5 px-3 text-left whitespace-nowrap min-w-[70px]">
-																<div className="flex items-center h-5 text-slate-400 pl-2">
+															<td className="py-2.5 px-3 text-left whitespace-nowrap min-w-[70px] relative">
+																<div className="relative flex items-center h-5 text-slate-400 pl-2 pr-6">
 																	<span className="material-symbols-outlined text-slate-400 shrink-0" style={{ fontSize: '14px' }}>
 																		subdirectory_arrow_right
 																	</span>
-																	<div className="flex items-center gap-1.5 whitespace-nowrap pl-1">
+																	<div className="flex items-center gap-1.5 whitespace-nowrap z-10 pl-1">
 																		{!isPaidPart ? (
 																			<span className="text-[8px] font-extrabold px-1.5 rounded uppercase tracking-wider bg-rose-100 text-rose-800 ring-1 ring-rose-300">
 																				Balance
@@ -10086,6 +10096,21 @@ export function JointLoanDetailsPage({
 																			</span>
 																		)}
 																	</div>
+																	{canClearSubRow && (
+																		<button
+																			type="button"
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				handleClearRowDates(sub.sNo);
+																			}}
+																			className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-rose-600 hover:bg-rose-100 active:scale-95 cursor-pointer z-10"
+																			title="Clear Recd Date & Payout Date"
+																		>
+																			<span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
+																				close
+																			</span>
+																		</button>
+																	)}
 																</div>
 															</td>
 
