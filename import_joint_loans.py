@@ -226,11 +226,80 @@ def fetch_source_loan_details(source_cur, loan_id):
     return secondary_accounts, regular_schedule, penal_interest_rows
 
 
-def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_account_name, secondary_accounts, recd_date=None, payout_date=None, remarks=None, now_str=None):
+def fetch_accounts_name_lookup(target_conn):
+    """
+    Fetches account names from accounts_name table in accounts_new database.
+    Returns:
+      accounts_list: list of dicts [{'id', 'name', 'acronym', 'color', 'type', 'is_need_approval'}]
+      lookup_map: dict mapping normalized keys (upper case name, upper case acronym, cleaned alphanumeric) to canonical account row
+    """
+    cur = target_conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, name, acronym, color, type, is_need_approval FROM accounts_name")
+    rows = cur.fetchall()
+    cur.close()
+
+    lookup_map = {}
+    for r in rows:
+        c_name = str(r['name'] or '').strip()
+        acronym = str(r.get('acronym') or '').strip()
+
+        if c_name:
+            lookup_map[c_name.upper()] = r
+            lookup_map["".join(c for c in c_name.upper() if c.isalnum())] = r
+        if acronym:
+            lookup_map[acronym.upper()] = r
+            lookup_map["".join(c for c in acronym.upper() if c.isalnum())] = r
+
+    return rows, lookup_map
+
+
+def find_matching_account(account_name, lookup_map):
+    """Matches an account name or acronym against accounts_name lookup_map."""
+    if not account_name:
+        return None
+    raw = str(account_name).strip()
+    upper = raw.upper()
+    if upper in lookup_map:
+        return lookup_map[upper]
+    clean = "".join(c for c in upper if c.isalnum())
+    if clean in lookup_map:
+        return lookup_map[clean]
+    return None
+
+
+def is_partial_schedule_item(sch):
+    """
+    Checks if a schedule item is a partial payment installment.
+    In accounts_db, partial payment installments have 'splits' containing slice lists
+    (e.g. {"FINOVA CAPITAL": [{"amount": 500000, ...}, ...], ...})
+    or normalized keys like amountA, paidAmount.
+    """
+    splits_raw = sch.get('splits')
+    if not splits_raw:
+        return False
+    try:
+        data = json.loads(splits_raw) if isinstance(splits_raw, str) else splits_raw
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    if 'amountA' in data or 'paidAmount' in data or 'amountB' in data:
+        return True
+
+    for v in data.values():
+        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and 'amount' in v[0]:
+            return True
+    return False
+
+
+def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_account_name, secondary_accounts, remarks=None, now_str=None):
     """
     Normalizes legacy splits format (account-to-slices dict) into standard split keys
     (amountA, paidAmount, amountB, priAmountA, priAmountB, secAmountA, secAmountB, etc.)
-    expected by JointLoan.jsx while preserving the raw account breakdown.
+    expected by JointLoan.jsx while preserving raw account breakdowns under both
+    canonical and legacy account names.
+    CRITICAL: Partial payment recd and payout dates are NOT populated on import.
     """
     if not splits_raw:
         return None
@@ -242,9 +311,23 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
     if not isinstance(data, dict):
         return splits_raw
 
-    # If already normalized with standard fields, return JSON as is
+    # If already normalized with standard fields, return JSON with cleared dates
     if 'amountA' in data or 'paidAmount' in data:
-        return json.dumps(data) if isinstance(data, dict) else str(data)
+        cleared = dict(data)
+        cleared.update({
+            'recdDateA': '',
+            'dueDateA': '-',
+            'recdDateB': '',
+            'dueDateB': '-',
+            'recdDate': '',
+            'dueDate': '-',
+            'payoutDate': '-',
+            'payout_approval_status': None,
+            'payoutApprovalStatus': None,
+            'payoutApprovalStatusA': None,
+            'payoutApprovalStatusB': None
+        })
+        return json.dumps(cleared)
 
     primary_name = str(primary_account_name or '').strip().upper()
     sec_names = [str(s.get('account_name', '')).strip().upper() for s in (secondary_accounts or [])]
@@ -260,7 +343,6 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
     if not pri_slices or not isinstance(pri_slices, list) or len(pri_slices) == 0:
         return json.dumps(data)
 
-    # We have account slice breakdown!
     num_slices = len(pri_slices)
     slices_info = []
     for i in range(num_slices):
@@ -309,13 +391,20 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
     if bal_pri + bal_sec > 0:
         bal_total = bal_pri + bal_sec
 
-    r_date_a = recd_date or ''
-    d_date_a = payout_date or '-'
-
-    if not now_str:
-        now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
-
     normalized = dict(data)  # Preserve original account keys
+
+    # Ensure canonical account names also map to slices
+    if primary_account_name and pri_slices:
+        normalized[primary_account_name] = pri_slices
+    for s in (secondary_accounts or []):
+        s_cname = s.get('account_name')
+        if s_cname:
+            for k, v in data.items():
+                if str(k).strip().upper() == s_cname.strip().upper():
+                    normalized[s_cname] = v
+                    break
+
+    # Do not set recd and payout dates on partial payment; leave unapproved so users/admins can enter dates
     normalized.update({
         'sNo': s_no,
         'paidAmount': part_a['totalAmount'],
@@ -330,32 +419,32 @@ def normalize_installment_splits(splits_raw, s_no, installment_amount, primary_a
         'secAmountsA': part_a['secAmounts'],
         'secAmountsB': bal_sec_amts,
         'secAmounts': part_a['secAmounts'],
-        'recdDateA': r_date_a,
-        'dueDateA': d_date_a,
+        'recdDateA': '',
+        'dueDateA': '-',
         'remarksA': part_a['remarks'] or remarks or '',
         'recdDateB': '',
         'dueDateB': '-',
         'remarksB': slices_info[1]['remarks'] if len(slices_info) > 1 and slices_info[1]['remarks'] else '',
-        'recdDate': r_date_a,
-        'dueDate': d_date_a,
-        'payoutDate': d_date_a,
+        'recdDate': '',
+        'dueDate': '-',
+        'payoutDate': '-',
         'isFinalSettled': False,
-        'payout_approval_status': 'APPROVED',
-        'payoutApprovalStatus': 'APPROVED',
-        'payoutApprovalStatusA': 'APPROVED',
-        'payoutApprovalStatusB': 'APPROVED',
-        'payoutApprovedBy': 'System Admin',
-        'payoutApprovedByA': 'System Admin',
-        'payoutApprovedByB': 'System Admin',
-        'payoutApprovedAt': now_str,
-        'payoutApprovedAtA': now_str,
-        'payoutApprovedAtB': now_str,
-        'payoutRequestedBy': 'System Admin',
-        'payoutRequestedByA': 'System Admin',
-        'payoutRequestedByB': 'System Admin',
-        'payoutRequestedAt': now_str,
-        'payoutRequestedAtA': now_str,
-        'payoutRequestedAtB': now_str
+        'payout_approval_status': None,
+        'payoutApprovalStatus': None,
+        'payoutApprovalStatusA': None,
+        'payoutApprovalStatusB': None,
+        'payoutApprovedBy': None,
+        'payoutApprovedByA': None,
+        'payoutApprovedByB': None,
+        'payoutApprovedAt': None,
+        'payoutApprovedAtA': None,
+        'payoutApprovedAtB': None,
+        'payoutRequestedBy': None,
+        'payoutRequestedByA': None,
+        'payoutRequestedByB': None,
+        'payoutRequestedAt': None,
+        'payoutRequestedAtA': None,
+        'payoutRequestedAtB': None
     })
 
     return json.dumps(normalized)
@@ -367,8 +456,9 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
     1. Extracts document metadata via extract_document_data.
     2. Matches loan in accounts_db.
     3. Retrieves secondary account details, repayment schedule, and penal interest rows.
-    4. Creates System Admin audit history.
-    5. Inserts into accounts_new.
+    4. Validates all secondary accounts against accounts_name table in accounts_new (aborts if not found).
+    5. Creates System Admin audit history.
+    6. Inserts into accounts_new without pre-populating partial payment recd/payout dates.
     """
     file_name = os.path.basename(file_path)
     print(f"\n{'='*70}")
@@ -408,9 +498,10 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
         return False
 
     source_loan_id = source_loan['id']
+    loan_ref_id = source_loan.get('loan_ref_id') or (f"JL{extracted_loan_no}" if extracted_loan_no else f"JL-2026-{source_loan_id:04d}")
     print(f" Matched Source Loan in accounts_db:")
     print(f"   ID: {source_loan_id}")
-    print(f"   Loan Ref ID: {source_loan.get('loan_ref_id')}")
+    print(f"   Loan Ref ID: {loan_ref_id}")
     print(f"   Client Name: {source_loan.get('client_account_name')}")
     print(f"   Loan Amount: {source_loan.get('loan_amount'):,}")
     print(f"   Primary Account: {source_loan.get('primary_account_name')}")
@@ -426,26 +517,53 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
     for sec in secondary_accounts:
         print(f"     - Name: {sec['account_name']}, Principal/Share: Rs. {sec['share']:,.2f}, Share %: {sec['percentage']}%, Interest: Rs. {sec['interest_amount']:,.2f}, TDS: Rs. {sec['tds']:,.2f}")
 
-    print(f"   Regular Repayment Schedule: {len(regular_schedule)} rows")
+    # VALIDATION: Check secondary account names against accounts_name table from accounts_new database
+    accounts_list, lookup_map = fetch_accounts_name_lookup(target_conn)
+    print(f"\n Available accounts in accounts_name ({len(accounts_list)}):")
+    for acc in accounts_list:
+        print(f"   - {acc['name']} (Acronym: {acc.get('acronym')})")
+
+    if not secondary_accounts:
+        print(f"\n❌ Loan '{loan_ref_id}' has NO secondary accounts. Joint loans require valid secondary accounts. Aborting creation.")
+        return False
+
+    matched_secondary_accounts = []
+    for sec in secondary_accounts:
+        sec_name = str(sec.get('account_name', '')).strip()
+        matched_acc = find_matching_account(sec_name, lookup_map)
+        if not matched_acc:
+            print(f"\n❌ Secondary account '{sec_name}' NOT found in accounts_name table of accounts_new database.")
+            print(f"   Loan '{loan_ref_id}' will NOT be created.")
+            return False
+
+        sec_copy = dict(sec)
+        sec_copy['account_name'] = matched_acc['name']  # Set to exact canonical name from accounts_name
+        matched_secondary_accounts.append(sec_copy)
+        print(f"   ✓ Mapped secondary account '{sec_name}' -> '{matched_acc['name']}'")
+
+    secondary_accounts = matched_secondary_accounts
+
+    print(f"\n   Regular Repayment Schedule: {len(regular_schedule)} rows")
     recd_count = sum(1 for s in regular_schedule if s.get('received_date') and str(s['received_date']).strip())
     payout_count = sum(1 for s in regular_schedule if s.get('payment_date') and str(s['payment_date']).strip())
-    split_count = sum(1 for s in regular_schedule if s.get('splits') and str(s['splits']).strip())
+    partial_count = sum(1 for s in regular_schedule if is_partial_schedule_item(s))
     print(f"     - With Recd Date: {recd_count}")
     print(f"     - With Payout Date: {payout_count}")
-    print(f"     - With Partial Splits: {split_count}")
+    print(f"     - Partial Payment Rows (dates will NOT be updated): {partial_count}")
 
     print(f"   Penal Interest (Manual Type): {len(penal_interest_rows)} rows")
     for p in penal_interest_rows:
         print(f"     - Amount: Rs. {p['amount']:,.2f}, Date: {p['date']}, Recd Date: {p['received_date']}, Payout Date: {p['payment_date']}, Remarks: {p['remarks']}, Splits: {p['splits']}")
 
     # Formulate joint loan details for target DB (accounts_new)
-    loan_ref_id = source_loan.get('loan_ref_id') or (f"JL{extracted_loan_no}" if extracted_loan_no else f"JL-2026-{source_loan_id:04d}")
     client_account_name = source_loan.get('client_account_name') or extracted_client or ''
     address = source_loan.get('address') or doc_data.get('address') or ''
     contact = source_loan.get('contact') or doc_data.get('contact') or ''
     loan_amount = float(source_loan.get('loan_amount') or doc_data.get('loan_amount') or 0.0)
     loan_date = source_loan.get('loan_date') or doc_data.get('loan_date') or datetime.date.today().strftime("%d-%m-%Y")
-    primary_account_name = (source_loan.get('primary_account_name') or doc_data.get('primary_account') or '').strip().upper()
+    raw_primary_name = (source_loan.get('primary_account_name') or doc_data.get('primary_account') or '').strip()
+    matched_pri = find_matching_account(raw_primary_name, lookup_map)
+    primary_account_name = matched_pri['name'] if matched_pri else raw_primary_name
     primary_account_share = float(source_loan.get('primary_account_share') or 100.0 - sum(float(s['percentage']) for s in secondary_accounts))
     primary_account_amount = float(source_loan.get('primary_account_amount') or (loan_amount - sum(float(s['share']) for s in secondary_accounts)))
     total_repayment_amount = float(source_loan.get('total_repayment_amount') or doc_data.get('total_repayment') or loan_amount)
@@ -504,7 +622,7 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
     new_loan_id = target_cur.fetchone()[0]
     print(f"\n Created Loan in accounts_new with ID: {new_loan_id} (Ref: {loan_ref_id})")
 
-    # 3. Insert Secondary Accounts
+    # 3. Insert Secondary Accounts with exact canonical names from accounts_name
     insert_sec_query = """
         INSERT INTO remaining_accounts (
             loan_id, account_name, percentage, share, interest_amount, tds
@@ -537,7 +655,6 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         );
     """
-    # Use regular_schedule from accounts_db if available, else fallback to doc_data table
     schedule_to_insert = regular_schedule
     if not schedule_to_insert and doc_data.get('table'):
         schedule_to_insert = [
@@ -551,34 +668,71 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
                 'remarks': None,
                 'type': 'system',
                 'splits': None,
-                'date_approval_status': 'APPROVED',
-                'date_editor_role': None,
-                'date_editor_name': None,
-                'payout_approval_status': 'APPROVED',
-                'payout_approved_by': None,
-                'payout_approved_at': None,
-                'payout_requested_by': None,
-                'payout_requested_at': None,
-                'payout_notes': None,
-                'payout_approval_target': None,
-                'payout_requested_role': None
             }
             for r in doc_data['table']
         ]
 
     for idx, sch in enumerate(schedule_to_insert):
         s_no = idx + 1
-        splits_json = normalize_installment_splits(
-            splits_raw=sch.get('splits'),
-            s_no=s_no,
-            installment_amount=float(sch.get('amount') or 0.0),
-            primary_account_name=primary_account_name,
-            secondary_accounts=secondary_accounts,
-            recd_date=sch.get('received_date'),
-            payout_date=sch.get('payment_date'),
-            remarks=sch.get('remarks'),
-            now_str=now_str
-        )
+        is_partial = is_partial_schedule_item(sch)
+
+        if is_partial:
+            # Partial payment: DO NOT update recd and payout date, and leave unapproved
+            rec_date_val = None
+            pay_date_val = None
+            date_status = None
+            date_role = None
+            date_name = None
+            payout_status = None
+            payout_by = None
+            payout_at = None
+            payout_req_by = None
+            payout_req_at = None
+            payout_req_role = None
+
+            splits_json = normalize_installment_splits(
+                splits_raw=sch.get('splits'),
+                s_no=s_no,
+                installment_amount=float(sch.get('amount') or 0.0),
+                primary_account_name=primary_account_name,
+                secondary_accounts=secondary_accounts,
+                remarks=sch.get('remarks'),
+                now_str=now_str
+            )
+        else:
+            # Regular schedule row: Keep recd and payout dates if present and auto-approve under System Admin
+            splits_json = sch.get('splits')
+
+            raw_recd = sch.get('received_date')
+            if raw_recd and str(raw_recd).strip():
+                rec_date_val = str(raw_recd).strip()
+                date_status = 'APPROVED'
+                date_role = 'admin'
+                date_name = 'System Admin'
+            else:
+                rec_date_val = None
+                date_status = None
+                date_role = None
+                date_name = None
+
+            raw_payout = sch.get('payment_date')
+            if raw_payout and str(raw_payout).strip():
+                pay_date_val = str(raw_payout).strip()
+                payout_status = 'APPROVED'
+                payout_by = 'System Admin'
+                payout_at = now_str
+                payout_req_by = 'System Admin'
+                payout_req_at = now_str
+                payout_req_role = 'admin'
+            else:
+                pay_date_val = None
+                payout_status = None
+                payout_by = None
+                payout_at = None
+                payout_req_by = None
+                payout_req_at = None
+                payout_req_role = None
+
         target_cur.execute(
             insert_sch_query,
             (
@@ -587,28 +741,79 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
                 float(sch.get('interest_amount') or 0.0),
                 sch.get('cheque_no') or '',
                 sch.get('date') or '',
-                sch.get('received_date'),
-                sch.get('payment_date'),
+                rec_date_val,
+                pay_date_val,
                 sch.get('remarks'),
                 sch.get('type') or 'system',
                 splits_json,
-                'APPROVED',              # date_approval_status (auto-approved)
-                'admin',                 # date_editor_role
-                'System Admin',          # date_editor_name
-                'APPROVED',              # payout_approval_status (auto-approved)
-                'System Admin',          # payout_approved_by
-                now_str,                 # payout_approved_at
-                'System Admin',          # payout_requested_by
-                now_str,                 # payout_requested_at
-                None,                    # payout_notes
-                None,                    # payout_approval_target
-                'admin'                  # payout_requested_role
+                date_status,
+                date_role,
+                date_name,
+                payout_status,
+                payout_by,
+                payout_at,
+                payout_req_by,
+                payout_req_at,
+                None,  # payout_notes
+                None,  # payout_approval_target
+                payout_req_role
             )
         )
     print(f" Inserted {len(schedule_to_insert)} regular repayment schedule rows.")
 
     # 5. Insert Penal Interest Rows (type = 'manual')
     for penal in penal_interest_rows:
+        raw_recd = penal.get('received_date')
+        if raw_recd and str(raw_recd).strip():
+            rec_date_val = str(raw_recd).strip()
+            date_status = 'APPROVED'
+            date_role = 'admin'
+            date_name = 'System Admin'
+        else:
+            rec_date_val = None
+            date_status = None
+            date_role = None
+            date_name = None
+
+        raw_payout = penal.get('payment_date')
+        if raw_payout and str(raw_payout).strip():
+            pay_date_val = str(raw_payout).strip()
+            payout_status = 'APPROVED'
+            payout_by = 'System Admin'
+            payout_at = now_str
+            payout_req_by = 'System Admin'
+            payout_req_at = now_str
+            payout_req_role = 'admin'
+        else:
+            pay_date_val = None
+            payout_status = None
+            payout_by = None
+            payout_at = None
+            payout_req_by = None
+            payout_req_at = None
+            payout_req_role = None
+
+        penal_splits = penal.get('splits')
+        if penal_splits:
+            try:
+                p_data = json.loads(penal_splits) if isinstance(penal_splits, str) else penal_splits
+                if isinstance(p_data, dict):
+                    new_p_data = dict(p_data)
+                    for sec in secondary_accounts:
+                        sec_cname = sec['account_name']
+                        for k, v in p_data.items():
+                            if str(k).strip().upper() == sec_cname.upper():
+                                new_p_data[sec_cname] = v
+                                break
+                    if primary_account_name:
+                        for k, v in p_data.items():
+                            if str(k).strip().upper() == primary_account_name.upper():
+                                new_p_data[primary_account_name] = v
+                                break
+                    penal_splits = json.dumps(new_p_data)
+            except Exception:
+                pass
+
         target_cur.execute(
             insert_sch_query,
             (
@@ -617,22 +822,22 @@ def import_joint_loan_file(file_path, source_conn, target_conn, override_loan_id
                 float(penal.get('interest_amount') or 0.0),
                 penal.get('cheque_no') or '',
                 penal.get('date') or '',
-                penal.get('received_date'),
-                penal.get('payment_date'),
+                rec_date_val,
+                pay_date_val,
                 penal.get('remarks'),
                 'manual',  # Explicit manual type for penal interest
-                penal.get('splits'),
-                'APPROVED',              # date_approval_status (auto-approved)
-                'admin',                 # date_editor_role
-                'System Admin',          # date_editor_name
-                'APPROVED',              # payout_approval_status (auto-approved)
-                'System Admin',          # payout_approved_by
-                now_str,                 # payout_approved_at
-                'System Admin',          # payout_requested_by
-                now_str,                 # payout_requested_at
-                None,                    # payout_notes
-                None,                    # payout_approval_target
-                'admin'                  # payout_requested_role
+                penal_splits,
+                date_status,
+                date_role,
+                date_name,
+                payout_status,
+                payout_by,
+                payout_at,
+                payout_req_by,
+                payout_req_at,
+                None,
+                None,
+                payout_req_role
             )
         )
     print(f" Inserted {len(penal_interest_rows)} penal interest rows (type='manual').")

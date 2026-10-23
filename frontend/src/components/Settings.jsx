@@ -1053,7 +1053,7 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 																	setDeletingAccount(acc);
 																}}
 																title="Delete Account"
-																className="p-1.5 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+																className="p-1.5 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
 															>
 																<span className="material-symbols-outlined" style={{ fontSize: '18px' }}>delete</span>
 															</button>
