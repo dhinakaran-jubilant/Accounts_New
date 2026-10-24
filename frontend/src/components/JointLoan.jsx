@@ -336,27 +336,75 @@ const secondaryAccountOptions = [
 const initialJointLoans = [];
 
 // Modern custom dropdown component for secondary account selection
-function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Select account' }) {
+function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Select account', accountObjects = [] }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const [openUpward, setOpenUpward] = useState(false);
+	const [menuMaxHeight, setMenuMaxHeight] = useState(240);
 	const [searchTerm, setSearchTerm] = useState('');
 	const dropdownRef = useRef(null);
 	const searchInputRef = useRef(null);
 
+	// Update dropdown open direction (up/down) and maxHeight based on available space
+	const updateDropdownPlacement = useCallback(() => {
+		if (!dropdownRef.current) return;
+		const rect = dropdownRef.current.getBoundingClientRect();
+		let spaceBelow = window.innerHeight - rect.bottom;
+		let spaceAbove = rect.top;
+
+		// Find nearest scrolling/clipping container (e.g. .overflow-y-auto in modal)
+		let parent = dropdownRef.current.parentElement;
+		while (parent && parent !== document.body && parent !== document.documentElement) {
+			const style = window.getComputedStyle(parent);
+			const overflowY = style.overflowY || '';
+			const overflow = style.overflow || '';
+			if (
+				['auto', 'scroll', 'hidden'].includes(overflowY) ||
+				['auto', 'scroll', 'hidden'].includes(overflow) ||
+				parent.classList.contains('overflow-y-auto')
+			) {
+				const pRect = parent.getBoundingClientRect();
+				spaceBelow = Math.min(spaceBelow, pRect.bottom - rect.bottom);
+				spaceAbove = Math.min(spaceAbove, rect.top - pRect.top);
+				break;
+			}
+			parent = parent.parentElement;
+		}
+
+		const neededHeight = 240;
+		// If space below is insufficient for dropdown and more space above, open upwards
+		const shouldOpenUp = spaceBelow < neededHeight && spaceAbove > spaceBelow;
+		setOpenUpward(shouldOpenUp);
+
+		const availableSpace = shouldOpenUp ? spaceAbove : spaceBelow;
+		const safeHeight = Math.min(240, Math.max(130, Math.floor(availableSpace - 12)));
+		setMenuMaxHeight(safeHeight);
+	}, []);
+
 	// Toggle dropdown and dynamically position upward if near bottom
 	const handleToggle = () => {
-		if (!isOpen && dropdownRef.current) {
-			const rect = dropdownRef.current.getBoundingClientRect();
-			const spaceBelow = window.innerHeight - rect.bottom;
-			if (spaceBelow < 220 && rect.top > spaceBelow) {
-				setOpenUpward(true);
-			} else {
-				setOpenUpward(false);
-			}
+		if (!isOpen) {
+			updateDropdownPlacement();
 			setSearchTerm('');
 		}
 		setIsOpen((prev) => !prev);
 	};
+
+	// Recalculate on open, resize, or scroll (captured for nested scroll containers)
+	useEffect(() => {
+		if (!isOpen) return;
+		updateDropdownPlacement();
+
+		const handleReposition = () => {
+			updateDropdownPlacement();
+		};
+
+		window.addEventListener('resize', handleReposition);
+		window.addEventListener('scroll', handleReposition, true);
+		return () => {
+			window.removeEventListener('resize', handleReposition);
+			window.removeEventListener('scroll', handleReposition, true);
+		};
+	}, [isOpen, updateDropdownPlacement]);
 
 	// Focus search input when dropdown opens
 	useEffect(() => {
@@ -386,12 +434,69 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 		};
 	}, [isOpen]);
 
+	// Normalize options to { name, acronym, label, value }
+	const normalizedOptions = useMemo(() => {
+		return options.map((opt) => {
+			if (typeof opt === 'object' && opt !== null) {
+				const name = String(opt.name || opt.value || opt.label || '').trim();
+				const acronym = opt.acronym ? String(opt.acronym).trim().toUpperCase() : getAcronym(name, accountObjects);
+				let label = opt.label;
+				if (!label) {
+					const cleanName = name.toUpperCase();
+					label = (acronym && acronym !== cleanName && !cleanName.endsWith(`(${acronym})`))
+						? `${cleanName} (${acronym})`
+						: cleanName;
+				}
+				const value = opt.value || name.toUpperCase();
+				return { name, acronym, label, value };
+			}
+			const str = String(opt || '').trim();
+			const cleanName = str.toUpperCase();
+			const acronym = getAcronym(str, accountObjects);
+			const label = (acronym && acronym !== cleanName && !cleanName.endsWith(`(${acronym})`))
+				? `${cleanName} (${acronym})`
+				: cleanName;
+			return { name: str, acronym, label, value: cleanName };
+		});
+	}, [options, accountObjects]);
+
+	// Filter options based on search term
 	const filteredOptions = useMemo(() => {
-		const raw = options.map((opt) => (typeof opt === 'string' ? opt : opt?.name || ''));
-		if (!searchTerm.trim()) return raw;
-		const query = searchTerm.toLowerCase();
-		return raw.filter((name) => name.toLowerCase().includes(query));
-	}, [options, searchTerm]);
+		if (!searchTerm.trim()) return normalizedOptions;
+		const query = searchTerm.toLowerCase().trim();
+		return normalizedOptions.filter(
+			(opt) =>
+				opt.label.toLowerCase().includes(query) ||
+				opt.name.toLowerCase().includes(query) ||
+				opt.acronym.toLowerCase().includes(query)
+		);
+	}, [normalizedOptions, searchTerm]);
+
+	// Find matching option for selected value
+	const selectedOption = useMemo(() => {
+		if (!value) return null;
+		const clean = (s) => String(s || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
+		const target = clean(value);
+		return normalizedOptions.find(
+			(opt) =>
+				clean(opt.value) === target ||
+				clean(opt.name) === target ||
+				clean(opt.label) === target
+		);
+	}, [value, normalizedOptions]);
+
+	// Display value in trigger button
+	const triggerDisplay = useMemo(() => {
+		if (!value) return '';
+		if (selectedOption?.label) return selectedOption.label;
+		const raw = String(value).trim();
+		const acr = getAcronym(raw, accountObjects);
+		const upper = raw.toUpperCase();
+		if (acr && acr !== upper && !upper.endsWith(`(${acr})`)) {
+			return `${upper} (${acr})`;
+		}
+		return upper;
+	}, [value, selectedOption, accountObjects]);
 
 	return (
 		<div className={`relative w-full ${isOpen ? 'z-40' : 'z-10'}`} ref={dropdownRef}>
@@ -408,7 +513,7 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 				<div className="flex items-center min-w-0">
 					{value ? (
 						<span className="truncate text-slate-900 font-bold text-[12px] uppercase tracking-wide">
-							{value}
+							{triggerDisplay}
 						</span>
 					) : (
 						<span className="truncate text-slate-400 font-normal text-[12px]">
@@ -429,10 +534,10 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 				<div
 					className={`absolute left-0 right-0 z-50 bg-white rounded-xl shadow-2xl ring-1 ring-slate-900/10 border border-slate-100 flex flex-col overflow-hidden animate-fadeIn ${openUpward ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
 						}`}
-					style={{ maxHeight: '240px' }}
+					style={{ maxHeight: `${menuMaxHeight}px` }}
 				>
 					{/* Search Bar if more than 3 options */}
-					{options.length > 3 && (
+					{normalizedOptions.length > 3 && (
 						<div className="p-2 border-b border-slate-100 bg-slate-50/70 sticky top-0 z-10 flex-shrink-0">
 							<div className="relative">
 								<span className="material-symbols-outlined text-[15px] text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none select-none">
@@ -463,14 +568,17 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 					<div className="overflow-y-auto divide-y divide-slate-50 py-1 flex-1">
 						{filteredOptions.length > 0 ? (
 							filteredOptions.map((opt) => {
-								const optName = typeof opt === 'string' ? opt : opt?.name || '';
-								const isSelected = String(optName).trim().toUpperCase() === String(value || '').trim().toUpperCase();
+								const clean = (s) => String(s || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
+								const isSelected =
+									clean(opt.value) === clean(value) ||
+									clean(opt.name) === clean(value) ||
+									clean(opt.label) === clean(value);
 								return (
 									<button
-										key={optName}
+										key={opt.value || opt.label}
 										type="button"
 										onClick={() => {
-											onChange(String(optName).toUpperCase());
+											onChange(opt.value, opt);
 											setIsOpen(false);
 										}}
 										className={`w-full flex items-center justify-between px-3.5 py-2.5 text-[12px] transition-colors text-left cursor-pointer group ${isSelected
@@ -480,7 +588,7 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 									>
 										<div className="flex items-center min-w-0">
 											<span className="truncate uppercase font-bold text-[12px] tracking-wide">
-												{optName}
+												{opt.label}
 											</span>
 										</div>
 										{isSelected && (
@@ -1610,9 +1718,12 @@ export const getAcronym = (nameOrAcronym, accountObjects = []) => {
 	const clean = (s) => String(s || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
 	const targetClean = clean(raw);
 
-	// 1. Check accountObjects if provided
-	if (Array.isArray(accountObjects) && accountObjects.length > 0) {
-		const found = accountObjects.find(
+	// 1. Check accountObjects if provided (or cached global account objects)
+	const accountsToCheck = (Array.isArray(accountObjects) && accountObjects.length > 0)
+		? accountObjects
+		: (Array.isArray(cachedGlobalAccountObjects) ? cachedGlobalAccountObjects : []);
+	if (accountsToCheck.length > 0) {
+		const found = accountsToCheck.find(
 			(a) => clean(a.name) === targetClean || clean(a.acronym) === targetClean
 		);
 		if (found && found.acronym) return found.acronym.trim().toUpperCase();
@@ -4269,6 +4380,7 @@ function EditAllocationsModal({
 	editAccounts,
 	loan,
 	availableAccountOptions = [],
+	availableAccountObjects = [],
 	onAccountChange,
 	onToggleLock,
 	onAddSecondary,
@@ -4287,12 +4399,21 @@ function EditAllocationsModal({
 		}
 	};
 
-	const [dbAccountNames, setDbAccountNames] = useState(() => {
-		if (Array.isArray(availableAccountOptions) && availableAccountOptions.length > 0) {
-			return availableAccountOptions.map((a) => (typeof a === 'string' ? a : a.name)).filter(Boolean);
+	const [dbAccounts, setDbAccounts] = useState(() => {
+		if (Array.isArray(availableAccountObjects) && availableAccountObjects.length > 0) {
+			return availableAccountObjects;
 		}
-		return secondaryAccountOptions;
+		if (Array.isArray(availableAccountOptions) && availableAccountOptions.length > 0) {
+			return availableAccountOptions.map((a) => (typeof a === 'object' && a !== null ? a : { name: a }));
+		}
+		return secondaryAccountOptions.map((a) => ({ name: a }));
 	});
+
+	useEffect(() => {
+		if (Array.isArray(availableAccountObjects) && availableAccountObjects.length > 0) {
+			setDbAccounts(availableAccountObjects);
+		}
+	}, [availableAccountObjects]);
 
 	useEffect(() => {
 		let isMounted = true;
@@ -4300,8 +4421,8 @@ function EditAllocationsModal({
 			try {
 				const accs = await api.getAccountNames();
 				if (isMounted && Array.isArray(accs) && accs.length > 0) {
-					const names = accs.map((a) => (typeof a === 'string' ? a : a.name)).filter(Boolean);
-					setDbAccountNames(names);
+					setDbAccounts(accs);
+					setCachedGlobalAccountObjects(accs);
 				}
 			} catch (err) {
 				console.warn('Backend account names unavailable in modal:', err);
@@ -4312,6 +4433,10 @@ function EditAllocationsModal({
 			isMounted = false;
 		};
 	}, []);
+
+	const dbAccountNames = useMemo(() => {
+		return dbAccounts.map((a) => (typeof a === 'object' && a !== null ? a.name : a)).filter(Boolean);
+	}, [dbAccounts]);
 
 	useEffect(() => {
 		const handleKeyDown = (e) => {
@@ -4549,20 +4674,56 @@ function EditAllocationsModal({
 						{/* Secondary Accounts List (Rows below each other) */}
 						<div className="flex flex-col gap-3">
 							{secondaryAccs.map((sec, idx) => {
-								// Filter options: Selected accounts and Primary account are not displayed in the dropdown options
+								// Filter options: Other selected accounts and Primary account are not displayed in the dropdown options
 								const canonicalize = (str) => String(str || '').replace(/[\s._-]+/g, '').toLowerCase();
 								const primaryCanon = canonicalize(primaryAcc?.accountName || loan?.primary_account_name || loan?.primaryBorrower?.name);
-								const selectedCanons = editAccounts.map((a) => canonicalize(a.accountName)).filter(Boolean);
+								const otherSelectedCanons = editAccounts
+									.filter((a) => a.id !== sec.id)
+									.map((a) => canonicalize(a.accountName))
+									.filter(Boolean);
 
-								const dropdownOptions = dbAccountNames
-									.filter((name) => {
-										const canon = canonicalize(name);
+								const rawAccountsList = (Array.isArray(dbAccounts) && dbAccounts.length > 0)
+									? dbAccounts
+									: (Array.isArray(availableAccountOptions) && availableAccountOptions.length > 0
+										? availableAccountOptions
+										: secondaryAccountOptions);
+
+								const dropdownOptions = rawAccountsList
+									.map((item) => {
+										const rawName = typeof item === 'object' && item !== null ? item.name : item;
+										const name = String(rawName || '').trim();
+										const acronym = (typeof item === 'object' && item !== null && item.acronym)
+											? item.acronym
+											: getAcronym(name, dbAccounts);
+										return {
+											id: item?.id,
+											name,
+											acronym: acronym ? String(acronym).trim().toUpperCase() : '',
+										};
+									})
+									.filter((item) => {
+										const canon = canonicalize(item.name);
 										if (!canon) return false;
 										if (canon === primaryCanon) return false;
-										if (selectedCanons.includes(canon)) return false;
+										if (otherSelectedCanons.includes(canon)) return false;
 										return true;
 									})
-									.map((name) => String(name).toUpperCase());
+									.map((item) => {
+										const cleanName = item.name.toUpperCase();
+										let label = cleanName;
+										if (item.acronym && item.acronym !== cleanName && !cleanName.endsWith(`(${item.acronym})`)) {
+											label = `${cleanName} (${item.acronym})`;
+										}
+										return {
+											id: item.id,
+											name: cleanName,
+											acronym: item.acronym,
+											value: cleanName,
+											label: label,
+										};
+									})
+									// Sort secondary account names in ascending order (A-Z)
+									.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
 								return (
 									<div key={sec.id || idx} className="flex items-center gap-3">
@@ -4574,6 +4735,7 @@ function EditAllocationsModal({
 													placeholder="Select secondary account..."
 													onChange={(val) => onAccountChange(sec.id, 'accountName', val)}
 													options={dropdownOptions}
+													accountObjects={dbAccounts}
 												/>
 											</div>
 
@@ -8409,23 +8571,26 @@ export function JointLoanDetailsPage({
 			const canonicalize = (str) => String(str || '').replace(/[\s._-]+/g, '').toLowerCase();
 			const primaryCanon = canonicalize(loan.primary_account_name || loan.primaryBorrower?.name || loan.leadAccount);
 			const usedCanons = new Set(prev.map((a) => canonicalize(a.accountName)).filter(Boolean));
-			const allOptions = (availableAccountOptions && availableAccountOptions.length > 0)
-				? availableAccountOptions
-				: secondaryAccountOptions;
-			const nextAvailableName = allOptions.find((opt) => {
+			const allOptions = (accountObjectsList && accountObjectsList.length > 0)
+				? accountObjectsList
+				: ((availableAccountOptions && availableAccountOptions.length > 0)
+					? availableAccountOptions
+					: secondaryAccountOptions);
+			const nextAvailableObj = allOptions.find((opt) => {
 				const name = typeof opt === 'string' ? opt : opt?.name;
 				const canon = canonicalize(name);
 				return canon && canon !== primaryCanon && !usedCanons.has(canon);
-			}) || '';
+			});
 
-			const rawName = typeof nextAvailableName === 'string' ? nextAvailableName : (nextAvailableName?.name || '');
+			const rawName = typeof nextAvailableObj === 'string' ? nextAvailableObj : (nextAvailableObj?.name || '');
 			const finalName = rawName ? rawName.toUpperCase() : '';
-			const initials = finalName
-				? (finalName.split(/\s+/).length > 1
-					? (finalName.split(/\s+/)[0][0] + finalName.split(/\s+/)[1][0]).toUpperCase()
-					: finalName.slice(0, 2).toUpperCase())
-				: `S${newIdx}`;
-			const tag = finalName ? initials : `SEC${newIdx}`;
+			const officialAcronym = getAcronym(finalName, accountObjectsList || availableAccountObjects);
+			const parts = finalName.split(/\s+/);
+			const fallbackInitials = parts.length > 1
+				? (parts[0][0] + parts[1][0]).toUpperCase()
+				: finalName.slice(0, 2).toUpperCase();
+			const initials = (officialAcronym && officialAcronym !== finalName) ? officialAcronym : (finalName ? fallbackInitials : `S${newIdx}`);
+			const tag = initials || `SEC${newIdx}`;
 
 			const newSec = {
 				id: `acc-sec-${Date.now()}-${newIdx}`,
@@ -8591,10 +8756,12 @@ export function JointLoanDetailsPage({
 			// 1. Handling non-share/principal fields: accountName, accountTag, interestRate
 			if (field === 'accountName') {
 				const nameStr = String(value || '').trim().toUpperCase();
+				const officialAcronym = getAcronym(nameStr, accountObjectsList || availableAccountObjects);
 				const parts = nameStr.split(/\s+/);
-				const initials = parts.length > 1
+				const fallbackInitials = parts.length > 1
 					? (parts[0][0] + parts[1][0]).toUpperCase()
 					: nameStr.slice(0, 2).toUpperCase();
+				const initials = (officialAcronym && officialAcronym !== nameStr) ? officialAcronym : fallbackInitials;
 				return prev.map((acc) =>
 					acc.id === id
 						? {
@@ -11283,6 +11450,7 @@ export function JointLoanDetailsPage({
 				editAccounts={editAccounts}
 				loan={loan}
 				availableAccountOptions={availableAccountOptions}
+				availableAccountObjects={accountObjectsList || availableAccountObjects}
 				onAccountChange={handleEditAccountChange}
 				onToggleLock={handleToggleLock}
 				onAddSecondary={handleAddSecondaryAccount}
@@ -15279,14 +15447,16 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 											<div className="space-y-2.5">
 												{secondaryAccounts.map((account, index) => {
 													const priName = pdfParsed?.primary_account || newPrimaryName || '';
-													const availableOptions = availableAccountOptions.filter((opt) => {
-														// Exclude primary account from secondary account dropdown list
-														if (isPrimaryAccountMatch(opt, priName)) return false;
-														if (opt === account.accountName) return true;
-														return !secondaryAccounts.some(
-															(other) => other.id !== account.id && other.accountName === opt
-														);
-													});
+													const availableOptions = availableAccountOptions
+														.filter((opt) => {
+															// Exclude primary account from secondary account dropdown list
+															if (isPrimaryAccountMatch(opt, priName)) return false;
+															if (opt === account.accountName) return true;
+															return !secondaryAccounts.some(
+																(other) => other.id !== account.id && other.accountName === opt
+															);
+														})
+														.sort((a, b) => (typeof a === 'string' ? a : a?.name || '').localeCompare(typeof b === 'string' ? b : b?.name || '', undefined, { sensitivity: 'base' }));
 
 													return (
 														<div
@@ -15308,6 +15478,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 																		handleUpdateSecondaryAccount(account.id, 'accountName', val)
 																	}
 																	options={availableOptions}
+																	accountObjects={availableAccountObjects}
 																/>
 															</div>
 
