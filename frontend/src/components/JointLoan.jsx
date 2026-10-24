@@ -4012,7 +4012,7 @@ export function PartialPaymentModal({
 											{primaryTag} (Primary)
 										</span>
 										<span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-800">
-											{primarySharePct}%
+											{formatSharePercent(primarySharePct)}%
 										</span>
 									</div>
 									<div className="relative">
@@ -4096,7 +4096,7 @@ export function PartialPaymentModal({
 													{labelText}
 												</span>
 												<span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${theme.badge}`}>
-													{sharePct}%
+													{formatSharePercent(sharePct)}%
 												</span>
 											</div>
 											<div className="relative">
@@ -6027,8 +6027,11 @@ export function JointLoanDetailsPage({
 				const remarksB = overrideB.remarks !== undefined ? overrideB.remarks : (splitInfo.remarksB || '');
 
 				const isPartBPaid = Boolean(
-					splitInfo.isFinalSettled ||
-					(recdDateB && recdDateB.length === 10 && recdDateB !== '-' && recdDateB !== '-')
+					recdDateB &&
+					String(recdDateB).trim().length === 10 &&
+					String(recdDateB).trim() !== '-' &&
+					String(recdDateB).trim() !== '—' &&
+					parseDDMMYYYY(String(recdDateB).trim()) !== null
 				);
 
 				// Part A: Paid partial amount
@@ -6069,7 +6072,7 @@ export function JointLoanDetailsPage({
 					parentSNo: inst.sNo,
 					isSubRow: true,
 					subType: isPartBPaid ? 'paid' : 'balance',
-					subLabel: isPartBPaid ? 'Payment #2' : 'Remaining Balance',
+					subLabel: isPartBPaid ? 'Payment #2' : 'Balance',
 					amount: balAmountB,
 					interest: interestB,
 					primaryAmount: priAmountB,
@@ -6199,7 +6202,7 @@ export function JointLoanDetailsPage({
 						parentSNo: inst.sNo,
 						isSubRow: true,
 						subType: isPartCPaid ? 'paid' : 'balance',
-						subLabel: isPartCPaid ? 'Payment #3' : 'Remaining Balance',
+						subLabel: isPartCPaid ? 'Payment #3' : 'Balance',
 						amount: balAmountC,
 						interest: interestC,
 						primaryAmount: priAmountC,
@@ -6266,7 +6269,7 @@ export function JointLoanDetailsPage({
 						parentSNo: inst.sNo,
 						isSubRow: true,
 						subType: isPartDPaid ? 'paid' : 'balance',
-						subLabel: isPartDPaid ? 'Payment #4' : 'Remaining Balance',
+						subLabel: isPartDPaid ? 'Payment #4' : 'Balance',
 						amount: remainingBalAfterC,
 						interest: interestD,
 						primaryAmount: priAmountD,
@@ -6284,11 +6287,12 @@ export function JointLoanDetailsPage({
 					computeStatus(partD);
 				}
 
+				const hasPartB = (balAmountB > 0) || isPartBPaid;
 				const subInstallments = [
 					partA,
-					partB,
-					...(partC ? [partC] : []),
-					...(partD ? [partD] : []),
+					...(hasPartB ? [partB] : []),
+					...(partC && ((partC.amount > 0) || isPartCPaid) ? [partC] : []),
+					...(partD && ((partD.amount > 0) || isPartDPaid) ? [partD] : []),
 				];
 
 				const totalPaidOnRow = paidAmountA + (isPartBPaid ? balAmountB : 0) + (partC && isPartCPaid ? (partC.amount || 0) : 0) + (partD && partD.subType === 'paid' ? (partD.amount || 0) : 0);
@@ -6466,7 +6470,7 @@ export function JointLoanDetailsPage({
 			const hasPaidB = Boolean(
 				(existingSplit.recdDateB && String(existingSplit.recdDateB).trim() && existingSplit.recdDateB !== '-' && existingSplit.recdDateB !== '—') ||
 				(existingOverrideB.receivedDate && String(existingOverrideB.receivedDate).trim() && existingOverrideB.receivedDate !== '-' && existingOverrideB.receivedDate !== '—') ||
-				(targetInst?.subInstallments?.length > 1 && targetInst.subInstallments[1]?.subType === 'paid')
+				(targetInst?.subInstallments?.length > 1 && targetInst.subInstallments[1]?.subType === 'paid' && targetInst.subInstallments[1]?.receivedDate)
 			);
 
 			const isThirdPayment = hasPaidB;
@@ -10312,12 +10316,18 @@ export function JointLoanDetailsPage({
 											{inst.isPartial &&
 												isExpanded &&
 												(inst.subInstallments || []).map((sub, subIdx) => {
-													const isPaidPart = sub.subType === 'paid';
+													const isPaidPart = sub.subType === 'paid' && Boolean(
+														sub.receivedDate &&
+														String(sub.receivedDate).trim() &&
+														String(sub.receivedDate).trim() !== '-' &&
+														String(sub.receivedDate).trim() !== '—' &&
+														parseDDMMYYYY(String(sub.receivedDate).trim()) !== null
+													);
 													const isSubRecdDateFilled = Boolean(
 														sub.receivedDate &&
 														String(sub.receivedDate).trim() &&
 														String(sub.receivedDate).trim() !== '-' &&
-														String(sub.receivedDate).trim() !== '-'
+														String(sub.receivedDate).trim() !== '—'
 													);
 													const isSubRecdDateValid = Boolean(
 														isSubRecdDateFilled &&
@@ -10327,7 +10337,7 @@ export function JointLoanDetailsPage({
 													);
 
 													// Payout approval state for sub-row (never approve/pending on unpaid balance row)
-													const isBalanceRow = !isPaidPart || sub.subType === 'balance';
+													const isBalanceRow = subIdx > 0 ? (!isPaidPart || sub.subType === 'balance') : false;
 													const hasValidSubDueDate = Boolean(sub.dueDate && sub.dueDate !== '-' && sub.dueDate !== '-');
 
 													const isSubPayoutPending = Boolean(
@@ -10389,7 +10399,7 @@ export function JointLoanDetailsPage({
 													return (
 														<tr
 															key={sub.sNo}
-															className={`transition-colors group ${isPaidPart
+															className={`transition-colors group ${!isBalanceRow
 																? 'bg-blue-50/30 hover:bg-blue-50/50 border-l-blue-500'
 																: 'bg-rose-50/30 hover:bg-rose-50/50 border-l-rose-500'
 																}`}
@@ -10401,13 +10411,13 @@ export function JointLoanDetailsPage({
 																		subdirectory_arrow_right
 																	</span>
 																	<div className="absolute left-8 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap z-10">
-																		{!isPaidPart ? (
+																		{isBalanceRow ? (
 																			<span className="text-[8px] font-extrabold px-1.5 rounded uppercase tracking-wider bg-rose-100 text-rose-800 ring-1 ring-rose-300">
 																				Balance
 																			</span>
 																		) : (
 																			<span className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider bg-blue-100 text-blue-800 ring-1 ring-blue-300">
-																				{(sub.subLabel || 'Payment #2').replace(/\s*\(Balance\)/gi, '')}
+																				{(sub.subLabel || (subIdx === 0 ? 'Payment #1' : `Payment #${subIdx + 1}`)).replace(/\s*\(Balance\)/gi, '')}
 																			</span>
 																		)}
 																		{sub.remarks && (
@@ -10432,20 +10442,20 @@ export function JointLoanDetailsPage({
 
 															{/* Sub-row Amount: Click balance amount to create partial payment from balance */}
 															<td
-																className={`py-2.5 px-3.5 text-right font-black text-[13px] whitespace-nowrap ${isPaidPart
+																className={`py-2.5 px-3.5 text-right font-black text-[13px] whitespace-nowrap ${!isBalanceRow
 																	? 'text-blue-900'
 																	: !isSecEditor
 																		? 'text-rose-900 cursor-pointer hover:underline hover:text-rose-950 transition-colors'
 																		: 'text-rose-900'
 																	}`}
 																onClick={(e) => {
-																	if (!isPaidPart && !isSecEditor) {
+																	if (isBalanceRow && !isSecEditor) {
 																		e.stopPropagation();
 																		setSplitModalTarget(inst);
 																	}
 																}}
 																title={
-																	!isPaidPart
+																	isBalanceRow
 																		? isSecEditor
 																			? 'Partial payments cannot be created for secondary account loans'
 																			: 'Click balance amount to create partial payment'
@@ -10549,7 +10559,7 @@ export function JointLoanDetailsPage({
 
 															{/* Sub-row Action (Payout Approval) */}
 															<td
-																className={`py-2 px-1 w-16 min-w-[64px] max-w-[64px] text-center whitespace-nowrap sticky right-0 z-10 border-l border-slate-200/80 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] ${isPaidPart ? 'bg-blue-50/50 group-hover:bg-blue-100/60' : 'bg-rose-50/50 group-hover:bg-rose-100/60'
+																className={`py-2 px-1 w-16 min-w-[64px] max-w-[64px] text-center whitespace-nowrap sticky right-0 z-10 border-l border-slate-200/80 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] ${!isBalanceRow ? 'bg-blue-50/50 group-hover:bg-blue-100/60' : 'bg-rose-50/50 group-hover:bg-rose-100/60'
 																	}`}
 															>
 																<div className="flex items-center justify-center">
@@ -11679,7 +11689,7 @@ export function JointLoanDetailsPage({
 												<div key={`sec-input-${tag}-${idx}`} className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-2">
 													<div className="flex items-center justify-between pb-1 border-b border-slate-100">
 														<span className="truncate text-[11.5px] font-bold text-slate-800" title={sec.accountName || tag}>
-															{tag} ({sharePct}%)
+															{tag} ({formatSharePercent(sharePct)}%)
 														</span>
 														<span className="text-[9px] text-purple-700 font-bold uppercase bg-purple-50 px-1.5 rounded ring-1 ring-purple-200">
 															Secondary
