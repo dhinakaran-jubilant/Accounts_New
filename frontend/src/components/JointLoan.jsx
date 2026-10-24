@@ -6123,7 +6123,7 @@ export function JointLoanDetailsPage({
 
 				result.push(mainRow);
 			} else {
-				const override = scheduleOverrides[inst.sNo];
+				const override = scheduleOverrides[inst.sNo] || scheduleOverrides[Number(inst.sNo)] || scheduleOverrides[String(inst.sNo)];
 				const merged = override ? { ...inst, ...override } : { ...inst };
 				merged.displaySNo = `#${String(inst.sNo).padStart(2, '0')}`;
 				merged.isPartial = false;
@@ -6931,9 +6931,6 @@ export function JointLoanDetailsPage({
 			splitInstallments[Number(sNo)]
 		);
 
-		// Once payout date approved, cannot clear/edit even system admin
-		if (isAlreadyApproved || isAnySubApproved) return;
-
 		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
 		// If clear is applied on a partial EMI, remove the split and sub-rows as well
 		setSplitInstallments((prev) => {
@@ -6956,13 +6953,19 @@ export function JointLoanDetailsPage({
 			const next = { ...prev };
 			delete next[`${sNo}A`];
 			delete next[`${sNo}B`];
-			next[sNo] = {
-				...(next[sNo] || {}),
+			const clearedItem = {
+				...(next[sNo] || next[Number(sNo)] || next[String(sNo)] || {}),
 				receivedDate: '',
 				dueDate: '-',
 				payout_approval_status: null,
 				payoutApprovalStatus: null,
+				payout_approved_by: null,
+				payout_approved_at: null,
+				status: 'Active',
 			};
+			next[sNo] = clearedItem;
+			next[Number(sNo)] = clearedItem;
+			next[String(sNo)] = clearedItem;
 			return next;
 		});
 
@@ -6996,14 +6999,40 @@ export function JointLoanDetailsPage({
 			if (isPartial) {
 				api.revertLoanSplit(loanIdentifier, sNo).catch(() => { });
 			}
-			api.saveScheduleOverride(loanIdentifier, { sNo, field: 'receivedDate', value: '', historyEntry: histEntry }).catch(() => { });
-			api.saveScheduleOverride(loanIdentifier, { sNo, field: 'dueDate', value: '-' }).catch(() => { });
+			api.saveScheduleOverride(loanIdentifier, {
+				sNo,
+				field: 'receivedDate',
+				value: '',
+				payout_approval_status: null,
+				payoutApprovalStatus: null,
+				historyEntry: histEntry,
+			}).catch(() => { });
+			api.saveScheduleOverride(loanIdentifier, {
+				sNo,
+				field: 'dueDate',
+				value: '-',
+				payout_approval_status: null,
+				payoutApprovalStatus: null,
+			}).catch(() => { });
 		}
 
-		if (onUpdateLoan && loan && isPartial) {
+		if (onUpdateLoan && loan) {
 			const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
-				if (sch.sNo === sNo || sch.sNo === Number(sNo)) {
-					return { ...sch, splits: null };
+				if (sch.sNo === sNo || sch.sNo === Number(sNo) || String(sch.sNo || sch.installmentNumber) === String(sNo)) {
+					return {
+						...sch,
+						...(isPartial ? { splits: null } : {}),
+						receivedDate: '',
+						received_date: null,
+						dueDate: '-',
+						paymentDate: null,
+						payment_date: null,
+						payout_approval_status: null,
+						payoutApprovalStatus: null,
+						payout_approved_by: null,
+						payout_approved_at: null,
+						status: 'Active',
+					};
 				}
 				return sch;
 			});
@@ -9572,8 +9601,6 @@ export function JointLoanDetailsPage({
 									const canClearRow =
 										isFinallyApproved &&
 										!isSecEditor &&
-										!isMainRowPayoutApproved &&
-										!isAnySubApproved &&
 										(isRecdDateFilled ||
 											isPayoutDateFilled ||
 											Boolean(

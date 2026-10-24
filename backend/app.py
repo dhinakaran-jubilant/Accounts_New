@@ -1662,6 +1662,14 @@ def revert_loan_split(loan_id, s_no):
                 loan.repayment_schedule[target_idx].splits = None
                 loan.repayment_schedule[target_idx].received_date = None
                 loan.repayment_schedule[target_idx].payment_date = None
+                loan.repayment_schedule[target_idx].payout_approval_status = None
+                loan.repayment_schedule[target_idx].payout_approval_target = None
+                loan.repayment_schedule[target_idx].payout_requested_role = None
+                loan.repayment_schedule[target_idx].payout_requested_by = None
+                loan.repayment_schedule[target_idx].payout_requested_at = None
+                loan.repayment_schedule[target_idx].payout_approved_by = None
+                loan.repayment_schedule[target_idx].payout_approved_at = None
+                loan.repayment_schedule[target_idx].payout_notes = None
                 db.session.commit()
         except Exception as e:
             db.session.rollback()
@@ -1845,11 +1853,21 @@ def save_schedule_override(loan_id):
                                     (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
                                 ))
                             )
-                            if is_already_approved:
+                            is_clearing = not value or str(value).strip() in ('-', '—', '')
+                            if is_already_approved and not is_clearing:
                                 return jsonify({"error": "Payout date is already approved. Dates cannot be edited."}), 400
                         if field == 'receivedDate':
-                            sch.received_date = value
-                            if is_admin_user:
+                            sch.received_date = value if value and str(value).strip() not in ('-', '—', '') else None
+                            if not sch.received_date:
+                                sch.payout_approval_status = None
+                                sch.payout_approval_target = None
+                                sch.payout_requested_role = None
+                                sch.payout_requested_by = None
+                                sch.payout_requested_at = None
+                                sch.payout_approved_by = None
+                                sch.payout_approved_at = None
+                                sch.payout_notes = None
+                            elif is_admin_user:
                                 if value and str(value).strip() not in ('-', '—', ''):
                                     sch.payout_approval_status = 'APPROVED'
                                     sch.payout_approval_target = None
