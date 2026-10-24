@@ -6589,7 +6589,7 @@ export function JointLoanDetailsPage({
 				remarksB: remB,
 				...(isThirdPayment ? {
 					amountC: amtC,
-					recdDateC,
+					recdDateC: dateRecdC,
 					dueDateC: dateDueC,
 					remarksC: remC,
 					priAmountC: thisPriAmount,
