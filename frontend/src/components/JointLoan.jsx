@@ -519,8 +519,8 @@ export const getLoanAccountDetails = (loan) => {
 
 		return loan.accountDetails.map((acc) => {
 			let sharePct = (totalPrin > 0 && acc.principal != null && Number(acc.principal) > 0)
-				? Number(formatSharePercent(((Number(acc.principal) || 0) / totalPrin) * 100))
-				: (acc.share != null ? Number(formatSharePercent(acc.share)) : 0);
+				? ((Number(acc.principal) || 0) / totalPrin) * 100
+				: (acc.share != null ? Number(acc.share) : 0);
 			if (acc.isPrimary) {
 				if (totalSecShare >= 100 || (Number(acc.principal) === 0 && totalSecShare > 0)) {
 					sharePct = Math.max(0, 100 - totalSecShare);
@@ -566,20 +566,19 @@ export const getLoanAccountDetails = (loan) => {
 	const rawLoanPriShare = loan.primaryShare ?? loan.primary_account_share ?? loan.primarySharePct;
 	let pShare = 60;
 	if (totalAmount > 0 && loan.primary_account_amount != null && Number(loan.primary_account_amount) > 0) {
-		pShare = Number(formatSharePercent(((Number(loan.primary_account_amount) || 0) / totalAmount) * 100));
+		pShare = ((Number(loan.primary_account_amount) || 0) / totalAmount) * 100;
 	} else if (loan.secondaryAccounts && loan.secondaryAccounts.length > 0) {
 		const secPctSum = loan.secondaryAccounts.reduce((sum, s) => sum + Number(s.share || s.percentage || 0), 0);
 		if (secPctSum >= 100 || (loan.primary_account_amount != null && Number(loan.primary_account_amount) === 0)) {
 			pShare = Math.max(0, 100 - secPctSum);
 		} else if (rawLoanPriShare != null && rawLoanPriShare !== '') {
-			pShare = Number(formatSharePercent(rawLoanPriShare));
+			pShare = Number(rawLoanPriShare);
 		} else {
 			pShare = Math.max(0, 100 - secPctSum);
 		}
 	} else if (rawLoanPriShare != null && rawLoanPriShare !== '') {
-		pShare = Number(formatSharePercent(rawLoanPriShare));
+		pShare = Number(rawLoanPriShare);
 	}
-	pShare = Number(formatSharePercent(pShare));
 
 	const pPrincipal = pShare === 0
 		? 0
@@ -625,8 +624,8 @@ export const getLoanAccountDetails = (loan) => {
 			const r = Math.round((rawRate + 0.2) * 100) / 100;
 			const rawSecShare = (p > 0 && totalAmount > 0)
 				? ((p / totalAmount) * 100)
-				: (sec.share != null ? sec.share : (sec.percentage != null ? sec.percentage : ((100 - pShare) / Math.max(1, validSecAccounts.length))));
-			const secShare = Number(formatSharePercent(rawSecShare));
+				: (sec.share != null ? Number(sec.share) : (sec.percentage != null ? Number(sec.percentage) : ((100 - pShare) / Math.max(1, validSecAccounts.length))));
+			const secShare = rawSecShare;
 			const interestVal = hasSchedRepay
 				? Math.round((totalFacilityInterest * secShare) / 100)
 				: (Number(sec.interest || sec.interest_amount) || calculateInterest(p, r, secShare));
@@ -693,13 +692,15 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 	};
 	const secAccs = effectiveAccounts.filter((a) => !a.isPrimary);
 
-	const priSharePct = (primaryAcc && primaryAcc.share != null && primaryAcc.share !== '' && !isNaN(Number(primaryAcc.share)))
-		? Number(primaryAcc.share)
-		: (secAccs.length > 0
-			? Math.max(0, 100 - secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0))
-			: ((loan.primaryShare != null && loan.primaryShare !== '')
-				? Number(loan.primaryShare)
-				: (loan.primary_account_share != null ? Number(loan.primary_account_share) : 60)));
+	const priSharePct = (primaryAcc && primaryAcc.principal != null && Number(primaryAcc.principal) > 0 && totalAmount > 0)
+		? ((Number(primaryAcc.principal) / totalAmount) * 100)
+		: ((primaryAcc && primaryAcc.share != null && primaryAcc.share !== '' && !isNaN(Number(primaryAcc.share)))
+			? Number(primaryAcc.share)
+			: (secAccs.length > 0
+				? Math.max(0, 100 - secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0))
+				: ((loan.primaryShare != null && loan.primaryShare !== '')
+					? Number(loan.primaryShare)
+					: (loan.primary_account_share != null ? Number(loan.primary_account_share) : 60))));
 	const secShareSum = secAccs.reduce((s, a) => s + (Number(a.share) || 0), 0);
 	const totalSecShare = secAccs.length > 0 && secShareSum > 0 ? secShareSum : Math.max(0, 100 - priSharePct);
 
@@ -785,9 +786,11 @@ export const generateRepaymentSchedule = (loan, accountsList) => {
 		let remainingInterest = monthlyInterest - priInterest;
 
 		const secAccountsData = secAccs.map((sa, idx) => {
-			const saSharePct = (sa && sa.share != null && sa.share !== '' && !isNaN(Number(sa.share)))
-				? Number(sa.share)
-				: (secAccs.length > 0 ? Math.round(totalSecShare / secAccs.length) : 0);
+			const saSharePct = (sa && sa.principal != null && Number(sa.principal) > 0 && totalAmount > 0)
+				? ((Number(sa.principal) / totalAmount) * 100)
+				: ((sa && sa.share != null && sa.share !== '' && !isNaN(Number(sa.share)))
+					? Number(sa.share)
+					: (secAccs.length > 0 ? (totalSecShare / secAccs.length) : 0));
 			const saRepayTotal = (sa && sa.repayAmount != null && sa.repayAmount !== '' && !isNaN(Number(sa.repayAmount)))
 				? Number(sa.repayAmount)
 				: Math.round((totalFacilityRepay * saSharePct) / 100);
@@ -4407,10 +4410,15 @@ function EditAllocationsModal({
 											min="0"
 											max="100"
 											step="0.01"
-											value={primaryAcc.share ?? ''}
+											value={typeof primaryAcc.share === 'number' ? formatSharePercent(primaryAcc.share) : (primaryAcc.share ?? '')}
 											placeholder="0"
 											onWheel={(e) => e.target.blur()}
 											onChange={(e) => onAccountChange(primaryAcc.id, 'share', e.target.value)}
+											onBlur={() => {
+												if (primaryAcc.share !== '' && primaryAcc.share != null) {
+													onAccountChange(primaryAcc.id, 'share', Number(primaryAcc.share));
+												}
+											}}
 											className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${primaryAcc.isLocked
 													? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 													: 'border-slate-200 text-slate-800'
@@ -4554,10 +4562,15 @@ function EditAllocationsModal({
 														min="0"
 														max="100"
 														step="0.01"
-														value={sec.share ?? ''}
+														value={typeof sec.share === 'number' ? formatSharePercent(sec.share) : (sec.share ?? '')}
 														placeholder="0"
 														onWheel={(e) => e.target.blur()}
 														onChange={(e) => onAccountChange(sec.id, 'share', e.target.value)}
+														onBlur={() => {
+															if (sec.share !== '' && sec.share != null) {
+																onAccountChange(sec.id, 'share', Number(sec.share));
+															}
+														}}
 														className={`w-full h-10 pl-3 pr-7 text-[12px] font-bold bg-white border rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all ${sec.isLocked
 																? 'border-amber-400/90 bg-amber-50/25 ring-1 ring-amber-300/40 text-amber-950'
 																: 'border-slate-200 text-slate-800'
@@ -7525,10 +7538,10 @@ export function JointLoanDetailsPage({
 		return secAccount?.accountTag || secAccount?.initials || 'SEC';
 	}, [secAccount]);
 
-	const primarySharePct = primaryAccount?.share != null && primaryAccount.share !== ''
-		? Number(primaryAccount.share)
-		: (accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0) > 0 && primaryAccount?.principal != null
-			? ((Number(primaryAccount.principal) || 0) / accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0)) * 100
+	const primarySharePct = (accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0) > 0 && primaryAccount?.principal != null && Number(primaryAccount.principal) > 0)
+		? ((Number(primaryAccount.principal) / accounts.reduce((sum, a) => sum + (Number(a.principal) || 0), 0)) * 100)
+		: (primaryAccount?.share != null && primaryAccount.share !== ''
+			? Number(primaryAccount.share)
 			: (secAccounts.length > 0 ? Math.max(0, 100 - secAccounts.reduce((sum, s) => sum + Number(s.share || 0), 0)) : 60));
 
 	// Per-secondary-account totals across all schedule rows
@@ -8377,7 +8390,7 @@ export function JointLoanDetailsPage({
 
 			const calcFinancials = (acc, principal, share) => {
 				const p = Math.max(0, Number(principal) || 0);
-				const s = Math.round((Number(share) || 0) * 100) / 100;
+				const s = (totalAmt > 0 && p > 0) ? (p / totalAmt) * 100 : (Number(share) || 0);
 				const interestVal = facilityTotalInterest > 0
 					? Math.round((facilityTotalInterest * s) / 100)
 					: Math.round(p * (Number(acc.interestRate || loan.rate || 7.2) / 100) * (tenureYears * 0.55));
@@ -8399,13 +8412,13 @@ export function JointLoanDetailsPage({
 			const updatedSurviving = survivingAccounts.map((acc, idx) => {
 				const isLast = idx === survivingAccounts.length - 1;
 				if (isLast) {
-					const finalShare = Math.max(0, Math.round((100 - allocatedShareSum) * 100) / 100);
+					const finalShare = Math.max(0, 100 - allocatedShareSum);
 					const finalPrincipal = Math.max(0, totalAmt - allocatedPrincipalSum);
 					return calcFinancials(acc, finalPrincipal, finalShare);
 				}
 
 				const weight = survivingShareSum > 0 ? (parseFloat(acc.share) || 0) / survivingShareSum : 1 / survivingAccounts.length;
-				const accShare = Math.max(0, Math.round((100 * weight) * 100) / 100);
+				const accShare = Math.max(0, 100 * weight);
 				const accPrincipal = Math.max(0, Math.round(totalAmt * weight));
 
 				allocatedShareSum += accShare;
@@ -8473,13 +8486,15 @@ export function JointLoanDetailsPage({
 			const calcFinancials = (acc, principal, share) => {
 				const p = principal === '' ? '' : Math.max(0, Number(principal) || 0);
 				const isTypingDecimal = typeof share === 'string' && (share.endsWith('.') || share.match(/\.\d*0$/));
-				const s = share === '' ? '' : (isTypingDecimal ? share : Number(formatSharePercent(share)));
-				const sharePct = s !== '' ? Number(s) : (facilityTotalPrincipal > 0 && p !== '' ? (Number(p) / facilityTotalPrincipal) * 100 : 0);
+				const s = share === '' ? '' : (isTypingDecimal ? share : Number(share));
+				const exactSharePct = (facilityTotalPrincipal > 0 && p !== '')
+					? (Number(p) / facilityTotalPrincipal) * 100
+					: (s !== '' ? Number(s) : 0);
 
 				let interestVal;
 				if (facilityTotalInterest > 0) {
-					// Interest updated based on % share of total facility interest
-					interestVal = Math.round((facilityTotalInterest * sharePct) / 100);
+					// Interest updated based on % share of total facility interest using exact share %
+					interestVal = Math.round((facilityTotalInterest * exactSharePct) / 100);
 				} else {
 					const r = Number(acc.interestRate) || Number(loan.rate) || 7.2;
 					interestVal = Math.round((p === '' ? 0 : p) * (r / 100) * (tenureYears * 0.55));
@@ -8489,7 +8504,7 @@ export function JointLoanDetailsPage({
 				return {
 					...acc,
 					principal: p,
-					share: s,
+					share: isTypingDecimal ? share : (s !== '' ? (field === 'share' ? s : exactSharePct) : ''),
 					interest: interestVal,
 					repayAmount: numP + interestVal,
 					tds: !acc.isPrimary ? Math.round(interestVal * 0.1) : 0,
@@ -8586,7 +8601,7 @@ export function JointLoanDetailsPage({
 						: Math.min(totalFacilityPrincipal, Math.max(0, parsed));
 					newTargetShare =
 						totalFacilityPrincipal > 0
-							? Number(formatSharePercent((newTargetPrincipal / totalFacilityPrincipal) * 100))
+							? (newTargetPrincipal / totalFacilityPrincipal) * 100
 							: 0;
 				}
 			}
@@ -8604,13 +8619,13 @@ export function JointLoanDetailsPage({
 				if (newTargetPrincipal > maxAllowedPrincipal) {
 					newTargetPrincipal = maxAllowedPrincipal;
 					newTargetShare = totalFacilityPrincipal > 0
-						? Number(formatSharePercent((newTargetPrincipal / totalFacilityPrincipal) * 100))
+						? (newTargetPrincipal / totalFacilityPrincipal) * 100
 						: 0;
 				}
 			}
 
 			// Remaining share and principal to be allocated to the unlocked accounts
-			const remainingShare = Math.max(0, Number(formatSharePercent(100 - newTargetShare - lockedShareSum)));
+			const remainingShare = Math.max(0, 100 - newTargetShare - lockedShareSum);
 			const remainingPrincipal = Math.max(0, totalFacilityPrincipal - newTargetPrincipal - lockedPrincipalSum);
 
 			// Distribute remainingShare & remainingPrincipal across unlockedOthers
@@ -8635,7 +8650,7 @@ export function JointLoanDetailsPage({
 				unlockedAllocations = unlockedOthers.map((acc, idx) => {
 					const isLast = idx === unlockedOthers.length - 1;
 					if (isLast) {
-						const finalShare = Math.max(0, Number(formatSharePercent(remainingShare - allocatedShareSum)));
+						const finalShare = Math.max(0, remainingShare - allocatedShareSum);
 						const finalPrincipal = Math.max(0, remainingPrincipal - allocatedPrincipalSum);
 						return {
 							id: acc.id,
@@ -8651,7 +8666,7 @@ export function JointLoanDetailsPage({
 						shareWeight = 1 / unlockedOthers.length;
 					}
 
-					const accShare = Math.max(0, Number(formatSharePercent(remainingShare * shareWeight)));
+					const accShare = Math.max(0, remainingShare * shareWeight);
 					const accPrincipal = Math.max(0, Math.round(remainingPrincipal * shareWeight));
 
 					allocatedShareSum += accShare;
@@ -10840,8 +10855,8 @@ export function JointLoanDetailsPage({
 								if (isSecondaryLoan || (!isFinallyApproved && !userPerms.isAdmin)) return;
 								setEditAccounts(JSON.parse(JSON.stringify(accounts)).map(acc => {
 									const sharePct = (facilityTotalPrincipal > 0 && acc.principal != null && Number(acc.principal) > 0)
-										? Number(formatSharePercent((Number(acc.principal) / facilityTotalPrincipal) * 100))
-										: (acc.share != null ? Number(formatSharePercent(acc.share)) : 0);
+										? ((Number(acc.principal) / facilityTotalPrincipal) * 100)
+										: (acc.share != null ? Number(acc.share) : 0);
 									const accInt = (facilityTotalInterest > 0 && sharePct != null)
 										? Math.round((facilityTotalInterest * sharePct) / 100)
 										: (Number(acc.interest) || 0);
