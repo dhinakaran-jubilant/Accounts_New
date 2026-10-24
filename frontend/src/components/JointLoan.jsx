@@ -1017,7 +1017,8 @@ export const isEmiPaid = (inst) => {
 			if (Array.isArray(inst.subInstallments) && inst.subInstallments.length > 0) {
 				for (const sub of inst.subInstallments) {
 					const sRecd = sub.receivedDate || sub.received_date || sub.recdDate;
-					const isSubPaid = Boolean(sRecd && String(sRecd).trim() && String(sRecd).trim() !== '-' && String(sRecd).trim() !== '—') ||
+					const isSubPaid = sub.subType === 'paid' ||
+						Boolean(sRecd && String(sRecd).trim() && String(sRecd).trim() !== '-' && String(sRecd).trim() !== '—') ||
 						sub.status === 'Settled' || sub.status === 'Collected' || sub.status === 'Paid';
 					if (isSubPaid) {
 						totalPaid += Number(sub.amount) || 0;
@@ -1026,7 +1027,8 @@ export const isEmiPaid = (inst) => {
 			} else if (inst.partialPaidAmount !== undefined) {
 				totalPaid = Number(inst.partialPaidAmount) || 0;
 			}
-			if (totalPaid < fullAmount) return false;
+			if (totalPaid < fullAmount && !inst.isRowFullyPaid && inst.partialBalAmount !== 0) return false;
+			return true;
 		}
 	}
 
@@ -1043,14 +1045,68 @@ export const isEmiPaid = (inst) => {
 			const pB = hasRecdB ? Number(sp.amountB ?? sp.balAmount ?? 0) : 0;
 			const hasRecdC = Boolean(sp.recdDateC && String(sp.recdDateC).trim() && sp.recdDateC !== '-' && sp.recdDateC !== '—');
 			const pC = hasRecdC ? Number(sp.amountC ?? 0) : 0;
-			if (fullAmount > 0 && (pA + pB + pC) < fullAmount) return false;
+			const paidSum = pA + pB + pC;
+			if (fullAmount > 0 && paidSum < fullAmount && !sp.isFinalSettled) return false;
+			return true;
 		}
 	}
 
-	if (status === 'settled' || status === 'paid') return true;
-	const recd = inst.receivedDate || inst.received_date || inst.paymentDate || inst.payment_date;
-	if (recd && recd !== '-' && recd !== '—') return true;
+	if (status === 'settled' || status === 'paid' || status === 'collected') return true;
+	const recd = inst.receivedDate || inst.received_date || inst.paymentDate || inst.payment_date || inst.recdDate || inst.recd_date;
+	if (recd && String(recd).trim() && String(recd).trim() !== '-' && String(recd).trim() !== '—') return true;
 	return false;
+};
+
+// Calculate total remaining balance for a repayment schedule
+export const getScheduleTotalBalance = (schedule) => {
+	if (!Array.isArray(schedule) || schedule.length === 0) return 0;
+	let totalAmount = 0;
+	let totalPaid = 0;
+
+	for (const inst of schedule) {
+		if (!inst) continue;
+		const fullAmount = Number(inst.amount) || 0;
+		totalAmount += fullAmount;
+
+		if (inst.isPartial && Array.isArray(inst.subInstallments) && inst.subInstallments.length > 0) {
+			let subPaid = 0;
+			for (const sub of inst.subInstallments) {
+				const sRecd = sub.receivedDate || sub.received_date || sub.recdDate;
+				const isPaid = sub.subType === 'paid' ||
+					sub.status === 'Settled' ||
+					sub.status === 'Collected' ||
+					sub.status === 'Paid' ||
+					Boolean(sRecd && String(sRecd).trim() && String(sRecd).trim() !== '-' && String(sRecd).trim() !== '—');
+				if (isPaid) {
+					subPaid += Number(sub.amount) || 0;
+				}
+			}
+			totalPaid += Math.min(fullAmount, subPaid);
+		} else if (inst.isPartial && inst.partialPaidAmount !== undefined) {
+			totalPaid += Math.min(fullAmount, Number(inst.partialPaidAmount) || 0);
+		} else if (inst.splits) {
+			let sp = inst.splits;
+			if (typeof sp === 'string') {
+				try { sp = JSON.parse(sp); } catch (e) { sp = null; }
+			}
+			if (sp && typeof sp === 'object') {
+				const pA = Number(sp.amountA ?? sp.paidAmount ?? 0);
+				const hasRecdB = Boolean(sp.recdDateB && String(sp.recdDateB).trim() && sp.recdDateB !== '-' && sp.recdDateB !== '—');
+				const pB = hasRecdB ? Number(sp.amountB ?? sp.balAmount ?? 0) : 0;
+				const hasRecdC = Boolean(sp.recdDateC && String(sp.recdDateC).trim() && sp.recdDateC !== '-' && sp.recdDateC !== '—');
+				const pC = hasRecdC ? Number(sp.amountC ?? 0) : 0;
+				totalPaid += Math.min(fullAmount, pA + pB + pC);
+			}
+		} else {
+			const recd = inst.receivedDate || inst.received_date || inst.paymentDate || inst.payment_date || inst.recdDate || inst.recd_date;
+			const isPaid = Boolean(recd && String(recd).trim() && String(recd).trim() !== '-' && String(recd).trim() !== '—') ||
+				inst.status === 'Settled' || inst.status === 'Collected' || inst.status === 'Paid';
+			if (isPaid) {
+				totalPaid += fullAmount;
+			}
+		}
+	}
+	return Math.max(0, totalAmount - totalPaid);
 };
 
 // Check if an installment / EMI is overdue:
@@ -1210,11 +1266,9 @@ export const areAllPayoutsApproved = (loan) => {
 };
 
 // Compute loan status based on EMI schedule and approval status:
-// - Pending: if any payout date approval is pending, or if pending initial approval
-// Compute loan status based on EMI schedule and approval status:
-// - Pending: if any payout date approval is pending (recd/payout date filled and not approved by sec manager), or if pending initial approval
-// - Closed: all EMIs are paid AND all payout dates are approved
+// - Closed: all EMIs are completed and total balance is 0
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
+// - Pending: if any payout date approval is pending, or if pending initial approval
 // - Active: all emi's recd/payout date approved by sec manager and no emi date is crossed today date
 export const getComputedLoanStatus = (loan, customSchedule) => {
 	if (!loan) return 'Active';
@@ -1240,6 +1294,18 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 			? loan.repaymentSchedule
 			: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []));
 
+	if (!schedule || schedule.length === 0) {
+		return loan.status || 'Active';
+	}
+
+	// Rule: in repayment schedule, all emi are completed and total balance is 0, that loan status is Closed
+	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
+	const totalBalance = getScheduleTotalBalance(schedule);
+
+	if (allEmisPaid && totalBalance === 0) {
+		return 'Closed';
+	}
+
 	// Rule: overdue means if any emi date is crossed today date and emi has unpaid balance
 	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
 	if (hasOverdue) {
@@ -1248,15 +1314,6 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 
 	// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
 	const hasPayoutPending = isLoanPayoutPending(loan);
-
-	// Closed: only once all payout dates are approved AND all EMIs are paid
-	const allPayoutsApproved = areAllPayoutsApproved(loan);
-	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
-
-	if (!hasPayoutPending && allPayoutsApproved && allEmisPaid) {
-		return 'Closed';
-	}
-
 	if (hasPayoutPending) {
 		return 'Pending';
 	}
@@ -6424,15 +6481,31 @@ export function JointLoanDetailsPage({
 		return repaymentSchedule.flatMap((inst) => [inst, ...(inst.subInstallments || [])]);
 	}, [repaymentSchedule]);
 
-	// Keep currentStatus in sync with repaymentSchedule (if loan has balance and crossed EMI dates, status is Overdue)
+	// Keep currentStatus in sync with repaymentSchedule (if loan has balance and crossed EMI dates, status is Overdue; if all emi completed and balance 0, status is Closed)
 	useEffect(() => {
 		if (loan) {
 			const compStatus = getComputedLoanStatus(loan, repaymentSchedule);
 			if (compStatus && compStatus !== currentStatus) {
 				setCurrentStatus(compStatus);
+				if (compStatus !== loan.status && onUpdateLoan) {
+					const badgeInfo = getStatusBadge(compStatus);
+					const updated = {
+						...loan,
+						status: compStatus,
+						statusColor: badgeInfo.color,
+						statusDot: badgeInfo.dot,
+					};
+					onUpdateLoan(updated);
+					const loanIdentifier = loan?.db_id || loan?.id;
+					if (api.updateJointLoan && loanIdentifier) {
+						api.updateJointLoan(loanIdentifier, { status: compStatus, db_id: loan?.db_id }).catch((err) => {
+							console.warn('Could not persist status update to backend:', err);
+						});
+					}
+				}
 			}
 		}
-	}, [loan, repaymentSchedule, currentStatus]);
+	}, [loan, repaymentSchedule, currentStatus, onUpdateLoan]);
 
 	const handleConfirmSplit = ({
 		sNo,
@@ -9433,12 +9506,18 @@ export function JointLoanDetailsPage({
 						Joint Loan
 					</button>
 					<span className="text-slate-300 font-normal">/</span>
-					<div className="flex items-center gap-2">
+					<div className="flex items-center gap-2 flex-wrap">
 						<span className="font-bold text-[14px] text-slate-900">
 							{loan.primaryBorrower?.name || 'Client'}
 						</span>
 						<span className="font-extrabold text-[11px] text-primary bg-primary/10 px-2 py-0.5 rounded-md ring-1 ring-primary/20 tracking-tight">
 							{loan.id}
+						</span>
+						<span
+							className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${badge.color}`}
+						>
+							<span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+							<span>{currentStatus}</span>
 						</span>
 						{isSecondaryLoan && (
 							<span className="font-bold text-[11px] text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md ring-1 ring-amber-200 flex items-center gap-1">
