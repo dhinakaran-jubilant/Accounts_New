@@ -5127,32 +5127,42 @@ export function JointLoanDetailsPage({
 			setAccounts(accs);
 			setEditAccounts(accs);
 			setCurrentStatus(getComputedLoanStatus(loan) || loan.status);
-			if (loan.repaymentSchedule && Array.isArray(loan.repaymentSchedule)) {
+			const rawSch = (loan.repaymentSchedule && Array.isArray(loan.repaymentSchedule))
+				? loan.repaymentSchedule
+				: ((loan.repayment_schedule && Array.isArray(loan.repayment_schedule)) ? loan.repayment_schedule : null);
+			if (rawSch) {
 				const fromLoan = {};
-				loan.repaymentSchedule.forEach((sch) => {
+				const nullSplits = new Set();
+				rawSch.forEach((sch) => {
+					const sno = sch.sNo || sch.s_no || sch.installmentNumber;
 					if (sch.splits) {
-						fromLoan[sch.sNo] = sch.splits;
+						fromLoan[sno] = sch.splits;
+					} else if (sch.splits === null) {
+						nullSplits.add(String(sno));
+						nullSplits.add(Number(sno));
 					}
 				});
-				if (Object.keys(fromLoan).length > 0) {
-					setSplitInstallments((prev) => {
-						const next = { ...fromLoan, ...prev };
-						Object.keys(fromLoan).forEach((k) => {
-							const existing = prev[k] || {};
-							const incoming = fromLoan[k] || {};
-							next[k] = { ...incoming, ...existing };
-							const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
-							amountKeys.forEach((ak) => {
-								if (existing[ak] !== undefined && (next[ak] === undefined || next[ak] === null)) {
-									next[ak] = existing[ak];
-								} else if (incoming[ak] !== undefined && (next[ak] === undefined || next[ak] === null)) {
-									next[ak] = incoming[ak];
-								}
-							});
-						});
-						return next;
+				setSplitInstallments((prev) => {
+					const next = { ...fromLoan, ...prev };
+					nullSplits.forEach((k) => {
+						delete next[k];
 					});
-				}
+					Object.keys(fromLoan).forEach((k) => {
+						if (nullSplits.has(k)) return;
+						const existing = prev[k] || {};
+						const incoming = fromLoan[k] || {};
+						next[k] = { ...incoming, ...existing };
+						const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
+						amountKeys.forEach((ak) => {
+							if (existing[ak] !== undefined && (next[ak] === undefined || next[ak] === null)) {
+								next[ak] = existing[ak];
+							} else if (incoming[ak] !== undefined && (next[ak] === undefined || next[ak] === null)) {
+								next[ak] = incoming[ak];
+							}
+						});
+					});
+					return next;
+				});
 			}
 		}
 	}, [loan]);
@@ -5795,7 +5805,13 @@ export function JointLoanDetailsPage({
 	const repaymentSchedule = useMemo(() => {
 		const result = [];
 		for (const inst of baseRepaymentSchedule) {
-			const splitInfo = splitInstallments[inst.sNo] || splitInstallments[Number(inst.sNo)] || splitInstallments[String(inst.sNo)];
+			const sNoStr = String(inst.sNo);
+			const sNoNum = Number(inst.sNo);
+			const override = scheduleOverrides[inst.sNo] || scheduleOverrides[sNoNum] || scheduleOverrides[sNoStr];
+			const isExplicitlyClearedSplit = override && override.splits === null;
+			const splitInfo = isExplicitlyClearedSplit
+				? null
+				: (splitInstallments[inst.sNo] || splitInstallments[sNoNum] || splitInstallments[sNoStr]);
 			if (splitInfo) {
 				const fullAmount = Number(inst.amount) || 0;
 				let resolvedPaidA = splitInfo.amountA ?? splitInfo.paidAmount ?? splitInfo.paid_amount ?? splitInfo.amount_a ?? splitInfo.thisPaidAmount ?? splitInfo.firstPaidAmount;
@@ -6898,65 +6914,59 @@ export function JointLoanDetailsPage({
 		const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
 		if (isSecEditor) return;
 
-		const currentInst = allScheduleItems.find((item) => String(item.sNo) === String(sNo)) || {};
-		const instOverrides = scheduleOverrides[sNo] || {};
-		const effectiveDueDate = instOverrides.dueDate !== undefined ? instOverrides.dueDate : currentInst.dueDate;
-		const isAlreadyApproved = Boolean(
-			effectiveDueDate &&
-			effectiveDueDate !== '-' &&
-			effectiveDueDate !== '-' &&
-			(instOverrides.payout_approval_status === 'APPROVED' ||
-				instOverrides.payoutApprovalStatus === 'APPROVED' ||
-				currentInst.status === 'Settled' ||
-				(!instOverrides.payout_approval_status && currentInst.payout_approval_status === 'APPROVED') ||
-				(!instOverrides.payoutApprovalStatus && currentInst.payoutApprovalStatus === 'APPROVED'))
-		);
-		const isAnySubApproved = Boolean(
-			currentInst.isPartial &&
-			currentInst.subInstallments?.some(
-				(sub) =>
-					sub.dueDate &&
-					sub.dueDate !== '-' &&
-					sub.dueDate !== '-' &&
-					(sub.status === 'Settled' ||
-						sub.payout_approval_status === 'APPROVED' ||
-						sub.payoutApprovalStatus === 'APPROVED')
-			)
-		);
-		const isPartialPayment = Boolean(
-			currentInst.isPartial ||
-			currentInst.isSubRow ||
-			currentInst.parentSNo ||
+		const sNoStr = String(sNo);
+		const sNoNum = Number(sNo);
+		const currentInst = allScheduleItems.find(
+			(item) => String(item.sNo) === sNoStr || String(item.installmentNumber) === sNoStr
+		) || {};
+
+		const isPartial = Boolean(
 			splitInstallments[sNo] ||
-			splitInstallments[Number(sNo)]
+			splitInstallments[sNoNum] ||
+			splitInstallments[sNoStr] ||
+			currentInst.isPartial ||
+			currentInst.splits ||
+			(currentInst.subInstallments && currentInst.subInstallments.length > 0) ||
+			(loan?.repaymentSchedule && loan.repaymentSchedule.some((sch) => String(sch.sNo || sch.s_no || sch.installmentNumber) === sNoStr && sch.splits)) ||
+			(loan?.repayment_schedule && loan.repayment_schedule.some((sch) => String(sch.sNo || sch.s_no || sch.installmentNumber) === sNoStr && sch.splits)) ||
+			(baseRepaymentSchedule && baseRepaymentSchedule.some((sch) => String(sch.sNo || sch.installmentNumber) === sNoStr && sch.splits))
 		);
 
-		const isPartial = Boolean(splitInstallments[sNo] || splitInstallments[Number(sNo)]);
-		// If clear is applied on a partial EMI, remove the split and sub-rows as well
+		// If clear is applied on a partial EMI, remove the split and child sub-rows completely
 		setSplitInstallments((prev) => {
-			if (!prev[sNo] && !prev[Number(sNo)]) return prev;
 			const next = { ...prev };
 			delete next[sNo];
-			delete next[Number(sNo)];
+			delete next[sNoNum];
+			delete next[sNoStr];
 			return next;
 		});
 
 		setExpandedRows((prev) => {
-			if (!prev[sNo] && !prev[Number(sNo)]) return prev;
 			const next = { ...prev };
 			delete next[sNo];
-			delete next[Number(sNo)];
+			delete next[sNoNum];
+			delete next[sNoStr];
 			return next;
 		});
 
 		setScheduleOverrides((prev) => {
 			const next = { ...prev };
+			// Delete child sub-installment overrides completely
 			delete next[`${sNo}A`];
 			delete next[`${sNo}B`];
+			delete next[`${sNoStr}A`];
+			delete next[`${sNoStr}B`];
+			if (!isNaN(sNoNum)) {
+				delete next[`${sNoNum}A`];
+				delete next[`${sNoNum}B`];
+			}
 			const clearedItem = {
-				...(next[sNo] || next[Number(sNo)] || next[String(sNo)] || {}),
+				...(next[sNo] || next[sNoNum] || next[sNoStr] || {}),
 				receivedDate: '',
 				dueDate: '-',
+				splits: null,
+				isPartial: false,
+				subInstallments: undefined,
 				payout_approval_status: null,
 				payoutApprovalStatus: null,
 				payout_approved_by: null,
@@ -6964,13 +6974,25 @@ export function JointLoanDetailsPage({
 				status: 'Active',
 			};
 			next[sNo] = clearedItem;
-			next[Number(sNo)] = clearedItem;
-			next[String(sNo)] = clearedItem;
+			if (!isNaN(sNoNum)) {
+				next[sNoNum] = clearedItem;
+			}
+			next[sNoStr] = clearedItem;
 			return next;
 		});
 
 		delete committedDatesRef.current[`${sNo}_receivedDate`];
 		delete committedDatesRef.current[`${sNo}_dueDate`];
+		delete committedDatesRef.current[`${sNoStr}_receivedDate`];
+		delete committedDatesRef.current[`${sNoStr}_dueDate`];
+		if (!isNaN(sNoNum)) {
+			delete committedDatesRef.current[`${sNoNum}_receivedDate`];
+			delete committedDatesRef.current[`${sNoNum}_dueDate`];
+		}
+		delete committedDatesRef.current[`${sNoStr}A_receivedDate`];
+		delete committedDatesRef.current[`${sNoStr}A_dueDate`];
+		delete committedDatesRef.current[`${sNoStr}B_receivedDate`];
+		delete committedDatesRef.current[`${sNoStr}B_dueDate`];
 		delete committedDatesRef.current[`${sNo}A_receivedDate`];
 		delete committedDatesRef.current[`${sNo}A_dueDate`];
 		delete committedDatesRef.current[`${sNo}B_receivedDate`];
@@ -6979,8 +7001,10 @@ export function JointLoanDetailsPage({
 		const histEntry = {
 			id: `hist_${Date.now()}_clear`,
 			type: 'recd_date_update',
-			title: `EMI #${sNo} Dates Cleared`,
-			description: `EMI #${sNo} client received date and partner payout dates cleared by ${activeUser?.name || 'Staff'}.`,
+			title: isPartial ? `EMI #${sNo} Partial Split & Dates Cleared` : `EMI #${sNo} Dates Cleared`,
+			description: isPartial
+				? `EMI #${sNo} partial split removed and dates cleared by ${activeUser?.name || 'Staff'}.`
+				: `EMI #${sNo} client received date and partner payout dates cleared by ${activeUser?.name || 'Staff'}.`,
 			timestamp: getFormattedNow(),
 			isoDate: new Date().toISOString(),
 			userName: activeUser?.name || activeUser?.employee_code || 'Staff Officer',
@@ -6997,46 +7021,72 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 		if (loanIdentifier) {
 			if (isPartial) {
-				api.revertLoanSplit(loanIdentifier, sNo).catch(() => { });
+				api.revertLoanSplit(loanIdentifier, sNo).then((res) => {
+					if (res?.splits) {
+						setSplitInstallments((prev) => {
+							const next = { ...res.splits };
+							delete next[sNo];
+							delete next[sNoNum];
+							delete next[sNoStr];
+							return next;
+						});
+					}
+				}).catch((err) => {
+					console.warn('Backend split revert warning:', err);
+				});
 			}
 			api.saveScheduleOverride(loanIdentifier, {
-				sNo,
+				sNo: sNoNum || sNo,
 				field: 'receivedDate',
 				value: '',
+				splits: null,
 				payout_approval_status: null,
 				payoutApprovalStatus: null,
 				historyEntry: histEntry,
 			}).catch(() => { });
 			api.saveScheduleOverride(loanIdentifier, {
-				sNo,
+				sNo: sNoNum || sNo,
 				field: 'dueDate',
 				value: '-',
+				splits: null,
 				payout_approval_status: null,
 				payoutApprovalStatus: null,
 			}).catch(() => { });
 		}
 
 		if (onUpdateLoan && loan) {
-			const updatedSchedule = (loan.repaymentSchedule || []).map((sch) => {
-				if (sch.sNo === sNo || sch.sNo === Number(sNo) || String(sch.sNo || sch.installmentNumber) === String(sNo)) {
-					return {
-						...sch,
-						...(isPartial ? { splits: null } : {}),
-						receivedDate: '',
-						received_date: null,
-						dueDate: '-',
-						paymentDate: null,
-						payment_date: null,
-						payout_approval_status: null,
-						payoutApprovalStatus: null,
-						payout_approved_by: null,
-						payout_approved_at: null,
-						status: 'Active',
-					};
-				}
-				return sch;
+			const updateScheduleList = (list) => {
+				if (!Array.isArray(list)) return list;
+				return list.map((sch) => {
+					const schSNo = String(sch.sNo || sch.s_no || sch.installmentNumber);
+					if (schSNo === sNoStr) {
+						return {
+							...sch,
+							splits: null,
+							isPartial: false,
+							subInstallments: undefined,
+							receivedDate: '',
+							received_date: null,
+							dueDate: '-',
+							paymentDate: null,
+							payment_date: null,
+							payout_approval_status: null,
+							payoutApprovalStatus: null,
+							payout_approved_by: null,
+							payout_approved_at: null,
+							status: 'Active',
+						};
+					}
+					return sch;
+				});
+			};
+			const nextRepaymentSchedule = updateScheduleList(loan.repaymentSchedule);
+			const nextRepayment_schedule = updateScheduleList(loan.repayment_schedule);
+			onUpdateLoan({
+				...loan,
+				...(nextRepaymentSchedule ? { repaymentSchedule: nextRepaymentSchedule } : {}),
+				...(nextRepayment_schedule ? { repayment_schedule: nextRepayment_schedule } : {}),
 			});
-			onUpdateLoan({ ...loan, repaymentSchedule: updatedSchedule });
 		}
 	};
 
@@ -9603,6 +9653,7 @@ export function JointLoanDetailsPage({
 										!isSecEditor &&
 										(isRecdDateFilled ||
 											isPayoutDateFilled ||
+											inst.isPartial ||
 											Boolean(
 												inst.isPartial &&
 												inst.subInstallments?.some(

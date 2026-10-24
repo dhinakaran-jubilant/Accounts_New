@@ -1658,26 +1658,25 @@ def revert_loan_split(loan_id, s_no):
     if loan and loan.repayment_schedule:
         try:
             target_idx = int(s_no) - 1
-            if 0 <= target_idx < len(loan.repayment_schedule):
-                loan.repayment_schedule[target_idx].splits = None
-                loan.repayment_schedule[target_idx].received_date = None
-                loan.repayment_schedule[target_idx].payment_date = None
-                loan.repayment_schedule[target_idx].payout_approval_status = None
-                loan.repayment_schedule[target_idx].payout_approval_target = None
-                loan.repayment_schedule[target_idx].payout_requested_role = None
-                loan.repayment_schedule[target_idx].payout_requested_by = None
-                loan.repayment_schedule[target_idx].payout_requested_at = None
-                loan.repayment_schedule[target_idx].payout_approved_by = None
-                loan.repayment_schedule[target_idx].payout_approved_at = None
-                loan.repayment_schedule[target_idx].payout_notes = None
+            sys_schedule = [s for s in loan.repayment_schedule if getattr(s, 'type', None) != 'manual']
+            if 0 <= target_idx < len(sys_schedule):
+                sch = sys_schedule[target_idx]
+                sch.splits = None
+                sch.received_date = None
+                sch.payment_date = None
+                sch.payout_approval_status = None
+                sch.payout_approval_target = None
+                sch.payout_requested_role = None
+                sch.payout_requested_by = None
+                sch.payout_requested_at = None
+                sch.payout_approved_by = None
+                sch.payout_approved_at = None
+                sch.payout_notes = None
                 db.session.commit()
         except Exception as e:
             db.session.rollback()
 
-    return jsonify({
-        "success": True,
-        "reverted": s_no
-    })
+    return get_loan_splits(loan_id)
 
 @app.route('/api/joint-loans/<loan_id>/overrides', methods=['POST'])
 def save_schedule_override(loan_id):
@@ -1697,8 +1696,11 @@ def save_schedule_override(loan_id):
             if m:
                 target_idx = int(m.group(1)) - 1
                 sub_part = m.group(2).upper() if m.group(2) else None
-                if 0 <= target_idx < len(loan.repayment_schedule):
-                    sch = loan.repayment_schedule[target_idx]
+                sys_schedule = [s for s in loan.repayment_schedule if getattr(s, 'type', None) != 'manual']
+                if 0 <= target_idx < len(sys_schedule):
+                    sch = sys_schedule[target_idx]
+                    if 'splits' in payload and payload.get('splits') is None:
+                        sch.splits = None
 
                     user_name_val = str(payload.get('userName') or payload.get('user_name') or payload.get('payout_requested_by') or payload.get('payout_approved_by') or '').strip().lower()
                     user_role_val = str(payload.get('userRole') or payload.get('user_role') or payload.get('payout_editor_role') or '').strip().lower()
