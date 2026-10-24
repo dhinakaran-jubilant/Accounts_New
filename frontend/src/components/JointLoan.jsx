@@ -1000,19 +1000,57 @@ export const isDueDateCrossed = (dateStr) => {
 export const isEmiPaid = (inst) => {
 	if (!inst) return false;
 	const status = String(inst.status || '').toLowerCase();
-	if (status === 'collected' || status === 'settled' || status === 'paid') return true;
+	if (status === 'overdue') return false;
+
+	// Partial installment with sub-installments
+	if (inst.isPartial) {
+		const fullAmount = Number(inst.amount) || 0;
+		if (fullAmount > 0) {
+			let totalPaid = 0;
+			if (Array.isArray(inst.subInstallments) && inst.subInstallments.length > 0) {
+				for (const sub of inst.subInstallments) {
+					const sRecd = sub.receivedDate || sub.received_date || sub.recdDate;
+					const isSubPaid = Boolean(sRecd && String(sRecd).trim() && String(sRecd).trim() !== '-' && String(sRecd).trim() !== '—') ||
+						sub.status === 'Settled' || sub.status === 'Collected' || sub.status === 'Paid';
+					if (isSubPaid) {
+						totalPaid += Number(sub.amount) || 0;
+					}
+				}
+			} else if (inst.partialPaidAmount !== undefined) {
+				totalPaid = Number(inst.partialPaidAmount) || 0;
+			}
+			if (totalPaid < fullAmount) return false;
+		}
+	}
+
+	// Splits JSON object
+	if (inst.splits) {
+		let sp = inst.splits;
+		if (typeof sp === 'string') {
+			try { sp = JSON.parse(sp); } catch (e) { sp = null; }
+		}
+		if (sp && typeof sp === 'object') {
+			const fullAmount = Number(inst.amount) || 0;
+			const pA = Number(sp.amountA ?? sp.paidAmount ?? 0);
+			const hasRecdB = Boolean(sp.recdDateB && String(sp.recdDateB).trim() && sp.recdDateB !== '-' && sp.recdDateB !== '—');
+			const pB = hasRecdB ? Number(sp.amountB ?? sp.balAmount ?? 0) : 0;
+			if (fullAmount > 0 && (pA + pB) < fullAmount) return false;
+		}
+	}
+
+	if (status === 'settled' || status === 'paid') return true;
 	const recd = inst.receivedDate || inst.received_date || inst.paymentDate || inst.payment_date;
-	if (recd && recd !== '-' && recd !== '-') return true;
+	if (recd && recd !== '-' && recd !== '—') return true;
 	return false;
 };
 
 // Check if an installment / EMI is overdue:
-// Overdue means EMI amount is not paid and due date is crossed
+// Overdue means EMI amount has unpaid balance and due date is crossed
 export const isEmiOverdue = (inst) => {
 	if (!inst) return false;
-	if (isEmiPaid(inst)) return false;
 	const status = String(inst.status || '').toLowerCase();
 	if (status === 'overdue') return true;
+	if (isEmiPaid(inst)) return false;
 	return isDueDateCrossed(inst.date);
 };
 
@@ -1166,7 +1204,7 @@ export const areAllPayoutsApproved = (loan) => {
 // - Closed: all EMIs are paid AND all payout dates are approved
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
 // - Active: all emi's recd/payout date approved by sec manager and no emi date is crossed today date
-export const getComputedLoanStatus = (loan) => {
+export const getComputedLoanStatus = (loan, customSchedule) => {
 	if (!loan) return 'Active';
 
 	// 1. Rejected status
@@ -1184,9 +1222,17 @@ export const getComputedLoanStatus = (loan) => {
 		return 'Pending Admin';
 	}
 
-	const schedule = Array.isArray(loan.repaymentSchedule)
-		? loan.repaymentSchedule
-		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+	const schedule = Array.isArray(customSchedule) && customSchedule.length > 0
+		? customSchedule
+		: (Array.isArray(loan.repaymentSchedule) && loan.repaymentSchedule.length > 0
+			? loan.repaymentSchedule
+			: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []));
+
+	// Rule: overdue means if any emi date is crossed today date and emi has unpaid balance
+	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
+	if (hasOverdue) {
+		return 'Overdue';
+	}
 
 	// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
 	const hasPayoutPending = isLoanPayoutPending(loan);
@@ -1195,7 +1241,7 @@ export const getComputedLoanStatus = (loan) => {
 	const allPayoutsApproved = areAllPayoutsApproved(loan);
 	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
 
-	if (!hasPayoutPending && allPayoutsApproved && (allEmisPaid || loan.status === 'Closed' || loan.approval_status === 'CLOSED')) {
+	if (!hasPayoutPending && allPayoutsApproved && allEmisPaid) {
 		return 'Closed';
 	}
 
@@ -1203,13 +1249,7 @@ export const getComputedLoanStatus = (loan) => {
 		return 'Pending';
 	}
 
-	// Rule: overdue means if any emi date is crossed today date
-	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
-	if (hasOverdue) {
-		return 'Overdue';
-	}
-
-	// Rule: active status means all emi's recd/payout date approved by sec manager and any emi date is not crossed today date
+	// Rule: active status means all emi's recd/payout date approved by sec manager and no emi date is crossed today date
 	return 'Active';
 };
 
@@ -6083,12 +6123,16 @@ export function JointLoanDetailsPage({
 				computeStatus(partA);
 				computeStatus(partB);
 
-				const isAllSettled = partA.status === 'Settled' && partB.status === 'Settled';
+				const totalPaidOnRow = paidAmountA + (isPartBPaid ? balAmountB : 0);
+				const remainingBal = Math.max(0, fullAmount - totalPaidOnRow);
+				const isRowFullyPaid = remainingBal === 0;
+
+				const isAllSettled = isRowFullyPaid && partA.status === 'Settled' && partB.status === 'Settled';
 				const hasPendingApproval = partA.status === 'Pending Payout Approval' || partB.status === 'Pending Payout Approval';
-				const isAllCollected = isAllSettled || hasPendingApproval || (
+				const isAllCollected = isRowFullyPaid && (isAllSettled || hasPendingApproval || (
 					(partA.status === 'Collected' || partA.status === 'Settled' || partA.status === 'Pending Payout Approval') &&
 					(partB.status === 'Collected' || partB.status === 'Settled' || partB.status === 'Pending Payout Approval')
-				);
+				));
 
 				let mainStatus = 'Partial';
 				let mainBadgeClass = 'bg-amber-50 text-amber-800 ring-amber-200';
@@ -6106,6 +6150,10 @@ export function JointLoanDetailsPage({
 					mainStatus = 'Collected';
 					mainBadgeClass = 'bg-blue-50 text-blue-700 ring-blue-200';
 					mainDotClass = 'bg-blue-500';
+				} else if (isDueDateCrossed(inst.date)) {
+					mainStatus = 'Overdue';
+					mainBadgeClass = 'bg-rose-50 text-rose-700 ring-rose-200';
+					mainDotClass = 'bg-rose-500';
 				}
 
 				// Main EMI row maintains ORIGINAL amount, interest, and account shares
@@ -6114,13 +6162,13 @@ export function JointLoanDetailsPage({
 					...overrideMain,
 					displaySNo: `#${String(inst.sNo).padStart(2, '0')}`,
 					isPartial: true,
-					partialPaidAmount: isPartBPaid ? fullAmount : paidAmountA,
-					partialBalAmount: isPartBPaid ? 0 : balAmountB,
+					partialPaidAmount: totalPaidOnRow,
+					partialBalAmount: remainingBal,
 					status: mainStatus,
 					badgeClass: mainBadgeClass,
 					dotClass: mainDotClass,
-					payout_approval_status: hasPendingApproval ? 'PENDING' : (overrideMain.payout_approval_status || inst.payout_approval_status || 'APPROVED'),
-					payoutApprovalStatus: hasPendingApproval ? 'PENDING' : (overrideMain.payout_approval_status || inst.payout_approval_status || 'APPROVED'),
+					payout_approval_status: isRowFullyPaid && !hasPendingApproval ? (overrideMain.payout_approval_status || inst.payout_approval_status || 'APPROVED') : (hasPendingApproval ? 'PENDING' : null),
+					payoutApprovalStatus: isRowFullyPaid && !hasPendingApproval ? (overrideMain.payout_approval_status || inst.payout_approval_status || 'APPROVED') : (hasPendingApproval ? 'PENDING' : null),
 					payout_approval_target: overrideMain.payout_approval_target || inst.payout_approval_target || (overrideMain.payout_requested_role === 'SECONDARY' || inst.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY'),
 					payoutApprovalTarget: overrideMain.payout_approval_target || inst.payout_approval_target || (overrideMain.payout_requested_role === 'SECONDARY' || inst.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY'),
 					payout_requested_role: overrideMain.payout_requested_role || inst.payout_requested_role || 'PRIMARY',
@@ -6204,6 +6252,16 @@ export function JointLoanDetailsPage({
 	const allScheduleItems = useMemo(() => {
 		return repaymentSchedule.flatMap((inst) => [inst, ...(inst.subInstallments || [])]);
 	}, [repaymentSchedule]);
+
+	// Keep currentStatus in sync with repaymentSchedule (if loan has balance and crossed EMI dates, status is Overdue)
+	useEffect(() => {
+		if (loan) {
+			const compStatus = getComputedLoanStatus(loan, repaymentSchedule);
+			if (compStatus && compStatus !== currentStatus) {
+				setCurrentStatus(compStatus);
+			}
+		}
+	}, [loan, repaymentSchedule, currentStatus]);
 
 	const handleConfirmSplit = ({
 		sNo,
