@@ -11,10 +11,11 @@ const XLSX = _XLSX.default || _XLSX;
 
 // Helper to format share percent
 export const formatSharePercent = (val) => {
+	if (val === null || val === undefined || val === '') return '0';
 	const num = Number(val);
 	if (isNaN(num)) return '0';
-	const rounded = Math.round(num * 10) / 10;
-	return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+	const rounded = Math.round(num * 100) / 100;
+	return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(2);
 };
 
 // Clean string for filename
@@ -113,7 +114,9 @@ export function exportJointLoanToExcel(loan, accounts = [], repaymentSchedule = 
 	effectiveAccounts.forEach((acc) => {
 		const accTag = getAccountAcronym(acc) || acc.accountName || 'ACC';
 		const p = Number(acc.principal) || 0;
-		const s = acc.share != null ? formatSharePercent(acc.share) : (totalPrincipal > 0 ? formatSharePercent((p / totalPrincipal) * 100) : '0');
+		const s = (totalPrincipal > 0 && p > 0)
+			? formatSharePercent((p / totalPrincipal) * 100)
+			: (acc.share != null ? formatSharePercent(acc.share) : '0');
 		const r = Number(acc.repayAmount) || 0;
 		addRow([`${accTag}`, p, `${s}%`, r], 'accData');
 	});

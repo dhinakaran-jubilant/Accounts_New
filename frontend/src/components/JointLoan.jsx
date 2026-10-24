@@ -253,13 +253,13 @@ export const formatLoanDate = (dateVal) => {
 	return str;
 };
 
-// Format share percentage value: integer if no decimals, or exactly 1 decimal digit if fractional (e.g. 98 -> '98', 2.217 -> '2.2')
+// Format share percentage value: integer if no decimals, or up to 2 decimal digits if fractional (e.g. 98 -> '98', 45.4545 -> '45.45')
 export const formatSharePercent = (val) => {
 	if (val === null || val === undefined || val === '') return '0';
 	const num = Number(val);
 	if (isNaN(num)) return '0';
-	const rounded = Math.round(num * 10) / 10;
-	return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+	const rounded = Math.round(num * 100) / 100;
+	return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(2);
 };
 
 // Strip 'JL', 'JL-', 'JL_' prefixes from loan reference ID for comparison
@@ -518,7 +518,9 @@ export const getLoanAccountDetails = (loan) => {
 		const totalSecShare = secAccounts.reduce((sum, a) => sum + Number(a.share || 0), 0);
 
 		return loan.accountDetails.map((acc) => {
-			let sharePct = acc.share != null ? Number(formatSharePercent(acc.share)) : (totalPrin > 0 ? ((Number(acc.principal) || 0) / totalPrin) * 100 : 0);
+			let sharePct = (totalPrin > 0 && acc.principal != null && Number(acc.principal) > 0)
+				? Number(formatSharePercent(((Number(acc.principal) || 0) / totalPrin) * 100))
+				: (acc.share != null ? Number(formatSharePercent(acc.share)) : 0);
 			if (acc.isPrimary) {
 				if (totalSecShare >= 100 || (Number(acc.principal) === 0 && totalSecShare > 0)) {
 					sharePct = Math.max(0, 100 - totalSecShare);
@@ -563,7 +565,9 @@ export const getLoanAccountDetails = (loan) => {
 	
 	const rawLoanPriShare = loan.primaryShare ?? loan.primary_account_share ?? loan.primarySharePct;
 	let pShare = 60;
-	if (loan.secondaryAccounts && loan.secondaryAccounts.length > 0) {
+	if (totalAmount > 0 && loan.primary_account_amount != null && Number(loan.primary_account_amount) > 0) {
+		pShare = Number(formatSharePercent(((Number(loan.primary_account_amount) || 0) / totalAmount) * 100));
+	} else if (loan.secondaryAccounts && loan.secondaryAccounts.length > 0) {
 		const secPctSum = loan.secondaryAccounts.reduce((sum, s) => sum + Number(s.share || s.percentage || 0), 0);
 		if (secPctSum >= 100 || (loan.primary_account_amount != null && Number(loan.primary_account_amount) === 0)) {
 			pShare = Math.max(0, 100 - secPctSum);
@@ -574,8 +578,6 @@ export const getLoanAccountDetails = (loan) => {
 		}
 	} else if (rawLoanPriShare != null && rawLoanPriShare !== '') {
 		pShare = Number(formatSharePercent(rawLoanPriShare));
-	} else if (totalAmount > 0 && loan.primary_account_amount != null) {
-		pShare = ((Number(loan.primary_account_amount) || 0) / totalAmount) * 100;
 	}
 	pShare = Number(formatSharePercent(pShare));
 
@@ -621,7 +623,9 @@ export const getLoanAccountDetails = (loan) => {
 			const sName = sec.accountName || sec.name || `Secondary ${idx + 1}`;
 			const p = Number(String(sec.amount || sec.share || 0).replace(/[^0-9.-]+/g, '')) || 0;
 			const r = Math.round((rawRate + 0.2) * 100) / 100;
-			const rawSecShare = sec.share != null ? sec.share : (sec.percentage != null ? sec.percentage : (totalAmount > 0 ? ((p / totalAmount) * 100) : ((100 - pShare) / Math.max(1, validSecAccounts.length))));
+			const rawSecShare = (p > 0 && totalAmount > 0)
+				? ((p / totalAmount) * 100)
+				: (sec.share != null ? sec.share : (sec.percentage != null ? sec.percentage : ((100 - pShare) / Math.max(1, validSecAccounts.length))));
 			const secShare = Number(formatSharePercent(rawSecShare));
 			const interestVal = hasSchedRepay
 				? Math.round((totalFacilityInterest * secShare) / 100)
@@ -3859,7 +3863,7 @@ export function PartialPaymentModal({
 									>
 										{isCurrentlyPartial
 											? formatCurrency(currentBalance)
-											: `${primarySharePct}% / ${100 - primarySharePct}%`}
+											: `${formatSharePercent(primarySharePct)}% / ${formatSharePercent(100 - primarySharePct)}%`}
 									</span>
 								</div>
 							</div>
@@ -8468,8 +8472,9 @@ export function JointLoanDetailsPage({
 			// Helper to compute interest, repayAmount, and TDS for an account based on %
 			const calcFinancials = (acc, principal, share) => {
 				const p = principal === '' ? '' : Math.max(0, Number(principal) || 0);
-				const s = share === '' ? '' : Number(formatSharePercent(share));
-				const sharePct = s !== '' ? s : (facilityTotalPrincipal > 0 && p !== '' ? (Number(p) / facilityTotalPrincipal) * 100 : 0);
+				const isTypingDecimal = typeof share === 'string' && (share.endsWith('.') || share.match(/\.\d*0$/));
+				const s = share === '' ? '' : (isTypingDecimal ? share : Number(formatSharePercent(share)));
+				const sharePct = s !== '' ? Number(s) : (facilityTotalPrincipal > 0 && p !== '' ? (Number(p) / facilityTotalPrincipal) * 100 : 0);
 
 				let interestVal;
 				if (facilityTotalInterest > 0) {
@@ -10834,7 +10839,9 @@ export function JointLoanDetailsPage({
 							onClick={() => {
 								if (isSecondaryLoan || (!isFinallyApproved && !userPerms.isAdmin)) return;
 								setEditAccounts(JSON.parse(JSON.stringify(accounts)).map(acc => {
-									const sharePct = acc.share != null ? Number(formatSharePercent(acc.share)) : (facilityTotalPrincipal > 0 ? (Number(acc.principal) / facilityTotalPrincipal) * 100 : 0);
+									const sharePct = (facilityTotalPrincipal > 0 && acc.principal != null && Number(acc.principal) > 0)
+										? Number(formatSharePercent((Number(acc.principal) / facilityTotalPrincipal) * 100))
+										: (acc.share != null ? Number(formatSharePercent(acc.share)) : 0);
 									const accInt = (facilityTotalInterest > 0 && sharePct != null)
 										? Math.round((facilityTotalInterest * sharePct) / 100)
 										: (Number(acc.interest) || 0);
@@ -10923,7 +10930,7 @@ export function JointLoanDetailsPage({
 										{/* 5. Share % */}
 										<td className="py-3.5 px-4 text-center">
 											<span className="inline-block px-2.5 py-1 rounded-md text-[12px] font-extrabold bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/80">
-												{formatSharePercent(acc.share != null ? acc.share : (totalPrincipal > 0 ? ((Number(acc.principal) || 0) / totalPrincipal) * 100 : 0))}%
+												{formatSharePercent(totalPrincipal > 0 && acc.principal != null && Number(acc.principal) > 0 ? ((Number(acc.principal) || 0) / totalPrincipal) * 100 : (acc.share != null ? acc.share : 0))}%
 											</span>
 										</td>
 
