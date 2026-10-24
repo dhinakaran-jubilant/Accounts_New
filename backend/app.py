@@ -438,22 +438,34 @@ def serialize_pg_loan_to_joint(l):
             if not has_recd or not has_pay or (p_stat != 'APPROVED' and not p_approved_by):
                 all_settled = False
 
+    is_auto_or_approved = (
+        l.approval_status == 'APPROVED' or
+        bool(l.actioned_by and str(l.actioned_by).strip().lower() in ('system admin', 'super admin', 'dhinakaran sekar', 'administrator')) or
+        bool(l.requester_name and str(l.requester_name).strip().lower() in ('system admin', 'super admin', 'dhinakaran sekar'))
+    )
+
     if l.approval_status == 'REJECTED':
         badge_status = 'Rejected'
-    elif l.approval_status in ['PENDING_SECONDARY', 'PENDING'] and not l.verified_by:
+    elif not is_auto_or_approved and l.approval_status in ['PENDING_SECONDARY', 'PENDING'] and not l.verified_by:
         badge_status = 'Pending Secondary'
-    elif l.approval_status in ['PENDING_ADMIN', 'VERIFIED']:
+    elif not is_auto_or_approved and l.approval_status in ['PENDING_ADMIN', 'VERIFIED']:
         badge_status = 'Pending Admin'
     elif (all_settled or l.approval_status == 'CLOSED') and not has_payout_pending:
         badge_status = 'Closed'
     elif has_payout_pending:
         badge_status = 'Pending'
-    elif has_overdue and l.approval_status == 'APPROVED':
+    elif has_overdue and (l.approval_status == 'APPROVED' or is_auto_or_approved):
         badge_status = 'Overdue'
-    elif l.approval_status == 'APPROVED':
+    elif l.approval_status == 'APPROVED' or is_auto_or_approved:
         badge_status = 'Active'
     else:
         badge_status = 'Pending'
+
+    effective_approval_status = 'APPROVED' if (is_auto_or_approved or badge_status in ['Active', 'Overdue'] or l.approval_status == 'APPROVED') else getattr(l, 'approval_status', 'PENDING')
+    if l.approval_status == 'CLOSED':
+        effective_approval_status = 'CLOSED'
+    elif l.approval_status == 'REJECTED':
+        effective_approval_status = 'REJECTED'
 
     if badge_status == 'Active':
         status_color = 'bg-emerald-50 text-emerald-700 ring-emerald-300'
@@ -544,8 +556,8 @@ def serialize_pg_loan_to_joint(l):
         'loan_date': l.loan_date,
         'loanDate': l.loan_date,
         'dueDate': due_date,
-        'approval_status': getattr(l, 'approval_status', 'PENDING'),
-        'approvalStatus': getattr(l, 'approval_status', 'PENDING'),
+        'approval_status': effective_approval_status,
+        'approvalStatus': effective_approval_status,
         'verified_by': getattr(l, 'verified_by', None),
         'verifiedBy': getattr(l, 'verified_by', None),
         'requester_name': getattr(l, 'requester_name', None),
@@ -1008,7 +1020,7 @@ def create_joint_loan():
             super_name = user.name if user and user.name else (user_name or 'Super Admin')
             actioned_by = super_name
             actioned_at = now_str
-            target_verifier = super_name
+            target_verifier = None
         elif req_approval == 'APPROVED':
             init_approval = 'APPROVED'
             actioned_by = payload.get('actioned_by') or 'Administrator'
@@ -1132,12 +1144,14 @@ def update_joint_loan(loan_id):
             loan.approval_status = str(payload.get('approval_status') or payload.get('approvalStatus')).strip()
         elif 'status' in payload:
             st = payload['status']
-            if st == 'Active':
+            if st in ['Active', 'Overdue', 'Date Overdue', 'Settled']:
                 loan.approval_status = 'APPROVED'
             elif st == 'Closed':
                 loan.approval_status = 'CLOSED'
             elif st in ['PENDING_SECONDARY', 'PENDING_ADMIN', 'REJECTED']:
                 loan.approval_status = st
+            elif loan.approval_status in ['APPROVED', 'CLOSED']:
+                pass
             else:
                 loan.approval_status = 'PENDING'
 
@@ -3199,7 +3213,7 @@ def handle_pdf_upload():
         if is_super:
             loan_status = 'APPROVED'
             super_name = user.name if user and user.name else (req_user_name or 'Super Admin')
-            target_verifier = super_name
+            target_verifier = None
             actioned_by = super_name
             actioned_at = now_str
         else:

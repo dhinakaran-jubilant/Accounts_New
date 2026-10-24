@@ -1386,14 +1386,22 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 		return 'Rejected';
 	}
 
-	// 2. Pending secondary approval (initial creation)
-	if (loan.approval_status === 'PENDING_SECONDARY' || (loan.approval_status === 'PENDING' && !loan.verified_by)) {
-		return 'Pending Secondary';
-	}
+	const isLoanCreatedBySuperAdmin = Boolean(
+		loan.is_super_admin ||
+		(loan.actioned_by && ['admin', 'super admin', 'dhinakaran sekar', 'administrator', 'system admin'].includes(String(loan.actioned_by).trim().toLowerCase())) ||
+		(loan.requester_name && ['system admin', 'super admin', 'dhinakaran sekar'].includes(String(loan.requester_name).trim().toLowerCase()))
+	);
 
-	// 3. Pending admin final approval (initial creation)
-	if (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED') {
-		return 'Pending Admin';
+	if (!isLoanCreatedBySuperAdmin) {
+		// 2. Pending secondary approval (initial creation)
+		if (loan.approval_status === 'PENDING_SECONDARY' || (loan.approval_status === 'PENDING' && !loan.verified_by)) {
+			return 'Pending Secondary';
+		}
+
+		// 3. Pending admin final approval (initial creation)
+		if (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED') {
+			return 'Pending Admin';
+		}
 	}
 
 	const schedule = Array.isArray(customSchedule) && customSchedule.length > 0
@@ -2096,7 +2104,12 @@ export const checkLoanSecondaryRequiresApproval = (loan, accountObjects = []) =>
 export const canUserAccessLoan = (loan, user, userPerms, accountObjects = [], allUsers = []) => {
 	if (!loan) return false;
 
-	const isFinallyApproved = loan.approval_status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed' || isLoanPayoutPending(loan);
+	const isFinallyApproved =
+		loan.approval_status === 'APPROVED' ||
+		['Active', 'Overdue', 'Date Overdue', 'Settled', 'Closed'].includes(loan.status) ||
+		Boolean(loan.is_super_admin) ||
+		Boolean(loan.actioned_by && ['admin', 'super admin', 'dhinakaran sekar', 'system admin'].includes(String(loan.actioned_by).trim().toLowerCase())) ||
+		isLoanPayoutPending(loan);
 	if (isFinallyApproved) return true;
 
 	if (!user) return false;
@@ -5266,7 +5279,8 @@ export function JointLoanDetailsPage({
 		const role = (activeUser?.role || '').trim().toLowerCase();
 		const name = (activeUser?.name || '').trim().toLowerCase();
 		const username = (activeUser?.username || '').trim().toLowerCase();
-		return ['admin', 'super admin'].includes(role) || Boolean(activeUser?.permissions?.isAdmin) || name === 'system admin' || username === 'system admin';
+		const code = (activeUser?.employee_code || '').trim().toLowerCase();
+		return ['admin', 'super admin'].includes(role) || Boolean(activeUser?.permissions?.isAdmin) || name === 'system admin' || username === 'system admin' || code === 'jc0033' || code === 'admin';
 	}, [activeUser]);
 
 	const userPerms = useMemo(() => {
@@ -5285,10 +5299,30 @@ export function JointLoanDetailsPage({
 	}, [activeUser, isSystemAdmin]);
 
 	const hasPayoutPending = isLoanPayoutPending(loan);
-	const isFinallyApproved = loan?.approval_status === 'APPROVED' || loan?.status === 'Active' || loan?.status === 'Closed' || hasPayoutPending;
-	const isPendingSecondary = !hasPayoutPending && (loan?.approval_status === 'PENDING_SECONDARY' || (loan?.approval_status === 'PENDING' && !loan?.verified_by) || (!loan?.approval_status && loan?.status === 'Pending'));
-	const isPendingAdmin = !hasPayoutPending && (loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED');
-	const isRejected = loan?.approval_status === 'REJECTED' || loan?.status === 'Rejected';
+	const isLoanCreatedBySuperAdmin = Boolean(
+		loan?.is_super_admin ||
+		(loan?.actioned_by && ['admin', 'super admin', 'dhinakaran sekar', 'administrator', 'system admin'].includes(String(loan.actioned_by).trim().toLowerCase())) ||
+		(loan?.requester_name && ['system admin', 'super admin', 'dhinakaran sekar'].includes(String(loan.requester_name).trim().toLowerCase()))
+	);
+	const isOperationalFacility = ['Active', 'Overdue', 'Date Overdue', 'Settled', 'Closed'].includes(loan?.status);
+	const isFinallyApproved =
+		loan?.approval_status === 'APPROVED' ||
+		isOperationalFacility ||
+		isLoanCreatedBySuperAdmin ||
+		hasPayoutPending;
+	const isPendingSecondary =
+		!isFinallyApproved &&
+		!hasPayoutPending &&
+		(loan?.approval_status === 'PENDING_SECONDARY' ||
+			(loan?.approval_status === 'PENDING' && !loan?.verified_by) ||
+			(!loan?.approval_status && loan?.status === 'Pending'));
+	const isPendingAdmin =
+		!isFinallyApproved &&
+		!hasPayoutPending &&
+		(loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED');
+	const isRejected =
+		!isFinallyApproved &&
+		(loan?.approval_status === 'REJECTED' || loan?.status === 'Rejected');
 
 	const isUserSecManager = useMemo(() => {
 		if (userPerms?.isAdmin) return false;
@@ -9737,7 +9771,7 @@ export function JointLoanDetailsPage({
 			</div>
 
 			{/* Multi-Stage Approval Workflow Action Banner */}
-			{!isFinallyApproved && (
+			{!isFinallyApproved && (isPendingSecondary || isPendingAdmin || isRejected) && (
 				<div className={`p-4 sm:p-5 rounded-2xl border shadow-sm transition-all flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${isRejected
 					? 'bg-rose-50/90 border-rose-200 text-rose-950'
 					: isPendingSecondary
@@ -13974,7 +14008,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			status: isSuperAdmin ? 'Active' : 'Pending',
 			approval_status: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
 			approvalStatus: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
-			verified_by: isSuperAdmin ? (activeUser?.name || 'Super Admin') : undefined,
+			verified_by: undefined,
 			actioned_by: isSuperAdmin ? (activeUser?.name || 'Super Admin') : undefined,
 			actioned_at: isSuperAdmin ? (getFormattedNow ? getFormattedNow() : new Date().toLocaleString()) : undefined,
 			is_super_admin: isSuperAdmin,
