@@ -1034,7 +1034,9 @@ export const isEmiPaid = (inst) => {
 			const pA = Number(sp.amountA ?? sp.paidAmount ?? 0);
 			const hasRecdB = Boolean(sp.recdDateB && String(sp.recdDateB).trim() && sp.recdDateB !== '-' && sp.recdDateB !== '—');
 			const pB = hasRecdB ? Number(sp.amountB ?? sp.balAmount ?? 0) : 0;
-			if (fullAmount > 0 && (pA + pB) < fullAmount) return false;
+			const hasRecdC = Boolean(sp.recdDateC && String(sp.recdDateC).trim() && sp.recdDateC !== '-' && sp.recdDateC !== '—');
+			const pC = hasRecdC ? Number(sp.amountC ?? 0) : 0;
+			if (fullAmount > 0 && (pA + pB + pC) < fullAmount) return false;
 		}
 	}
 
@@ -1141,8 +1143,8 @@ export const areAllPayoutsApproved = (loan) => {
 		// 1. Partial / split subInstallments
 		if (item.isPartial && Array.isArray(item.subInstallments) && item.subInstallments.length > 0) {
 			const allSubsApproved = item.subInstallments.every((sub) => {
+				if (!sub || sub.subType === 'balance') return false;
 				const hasDueDate = Boolean(
-					sub &&
 					sub.dueDate &&
 					String(sub.dueDate).trim() &&
 					String(sub.dueDate).trim() !== '-' &&
@@ -1171,11 +1173,14 @@ export const areAllPayoutsApproved = (loan) => {
 				}
 				const sA = (sp.payoutApprovalStatusA || sp.payout_approval_status_a || '').toUpperCase();
 				const sB = (sp.payoutApprovalStatusB || sp.payout_approval_status_b || '').toUpperCase();
+				const sC = (sp.payoutApprovalStatusC || sp.payout_approval_status_c || '').toUpperCase();
 				const hasDueDateA = Boolean(sp.dueDateA && String(sp.dueDateA).trim() && String(sp.dueDateA).trim() !== '-' && String(sp.dueDateA).trim() !== '—');
 				const hasDueDateB = Boolean(sp.dueDateB && String(sp.dueDateB).trim() && String(sp.dueDateB).trim() !== '-' && String(sp.dueDateB).trim() !== '—');
+				const hasDueDateC = Boolean(sp.dueDateC && String(sp.dueDateC).trim() && String(sp.dueDateC).trim() !== '-' && String(sp.dueDateC).trim() !== '—');
 
 				if (!hasDueDateA || sA !== 'APPROVED') return false;
 				if (hasDueDateB && sB !== 'APPROVED') return false;
+				if (hasDueDateC && sC !== 'APPROVED') return false;
 				continue;
 			}
 		}
@@ -6075,7 +6080,7 @@ export function JointLoanDetailsPage({
 						currentRecd &&
 						currentRecd.length === 10 &&
 						currentRecd !== '-' &&
-						currentRecd !== '-' &&
+						currentRecd !== '—' &&
 						parseDDMMYYYY(currentRecd) !== null &&
 						!isDateBefore(currentRecd, row.date)
 					);
@@ -6084,7 +6089,7 @@ export function JointLoanDetailsPage({
 						currentDue &&
 						currentDue.length === 10 &&
 						currentDue !== '-' &&
-						currentDue !== '-' &&
+						currentDue !== '—' &&
 						parseDDMMYYYY(currentDue) !== null &&
 						isValidRec &&
 						!isDateBefore(currentDue, currentRecd)
@@ -6123,16 +6128,161 @@ export function JointLoanDetailsPage({
 				computeStatus(partA);
 				computeStatus(partB);
 
-				const totalPaidOnRow = paidAmountA + (isPartBPaid ? balAmountB : 0);
+				// Part C: Remaining Balance OR Payment #3 when Part B was paid as partial payment
+				const remainingBalAfterB = Math.max(0, fullAmount - (paidAmountA + (isPartBPaid ? balAmountB : 0)));
+
+				const sNoC = `${inst.sNo}C`;
+				const overrideC = scheduleOverrides[sNoC] || {};
+				const recdDateC = overrideC.receivedDate !== undefined ? overrideC.receivedDate : (splitInfo.recdDateC || '');
+				const dueDateC = overrideC.dueDate !== undefined ? overrideC.dueDate : (splitInfo.dueDateC || '-');
+				const remarksC = overrideC.remarks !== undefined ? overrideC.remarks : (splitInfo.remarksC || '');
+				const isPartCPaid = Boolean(recdDateC && recdDateC.length === 10 && recdDateC !== '-' && recdDateC !== '—');
+
+				const rawBalC = splitInfo.amountC ?? splitInfo.balAmountC;
+				const balAmountC = rawBalC !== undefined && rawBalC !== null && !isNaN(Number(rawBalC))
+					? Number(rawBalC)
+					: remainingBalAfterB;
+
+				const interestC = Math.max(0, fullInterest - (interestA + interestB));
+				const priAmountC = splitInfo.priAmountC !== undefined
+					? Number(splitInfo.priAmountC)
+					: Math.max(0, fullPriAmount - (priAmountA + (isPartBPaid ? priAmountB : 0)));
+				const priInterestC = Math.max(0, fullPriInterest - (priInterestA + (isPartBPaid ? priInterestB : 0)));
+
+				const customSecAmountsC = Array.isArray(splitInfo.secAmountsC) ? splitInfo.secAmountsC : null;
+				const secAccountsC = (inst.secAccounts || []).map((sa, idx) => {
+					const saAmt = Number(sa.amount) || 0;
+					const saInt = Number(sa.interest) || 0;
+					const saTds = Number(sa.tds) || 0;
+					const saAmtA = secAccountsA[idx]?.amount || 0;
+					const saIntA = secAccountsA[idx]?.interest || 0;
+					const saTdsA = secAccountsA[idx]?.tds || 0;
+					const saAmtB = isPartBPaid ? (secAccountsB[idx]?.amount || 0) : 0;
+					const saIntB = isPartBPaid ? (secAccountsB[idx]?.interest || 0) : 0;
+					const saTdsB = isPartBPaid ? (secAccountsB[idx]?.tds || 0) : 0;
+					let targetAmtC = Math.max(0, saAmt - (saAmtA + saAmtB));
+					if (customSecAmountsC && customSecAmountsC[idx] !== undefined) {
+						targetAmtC = Number(customSecAmountsC[idx]);
+					}
+					return {
+						...sa,
+						amount: targetAmtC,
+						interest: Math.max(0, saInt - (saIntA + saIntB)),
+						tds: Math.max(0, saTds - (saTdsA + saTdsB)),
+					};
+				});
+
+				let partC = null;
+				if (isPartBPaid && (remainingBalAfterB > 0 || isPartCPaid || splitInfo.amountC !== undefined)) {
+					partC = {
+						...inst,
+						...overrideC,
+						sNo: sNoC,
+						displaySNo: `#${String(inst.sNo).padStart(2, '0')}C`,
+						parentSNo: inst.sNo,
+						isSubRow: true,
+						subType: isPartCPaid ? 'paid' : 'balance',
+						subLabel: isPartCPaid ? 'Payment #3' : 'Remaining Balance',
+						amount: balAmountC,
+						interest: interestC,
+						primaryAmount: priAmountC,
+						primaryInterest: priInterestC,
+						secAccounts: secAccountsC,
+						secAmount: secAccountsC.reduce((sum, sa) => sum + (sa.amount || 0), 0),
+						secInterest: secAccountsC.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+						chqNo: splitInfo.chqNoC || `${inst.chqNo}-C`,
+						receivedDate: recdDateC,
+						dueDate: dueDateC,
+						remarks: remarksC,
+						payout_approval_status: isPartCPaid ? (overrideC.payout_approval_status || splitInfo.payoutApprovalStatusC || 'APPROVED') : null,
+						payoutApprovalStatus: isPartCPaid ? (overrideC.payoutApprovalStatus || splitInfo.payoutApprovalStatusC || 'APPROVED') : null,
+						payout_approval_target: isPartCPaid ? (overrideC.payout_approval_target || splitInfo.payoutApprovalTargetC || inst.payout_approval_target) : null,
+						payoutApprovalTarget: isPartCPaid ? (overrideC.payoutApprovalTarget || splitInfo.payoutApprovalTargetC || inst.payoutApprovalTarget) : null,
+						payout_approved_by: isPartCPaid ? (overrideC.payout_approved_by || splitInfo.payout_approved_by || inst.payout_approved_by) : null,
+						payout_approved_at: isPartCPaid ? (overrideC.payout_approved_at || splitInfo.payout_approved_at || inst.payout_approved_at) : null,
+					};
+					computeStatus(partC);
+				}
+
+				// Part D: Remaining Balance when Part C was also paid
+				const remainingBalAfterC = Math.max(0, fullAmount - (paidAmountA + balAmountB + (isPartCPaid ? balAmountC : 0)));
+
+				let partD = null;
+				if (partC && isPartCPaid && remainingBalAfterC > 0) {
+					const sNoD = `${inst.sNo}D`;
+					const overrideD = scheduleOverrides[sNoD] || {};
+					const recdDateD = overrideD.receivedDate !== undefined ? overrideD.receivedDate : (splitInfo.recdDateD || '');
+					const dueDateD = overrideD.dueDate !== undefined ? overrideD.dueDate : (splitInfo.dueDateD || '-');
+					const remarksD = overrideD.remarks !== undefined ? overrideD.remarks : (splitInfo.remarksD || '');
+					const isPartDPaid = Boolean(recdDateD && recdDateD.length === 10 && recdDateD !== '-' && recdDateD !== '—');
+
+					const interestD = Math.max(0, fullInterest - (interestA + interestB + interestC));
+					const priAmountD = Math.max(0, fullPriAmount - (priAmountA + priAmountB + priAmountC));
+					const priInterestD = Math.max(0, fullPriInterest - (priInterestA + priInterestB + priInterestC));
+
+					const secAccountsD = (inst.secAccounts || []).map((sa, idx) => {
+						const saAmt = Number(sa.amount) || 0;
+						const saInt = Number(sa.interest) || 0;
+						const saTds = Number(sa.tds) || 0;
+						const saAmtA = secAccountsA[idx]?.amount || 0;
+						const saIntA = secAccountsA[idx]?.interest || 0;
+						const saTdsA = secAccountsA[idx]?.tds || 0;
+						const saAmtB = secAccountsB[idx]?.amount || 0;
+						const saIntB = secAccountsB[idx]?.interest || 0;
+						const saTdsB = secAccountsB[idx]?.tds || 0;
+						const saAmtC = secAccountsC[idx]?.amount || 0;
+						const saIntC = secAccountsC[idx]?.interest || 0;
+						const saTdsC = secAccountsC[idx]?.tds || 0;
+						return {
+							...sa,
+							amount: Math.max(0, saAmt - (saAmtA + saAmtB + saAmtC)),
+							interest: Math.max(0, saInt - (saIntA + saIntB + saIntC)),
+							tds: Math.max(0, saTds - (saTdsA + saTdsB + saTdsC)),
+						};
+					});
+
+					partD = {
+						...inst,
+						...overrideD,
+						sNo: sNoD,
+						displaySNo: `#${String(inst.sNo).padStart(2, '0')}D`,
+						parentSNo: inst.sNo,
+						isSubRow: true,
+						subType: isPartDPaid ? 'paid' : 'balance',
+						subLabel: isPartDPaid ? 'Payment #4' : 'Remaining Balance',
+						amount: remainingBalAfterC,
+						interest: interestD,
+						primaryAmount: priAmountD,
+						primaryInterest: priInterestD,
+						secAccounts: secAccountsD,
+						secAmount: secAccountsD.reduce((sum, sa) => sum + (sa.amount || 0), 0),
+						secInterest: secAccountsD.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+						chqNo: splitInfo.chqNoD || `${inst.chqNo}-D`,
+						receivedDate: recdDateD,
+						dueDate: dueDateD,
+						remarks: remarksD,
+						payout_approval_status: isPartDPaid ? (overrideD.payout_approval_status || 'APPROVED') : null,
+						payoutApprovalStatus: isPartDPaid ? (overrideD.payoutApprovalStatus || 'APPROVED') : null,
+					};
+					computeStatus(partD);
+				}
+
+				const subInstallments = [
+					partA,
+					partB,
+					...(partC ? [partC] : []),
+					...(partD ? [partD] : []),
+				];
+
+				const totalPaidOnRow = paidAmountA + (isPartBPaid ? balAmountB : 0) + (partC && isPartCPaid ? (partC.amount || 0) : 0) + (partD && partD.subType === 'paid' ? (partD.amount || 0) : 0);
 				const remainingBal = Math.max(0, fullAmount - totalPaidOnRow);
 				const isRowFullyPaid = remainingBal === 0;
 
-				const isAllSettled = isRowFullyPaid && partA.status === 'Settled' && partB.status === 'Settled';
-				const hasPendingApproval = partA.status === 'Pending Payout Approval' || partB.status === 'Pending Payout Approval';
-				const isAllCollected = isRowFullyPaid && (isAllSettled || hasPendingApproval || (
-					(partA.status === 'Collected' || partA.status === 'Settled' || partA.status === 'Pending Payout Approval') &&
-					(partB.status === 'Collected' || partB.status === 'Settled' || partB.status === 'Pending Payout Approval')
-				));
+				const isAllSettled = isRowFullyPaid && subInstallments.every((sub) => sub.status === 'Settled');
+				const hasPendingApproval = subInstallments.some((sub) => sub.status === 'Pending Payout Approval');
+				const isAllCollected = isRowFullyPaid && (isAllSettled || hasPendingApproval || subInstallments.every((sub) => (
+					sub.status === 'Collected' || sub.status === 'Settled' || sub.status === 'Pending Payout Approval'
+				)));
 
 				let mainStatus = 'Partial';
 				let mainBadgeClass = 'bg-amber-50 text-amber-800 ring-amber-200';
@@ -6174,15 +6324,15 @@ export function JointLoanDetailsPage({
 					payout_requested_role: overrideMain.payout_requested_role || inst.payout_requested_role || 'PRIMARY',
 					// Parent row always displays 1st partial payment's received date and payout date
 					receivedDate: recdDateA || partA.receivedDate || splitInfo.recdDateA || splitInfo.recdDate || '',
-					dueDate: (dueDateA && dueDateA !== '-' && dueDateA !== '-')
+					dueDate: (dueDateA && dueDateA !== '-' && dueDateA !== '—')
 						? dueDateA
-						: ((partA.dueDate && partA.dueDate !== '-' && partA.dueDate !== '-')
+						: ((partA.dueDate && partA.dueDate !== '-' && partA.dueDate !== '—')
 							? partA.dueDate
-							: ((splitInfo.dueDateA && splitInfo.dueDateA !== '-' && splitInfo.dueDateA !== '-')
+							: ((splitInfo.dueDateA && splitInfo.dueDateA !== '-' && splitInfo.dueDateA !== '—')
 								? splitInfo.dueDateA
 								: (splitInfo.dueDate || splitInfo.payoutDate || '-'))),
-					remarks: overrideMain.remarks !== undefined ? overrideMain.remarks : (remarksB || remarksA || inst.remarks || ''),
-					subInstallments: [partA, partB],
+					remarks: overrideMain.remarks !== undefined ? overrideMain.remarks : ((partD && partD.remarks) || (partC && partC.remarks) || remarksB || remarksA || inst.remarks || ''),
+					subInstallments,
 				};
 
 				result.push(mainRow);
@@ -6295,15 +6445,33 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 
 		if (isSecondPayment) {
+			const existingOverrideB = scheduleOverrides[`${sNo}B`] || {};
+			const hasPaidB = Boolean(
+				(existingSplit.recdDateB && String(existingSplit.recdDateB).trim() && existingSplit.recdDateB !== '-' && existingSplit.recdDateB !== '—') ||
+				(existingOverrideB.receivedDate && String(existingOverrideB.receivedDate).trim() && existingOverrideB.receivedDate !== '-' && existingOverrideB.receivedDate !== '—') ||
+				(targetInst?.subInstallments?.length > 1 && targetInst.subInstallments[1]?.subType === 'paid')
+			);
+
+			const isThirdPayment = hasPaidB;
+
 			const amtA = firstPaidAmount || existingSplit.amountA || Number(existingSplit.paidAmount) || 0;
-			const amtB = thisPaidAmount || (fullAmt - amtA);
+			const amtB = isThirdPayment ? (existingSplit.amountB || 0) : (thisPaidAmount || (fullAmt - amtA));
+			const amtC = isThirdPayment ? (thisPaidAmount || Math.max(0, fullAmt - (amtA + amtB))) : 0;
+
+			const totalPaid = amtA + amtB + amtC;
+			const isFinalSettled = totalPaid >= fullAmt;
+
 			const dateRecdA = firstRecdDate || existingOverrideA.receivedDate || existingSplit.recdDateA || existingSplit.recdDate || '';
 			const dateDueA = firstPayoutDate || existingOverrideA.dueDate || existingSplit.dueDateA || existingSplit.dueDate || '-';
 			const remA = firstRemarks !== undefined ? firstRemarks : (existingOverrideA.remarks || existingSplit.remarksA || existingSplit.remarks || '');
 
-			const dateRecdB = recdDate || getTodayDDMMYYYY();
-			const dateDueB = effectiveDueDate;
-			const remB = remarks || '';
+			const dateRecdB = isThirdPayment ? (existingOverrideB.receivedDate || existingSplit.recdDateB || '') : (recdDate || getTodayDDMMYYYY());
+			const dateDueB = isThirdPayment ? (existingOverrideB.dueDate || existingSplit.dueDateB || '-') : effectiveDueDate;
+			const remB = isThirdPayment ? (existingOverrideB.remarks || existingSplit.remarksB || '') : (remarks || '');
+
+			const dateRecdC = isThirdPayment ? (recdDate || getTodayDDMMYYYY()) : '';
+			const dateDueC = isThirdPayment ? effectiveDueDate : '-';
+			const remC = isThirdPayment ? (remarks || '') : '';
 
 			const currentAccounts = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
 			const secRequiresApproval = checkLoanSecondaryRequiresApproval(loan, currentAccounts);
@@ -6315,37 +6483,49 @@ export function JointLoanDetailsPage({
 
 			const splitPayload = {
 				sNo,
-				paidAmount: fullAmt,
+				paidAmount: totalPaid,
 				amountA: amtA,
 				amountB: amtB,
-				isFinalSettled: true,
+				isFinalSettled,
 				recdDateA: dateRecdA,
 				dueDateA: dateDueA,
 				remarksA: remA,
 				recdDateB: dateRecdB,
 				dueDateB: dateDueB,
 				remarksB: remB,
+				...(isThirdPayment ? {
+					amountC: amtC,
+					recdDateC,
+					dueDateC: dateDueC,
+					remarksC: remC,
+					priAmountC: thisPriAmount,
+					secAmountsC: thisSecAmounts,
+					secAmountC: thisSecAmount,
+					payoutApprovalStatusC: payoutAppStatus,
+				} : {
+					priAmountB: thisPriAmount,
+					secAmountsB: thisSecAmounts,
+					secAmountB: thisSecAmount,
+					payoutApprovalStatusB: payoutAppStatus,
+				}),
 				recdDate: dateRecdA,
 				dueDate: dateDueA,
 				payoutDate: dateDueA,
-				payout_approval_status: payoutAppStatus,
-				payoutApprovalStatus: payoutAppStatus,
+				payout_approval_status: isFinalSettled ? payoutAppStatus : (payoutAppStatus === 'APPROVED' ? 'APPROVED' : null),
+				payoutApprovalStatus: isFinalSettled ? payoutAppStatus : (payoutAppStatus === 'APPROVED' ? 'APPROVED' : null),
 				payoutApprovalStatusA: payoutAppStatus,
-				payoutApprovalStatusB: payoutAppStatus,
 				payout_approved_by: payoutAppBy,
 				payout_approved_at: payoutAppAt,
-				remarks: remB || remA || '',
+				remarks: remC || remB || remA || '',
 				priAmountA: firstPriAmount !== undefined ? firstPriAmount : existingSplit.priAmountA,
-				priAmountB: thisPriAmount,
 				secAmountsA: firstSecAmounts || existingSplit.secAmountsA,
-				secAmountsB: thisSecAmounts,
 				secAmountA: existingSplit.secAmountA,
-				secAmountB: thisSecAmount,
 				priAmount: priAmount !== undefined ? Number(priAmount) : undefined,
 				secAmount: secAmount !== undefined ? Number(secAmount) : undefined,
 				secAmounts: Array.isArray(secAmounts) ? secAmounts : undefined,
 				chqNoA,
 				chqNoB,
+				chqNoC: isThirdPayment ? `${sNo}-C` : undefined,
 				db_id: loan?.db_id,
 			};
 
@@ -6360,11 +6540,11 @@ export function JointLoanDetailsPage({
 					...(prev[sNo] || {}),
 					receivedDate: dateRecdA,
 					dueDate: dateDueA,
-					remarks: remB || remA || '',
-					payout_approval_status: payoutAppStatus,
-					payoutApprovalStatus: payoutAppStatus,
-					payout_approved_by: payoutAppBy,
-					payout_approved_at: payoutAppAt,
+					remarks: remC || remB || remA || '',
+					payout_approval_status: isFinalSettled ? payoutAppStatus : (prev[sNo]?.payout_approval_status || null),
+					payoutApprovalStatus: isFinalSettled ? payoutAppStatus : (prev[sNo]?.payoutApprovalStatus || null),
+					payout_approved_by: isFinalSettled ? payoutAppBy : (prev[sNo]?.payout_approved_by || null),
+					payout_approved_at: isFinalSettled ? payoutAppAt : (prev[sNo]?.payout_approved_at || null),
 					payout_notes: payoutAppNotes,
 				},
 				[`${sNo}A`]: {
@@ -6383,12 +6563,25 @@ export function JointLoanDetailsPage({
 					receivedDate: dateRecdB,
 					dueDate: dateDueB,
 					remarks: remB,
-					payout_approval_status: payoutAppStatus,
-					payoutApprovalStatus: payoutAppStatus,
-					payout_approved_by: payoutAppBy,
-					payout_approved_at: payoutAppAt,
+					payout_approval_status: isThirdPayment ? (prev[`${sNo}B`]?.payout_approval_status || payoutAppStatus) : payoutAppStatus,
+					payoutApprovalStatus: isThirdPayment ? (prev[`${sNo}B`]?.payoutApprovalStatus || payoutAppStatus) : payoutAppStatus,
+					payout_approved_by: isThirdPayment ? (prev[`${sNo}B`]?.payout_approved_by || payoutAppBy) : payoutAppBy,
+					payout_approved_at: isThirdPayment ? (prev[`${sNo}B`]?.payout_approved_at || payoutAppAt) : payoutAppAt,
 					payout_notes: payoutAppNotes,
 				},
+				...(isThirdPayment ? {
+					[`${sNo}C`]: {
+						...(prev[`${sNo}C`] || {}),
+						receivedDate: dateRecdC,
+						dueDate: dateDueC,
+						remarks: remC,
+						payout_approval_status: payoutAppStatus,
+						payoutApprovalStatus: payoutAppStatus,
+						payout_approved_by: payoutAppBy,
+						payout_approved_at: payoutAppAt,
+						payout_notes: payoutAppNotes,
+					}
+				} : {})
 			}));
 
 			setExpandedRows((prev) => ({
@@ -6565,6 +6758,8 @@ export function JointLoanDetailsPage({
 			const next = { ...prev };
 			delete next[`${parentSNo}A`];
 			delete next[`${parentSNo}B`];
+			delete next[`${parentSNo}C`];
+			delete next[`${parentSNo}D`];
 			return next;
 		});
 		setSplitModalTarget(null);
@@ -7012,11 +7207,17 @@ export function JointLoanDetailsPage({
 			// Delete child sub-installment overrides completely
 			delete next[`${sNo}A`];
 			delete next[`${sNo}B`];
+			delete next[`${sNo}C`];
+			delete next[`${sNo}D`];
 			delete next[`${sNoStr}A`];
 			delete next[`${sNoStr}B`];
+			delete next[`${sNoStr}C`];
+			delete next[`${sNoStr}D`];
 			if (!isNaN(sNoNum)) {
 				delete next[`${sNoNum}A`];
 				delete next[`${sNoNum}B`];
+				delete next[`${sNoNum}C`];
+				delete next[`${sNoNum}D`];
 			}
 			const clearedItem = {
 				...(next[sNo] || next[sNoNum] || next[sNoStr] || {}),
@@ -7051,10 +7252,18 @@ export function JointLoanDetailsPage({
 		delete committedDatesRef.current[`${sNoStr}A_dueDate`];
 		delete committedDatesRef.current[`${sNoStr}B_receivedDate`];
 		delete committedDatesRef.current[`${sNoStr}B_dueDate`];
+		delete committedDatesRef.current[`${sNoStr}C_receivedDate`];
+		delete committedDatesRef.current[`${sNoStr}C_dueDate`];
+		delete committedDatesRef.current[`${sNoStr}D_receivedDate`];
+		delete committedDatesRef.current[`${sNoStr}D_dueDate`];
 		delete committedDatesRef.current[`${sNo}A_receivedDate`];
 		delete committedDatesRef.current[`${sNo}A_dueDate`];
 		delete committedDatesRef.current[`${sNo}B_receivedDate`];
 		delete committedDatesRef.current[`${sNo}B_dueDate`];
+		delete committedDatesRef.current[`${sNo}C_receivedDate`];
+		delete committedDatesRef.current[`${sNo}C_dueDate`];
+		delete committedDatesRef.current[`${sNo}D_receivedDate`];
+		delete committedDatesRef.current[`${sNo}D_dueDate`];
 
 		const histEntry = {
 			id: `hist_${Date.now()}_clear`,
@@ -10132,13 +10341,17 @@ export function JointLoanDetailsPage({
 
 													// Determine minDate for recd date:
 													// For sub-installment A: inst.date
-													// For sub-installment B: first partial payment date or inst.date
+													// For sub-installments B, C, D: previous partial payment date or first partial payment date or inst.date
+													const prevSubRecd = subIdx > 0 && inst.subInstallments?.[subIdx - 1]?.receivedDate;
 													const firstPartialRecdDate = inst.subInstallments?.[0]?.receivedDate;
-													const subMinRecdDate = (subIdx > 0 && firstPartialRecdDate && parseDDMMYYYY(firstPartialRecdDate))
-														? firstPartialRecdDate
+													const effectivePrevDate = (prevSubRecd && parseDDMMYYYY(prevSubRecd))
+														? prevSubRecd
+														: (firstPartialRecdDate && parseDDMMYYYY(firstPartialRecdDate) ? firstPartialRecdDate : null);
+													const subMinRecdDate = (subIdx > 0 && effectivePrevDate)
+														? effectivePrevDate
 														: inst.date;
-													const subMinRecdLabel = (subIdx > 0 && firstPartialRecdDate && parseDDMMYYYY(firstPartialRecdDate))
-														? 'Payment #1'
+													const subMinRecdLabel = (subIdx > 0 && effectivePrevDate)
+														? (effectivePrevDate === prevSubRecd ? `Payment #${subIdx}` : 'Payment #1')
 														: 'EMI Date';
 
 													// Payout suggestions for sub-row

@@ -1565,6 +1565,21 @@ def get_loan_splits(loan_id):
                             overrides[key_b]['payoutApprovalStatus'] = split_data['payoutApprovalStatusB']
                         if split_data.get('payout_approved_by'):
                             overrides[key_b]['payout_approved_by'] = split_data['payout_approved_by']
+                    if split_data.get('recdDateC') or split_data.get('dueDateC'):
+                        key_c = f"{s_no_str}C"
+                        if key_c not in overrides:
+                            overrides[key_c] = {}
+                        if split_data.get('recdDateC'):
+                            overrides[key_c]['receivedDate'] = split_data['recdDateC']
+                        if split_data.get('dueDateC'):
+                            overrides[key_c]['dueDate'] = split_data['dueDateC']
+                        if split_data.get('remarksC'):
+                            overrides[key_c]['remarks'] = split_data['remarksC']
+                        if split_data.get('payoutApprovalStatusC'):
+                            overrides[key_c]['payout_approval_status'] = split_data['payoutApprovalStatusC']
+                            overrides[key_c]['payoutApprovalStatus'] = split_data['payoutApprovalStatusC']
+                        if split_data.get('payout_approved_by'):
+                            overrides[key_c]['payout_approved_by'] = split_data['payout_approved_by']
                 except Exception:
                     pass
 
@@ -1844,6 +1859,69 @@ def save_schedule_override(loan_id):
                                     sch.payout_notes = None
                             elif field == 'remarks':
                                 curr_splits['remarksB'] = value
+                        elif sub_part == 'C':
+                            is_c_approved = curr_splits.get('payoutApprovalStatusC') == 'APPROVED' and curr_splits.get('dueDateC') not in ('-', '—', None, '')
+                            if is_c_approved and field in ('receivedDate', 'dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                                return jsonify({"error": "Payout date is already approved. Dates cannot be edited."}), 400
+                            if field == 'receivedDate':
+                                curr_splits['recdDateC'] = value
+                                if is_admin_user:
+                                    if value and str(value).strip() not in ('-', '—', ''):
+                                        curr_splits['payoutApprovalStatusC'] = 'APPROVED'
+                                        sch.payout_approval_status = 'APPROVED'
+                                        sch.payout_approval_target = None
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                elif value and str(value).strip() not in ('-', '—', '') and curr_splits.get('payoutApprovalStatusC') != 'APPROVED':
+                                    curr_splits['payoutApprovalStatusC'] = 'PENDING'
+                                    sch.payout_approval_status = 'PENDING'
+                                    sch.payout_approval_target = 'SECONDARY'
+                                    sch.payout_requested_role = 'PRIMARY'
+                                    sch.payout_requested_by = payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Primary Manager'
+                                    sch.payout_requested_at = now_str
+                            elif field in ('dueDate', 'paymentDate', 'payment_date', 'payoutDate'):
+                                curr_splits['dueDateC'] = value
+                                payout_override_status = payload.get('payout_approval_status') or payload.get('payoutApprovalStatus')
+                                payout_target = payload.get('payout_approval_target') or payload.get('payoutApprovalTarget')
+                                payout_role = payload.get('payout_editor_role') or payload.get('payout_requested_role') or ('SECONDARY' if payout_target == 'PRIMARY' else 'PRIMARY')
+                                if not payout_target:
+                                    payout_target = 'PRIMARY' if payout_role == 'SECONDARY' else 'SECONDARY'
+
+                                is_auto_app = is_admin_user or payout_override_status == 'APPROVED'
+                                if is_auto_app:
+                                    if value and str(value).strip() not in ('-', '—', ''):
+                                        curr_splits['payoutApprovalStatusC'] = 'APPROVED'
+                                        curr_splits['payoutApprovalStatus'] = 'APPROVED'
+                                        sch.payout_approval_status = 'APPROVED'
+                                        sch.payout_approval_target = None
+                                        sch.payout_requested_role = payout_role
+                                        sch.payout_approved_by = admin_approver
+                                        sch.payout_approved_at = now_str
+                                        sch.payout_notes = payload.get('payout_notes') or 'Auto-approved by System Admin'
+                                elif value and str(value).strip() not in ('-', '—', ''):
+                                    curr_splits['payoutApprovalStatusC'] = 'PENDING'
+                                    sch.payout_approval_status = 'PENDING'
+                                    sch.payout_approval_target = payout_target
+                                    sch.payout_requested_role = payout_role
+                                    sch.payout_approved_by = None
+                                    sch.payout_approved_at = None
+                                    sch.payout_notes = None
+                                    req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
+                                    sch.payout_requested_by = req_by
+                                    sch.payout_requested_at = payload.get('payout_requested_at') or now_str
+                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
+                                else:
+                                    curr_splits['payoutApprovalStatusC'] = None
+                                    sch.payout_approval_status = None
+                                    sch.payout_approval_target = None
+                                    sch.payout_requested_role = None
+                                    sch.payout_requested_by = None
+                                    sch.payout_requested_at = None
+                                    sch.payout_approved_by = None
+                                    sch.payout_approved_at = None
+                                    sch.payout_notes = None
+                            elif field == 'remarks':
+                                curr_splits['remarksC'] = value
                         sch.splits = json.dumps(curr_splits)
                     else:
                         curr_splits = json.loads(sch.splits) if sch.splits else {}
@@ -1852,7 +1930,8 @@ def save_schedule_override(loan_id):
                                 (sch.payout_approval_status == 'APPROVED' and sch.payment_date not in ('-', '—', None, '')) or
                                 (curr_splits and (
                                     (curr_splits.get('payoutApprovalStatusA') == 'APPROVED' and curr_splits.get('dueDateA') not in ('-', '—', None, '')) or
-                                    (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, ''))
+                                    (curr_splits.get('payoutApprovalStatusB') == 'APPROVED' and curr_splits.get('dueDateB') not in ('-', '—', None, '')) or
+                                    (curr_splits.get('payoutApprovalStatusC') == 'APPROVED' and curr_splits.get('dueDateC') not in ('-', '—', None, ''))
                                 ))
                             )
                             is_clearing = not value or str(value).strip() in ('-', '—', '')
