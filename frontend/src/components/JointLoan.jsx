@@ -3673,6 +3673,7 @@ export function PartialPaymentModal({
 				accountTag: sa.accountTag || sa.initials || `SEC${idx + 1}`,
 				share: Number(sa.share) || Math.round(totalSecShare / secAccounts.length),
 				amount: Number(sa.amount) || Math.round((fullAmount * (Number(sa.share) || totalSecShare / secAccounts.length)) / 100),
+				tds: Number(sa.tds) || 0,
 			}));
 		}
 		return [
@@ -3681,9 +3682,68 @@ export function PartialPaymentModal({
 				accountTag: secTag || 'FC',
 				share: 100 - primarySharePct,
 				amount: fullAmount - (inst.primaryAmount != null ? Number(inst.primaryAmount) : Math.round((fullAmount * primarySharePct) / 100)),
+				tds: Number(inst.tds) || 0,
 			},
 		];
-	}, [inst.secAccounts, inst.primaryAmount, secAccounts, primarySharePct, secTag, fullAmount]);
+	}, [inst.secAccounts, inst.primaryAmount, inst.tds, secAccounts, primarySharePct, secTag, fullAmount]);
+
+	const isFirstEmi = Boolean(
+		inst.sNo === 1 ||
+		Number(inst.sNo) === 1 ||
+		inst.parentSNo === 1 ||
+		String(inst.sNo).startsWith('1')
+	);
+	const hasSecTds = Boolean(
+		isFirstEmi ||
+		(Array.isArray(effectiveSecAccounts) && effectiveSecAccounts.some((sa) => (Number(sa.tds) || 0) > 0)) ||
+		(Number(inst.tds) || 0) > 0
+	);
+
+	// Helper to get total 1st EMI TDS for a secondary account
+	const getSaFullTds = useCallback((idx) => {
+		const sa = effectiveSecAccounts[idx];
+		if (!sa) return 0;
+		if (inst.secAccounts?.[idx]?.tds != null && !isNaN(Number(inst.secAccounts[idx].tds))) {
+			const direct = Number(inst.secAccounts[idx].tds);
+			if (direct > 0) return direct;
+		}
+		if (isCurrentlyPartial && Array.isArray(inst.subInstallments)) {
+			const subTdsSum = inst.subInstallments.reduce((sum, sub) => sum + (Number(sub.secAccounts?.[idx]?.tds) || 0), 0);
+			if (subTdsSum > 0) return subTdsSum;
+		}
+		if (secAccounts?.[idx]?.tds != null && !isNaN(Number(secAccounts[idx].tds))) {
+			const propTds = Number(secAccounts[idx].tds);
+			if (propTds > 0) return propTds;
+		}
+		if (sa.tds != null && !isNaN(Number(sa.tds)) && Number(sa.tds) > 0) {
+			return Number(sa.tds);
+		}
+		if (effectiveSecAccounts.length === 1 && inst.tds != null && !isNaN(Number(inst.tds))) {
+			return Number(inst.tds);
+		}
+		return 0;
+	}, [effectiveSecAccounts, inst, isCurrentlyPartial, secAccounts]);
+
+	const getSaAlreadyPaidTds = useCallback((idx) => {
+		if (!isCurrentlyPartial || !Array.isArray(inst.subInstallments) || inst.subInstallments.length === 0) {
+			return 0;
+		}
+		return Number(inst.subInstallments[0]?.secAccounts?.[idx]?.tds || 0);
+	}, [isCurrentlyPartial, inst.subInstallments]);
+
+	const getSaBalanceTds = useCallback((idx) => {
+		const fullTds = getSaFullTds(idx);
+		const alreadyPaidTds = getSaAlreadyPaidTds(idx);
+		return Math.max(0, fullTds - alreadyPaidTds);
+	}, [getSaFullTds, getSaAlreadyPaidTds]);
+
+	const total1stEmiTds = useMemo(() => {
+		return effectiveSecAccounts.reduce((sum, _, idx) => sum + getSaFullTds(idx), 0);
+	}, [effectiveSecAccounts, getSaFullTds]);
+
+	const totalAlreadyPaidTds = useMemo(() => {
+		return effectiveSecAccounts.reduce((sum, _, idx) => sum + getSaAlreadyPaidTds(idx), 0);
+	}, [effectiveSecAccounts, getSaAlreadyPaidTds]);
 
 	const getSaSharePct = (sa) => {
 		if (sa.share !== undefined && sa.share !== null && !isNaN(Number(sa.share))) {
@@ -3696,12 +3756,13 @@ export function PartialPaymentModal({
 		return Math.round(totalSecShare / effectiveSecAccounts.length);
 	};
 
-	// Helper to split a given received amount into primary and per-secondary amounts based on share %
-	const calculateShareSplit = (recdNum) => {
+	// Default pure share split for initial mount before any user locks
+	const getInitialPureSplit = (recdNum) => {
 		if (!recdNum || recdNum <= 0) {
 			return {
 				pri: '',
 				secs: effectiveSecAccounts.map(() => ''),
+				tds: effectiveSecAccounts.map(() => ''),
 			};
 		}
 		const priAmt = Math.round((recdNum * primarySharePct) / 100);
@@ -3709,43 +3770,239 @@ export function PartialPaymentModal({
 		const totalSecShare =
 			effectiveSecAccounts.reduce((sum, sa) => sum + getSaSharePct(sa), 0) || (100 - primarySharePct) || 1;
 
+		const baseMax = isCurrentlyPartial ? currentBalance : fullAmount;
+		const ratio = baseMax > 0 ? (recdNum / baseMax) : 0.5;
+
 		let allocatedSec = 0;
-		const secAmts = effectiveSecAccounts.map((sa, idx) => {
-			if (idx === effectiveSecAccounts.length - 1) {
-				return String(Math.max(0, remainingSec - allocatedSec));
+		const computedTds = effectiveSecAccounts.map((sa, idx) => {
+			if (!hasSecTds) return 0;
+			if (isCurrentlyPartial) {
+				const existingBalTds = inst.subInstallments?.[1]?.secAccounts?.[idx]?.tds;
+				if (existingBalTds != null && !isNaN(Number(existingBalTds))) {
+					const bTds = Number(existingBalTds);
+					return Math.min(bTds, Math.round(bTds * ratio));
+				}
+				const balTds = getSaBalanceTds(idx);
+				return Math.min(balTds, Math.round(balTds * ratio));
 			}
-			const saShare = getSaSharePct(sa);
-			const saAmt = Math.round((remainingSec * saShare) / totalSecShare);
-			allocatedSec += saAmt;
-			return String(saAmt);
+			const fullTds = getSaFullTds(idx);
+			return Math.min(fullTds, Math.round(fullTds * ratio));
+		});
+
+		const secAmts = effectiveSecAccounts.map((sa, idx) => {
+			let grossAmt = 0;
+			if (idx === effectiveSecAccounts.length - 1) {
+				grossAmt = Math.max(0, remainingSec - allocatedSec);
+			} else {
+				const saShare = getSaSharePct(sa);
+				grossAmt = Math.round((remainingSec * saShare) / totalSecShare);
+				allocatedSec += grossAmt;
+			}
+			const saTds = computedTds[idx] || 0;
+			const netAmt = Math.max(0, grossAmt - saTds);
+			return String(netAmt);
 		});
 
 		return {
 			pri: priAmt > 0 ? formatIndianNumber(priAmt) : '',
-			secs: secAmts.map((amt) => (Number(amt) > 0 ? formatIndianNumber(amt) : '')),
+			secs: secAmts.map((amt) => (Number(amt) > 0 ? formatIndianNumber(amt) : '0')),
+			tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
 		};
 	};
 
+	const initialRecd = isCurrentlyPartial ? Math.round(currentBalance * 0.5) : Math.round(fullAmount * 0.5);
+	const initialSplit = getInitialPureSplit(initialRecd);
+
 	// When already partial, input represents payment from remaining balance; otherwise partial from full amount
-	const [payAmountInput, setPayAmountInput] = useState(() => {
-		if (isCurrentlyPartial) {
-			const def = Math.round(currentBalance * 0.5);
-			return formatIndianNumber(def);
+	const [payAmountInput, setPayAmountInput] = useState(() => formatIndianNumber(initialRecd));
+
+	// Primary & Secondary amounts auto-filled from Received Amount based on share %, with TDS deducted for secondary accounts
+	const [primaryAmountInput, setPrimaryAmountInput] = useState(() => initialSplit.pri);
+	const [secAmountsInput, setSecAmountsInput] = useState(() => initialSplit.secs);
+
+	// Secondary account TDS inputs (only for 1st EMI which has upfront TDS deduction)
+	const [secTdsInputs, setSecTdsInputs] = useState(() => initialSplit.tds);
+
+	// Lock states: allow user to freeze specific account amounts or TDS from auto-adjusting
+	const [isPriLocked, setIsPriLocked] = useState(false);
+	const [lockedSecAmounts, setLockedSecAmounts] = useState(() => effectiveSecAccounts.map(() => false));
+	const [lockedSecTds, setLockedSecTds] = useState(() => effectiveSecAccounts.map(() => false));
+
+	// Helper to split a given received amount into primary and per-secondary amounts based on share %
+	// Supports locking individual fields (Primary, Secondary Amounts, Secondary TDS)
+	const calculateShareSplit = (recdNum, customTds = null, locks = null, currentValues = null) => {
+		if (!recdNum || recdNum <= 0) {
+			return {
+				pri: '',
+				secs: effectiveSecAccounts.map(() => ''),
+				tds: effectiveSecAccounts.map(() => ''),
+			};
 		}
-		const def = Math.round(fullAmount * 0.5);
-		return formatIndianNumber(def);
-	});
 
-	// Primary & Secondary amounts auto-filled from Received Amount based on share %, and user-editable
-	const [primaryAmountInput, setPrimaryAmountInput] = useState(() => {
-		const initRecd = isCurrentlyPartial ? Math.round(currentBalance * 0.5) : Math.round(fullAmount * 0.5);
-		return calculateShareSplit(initRecd).pri;
-	});
+		const priLocked = locks?.pri ?? isPriLocked;
+		const secLocked = locks?.secs ?? lockedSecAmounts;
+		const tdsLocked = locks?.tds ?? lockedSecTds;
 
-	const [secAmountsInput, setSecAmountsInput] = useState(() => {
-		const initRecd = isCurrentlyPartial ? Math.round(currentBalance * 0.5) : Math.round(fullAmount * 0.5);
-		return calculateShareSplit(initRecd).secs;
-	});
+		const curPri = currentValues?.pri !== undefined
+			? (Number(String(currentValues.pri).replace(/[^0-9]/g, '')) || 0)
+			: (Number(String(primaryAmountInput || '').replace(/[^0-9]/g, '')) || 0);
+
+		const curSecs = currentValues?.secs !== undefined
+			? currentValues.secs.map((v) => Number(String(v || '').replace(/[^0-9]/g, '')) || 0)
+			: secAmountsInput.map((v) => Number(String(v || '').replace(/[^0-9]/g, '')) || 0);
+
+		const curTds = currentValues?.tds !== undefined
+			? currentValues.tds.map((v) => Number(String(v || '').replace(/[^0-9]/g, '')) || 0)
+			: secTdsInputs.map((v) => Number(String(v || '').replace(/[^0-9]/g, '')) || 0);
+
+		const baseMax = isCurrentlyPartial ? currentBalance : fullAmount;
+		const ratio = baseMax > 0 ? (recdNum / baseMax) : 0.5;
+
+		// 1. Determine TDS for each secondary account
+		const computedTds = effectiveSecAccounts.map((sa, idx) => {
+			if (!hasSecTds) return 0;
+			if (tdsLocked && tdsLocked[idx]) {
+				return curTds[idx] || 0;
+			}
+			if (customTds && customTds[idx] !== undefined && customTds[idx] !== '') {
+				return Number(String(customTds[idx]).replace(/[^0-9]/g, '')) || 0;
+			}
+			if (isCurrentlyPartial) {
+				const existingBalTds = inst.subInstallments?.[1]?.secAccounts?.[idx]?.tds;
+				if (existingBalTds != null && !isNaN(Number(existingBalTds))) {
+					const bTds = Number(existingBalTds);
+					return Math.min(bTds, Math.round(bTds * ratio));
+				}
+				const balTds = getSaBalanceTds(idx);
+				return Math.min(balTds, Math.round(balTds * ratio));
+			}
+			const fullTds = getSaFullTds(idx);
+			return Math.min(fullTds, Math.round(fullTds * ratio));
+		});
+
+		// 2. Check lock distribution
+		const allSecLocked = effectiveSecAccounts.length > 0 && effectiveSecAccounts.every((_, i) => secLocked && secLocked[i]);
+		const anySecLocked = effectiveSecAccounts.some((_, i) => secLocked && secLocked[i]);
+
+		// Case A: Everything is locked -> Keep all current amounts
+		if (priLocked && allSecLocked) {
+			return {
+				pri: curPri > 0 ? formatIndianNumber(curPri) : '',
+				secs: curSecs.map((amt) => (amt > 0 ? formatIndianNumber(amt) : '0')),
+				tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
+			};
+		}
+
+		// Case B: Primary is locked, but at least one secondary is unlocked
+		if (priLocked && !allSecLocked) {
+			const priAmt = curPri;
+			const remForSec = Math.max(0, recdNum - priAmt);
+			const unlockedIndices = effectiveSecAccounts.map((_, i) => i).filter((i) => !secLocked || !secLocked[i]);
+			const lockedGrossSum = effectiveSecAccounts.reduce((sum, _, i) => {
+				if (secLocked && secLocked[i]) {
+					return sum + (curSecs[i] || 0) + (computedTds[i] || 0);
+				}
+				return sum;
+			}, 0);
+			const unlockedPool = Math.max(0, remForSec - lockedGrossSum);
+			const unlockedWeights = unlockedIndices.reduce((sum, i) => sum + getSaSharePct(effectiveSecAccounts[i]), 0) || 1;
+
+			const secAmts = [...curSecs];
+			let allocatedUnlocked = 0;
+			unlockedIndices.forEach((i, idx) => {
+				let gross = 0;
+				if (idx === unlockedIndices.length - 1) {
+					gross = Math.max(0, unlockedPool - allocatedUnlocked);
+				} else {
+					const sPct = getSaSharePct(effectiveSecAccounts[i]);
+					gross = Math.round((unlockedPool * sPct) / unlockedWeights);
+					allocatedUnlocked += gross;
+				}
+				secAmts[i] = Math.max(0, gross - (computedTds[i] || 0));
+			});
+
+			return {
+				pri: priAmt > 0 ? formatIndianNumber(priAmt) : '',
+				secs: secAmts.map((amt) => (amt > 0 ? formatIndianNumber(amt) : '0')),
+				tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
+			};
+		}
+
+		// Case C: Primary is unlocked, but ALL secondaries are locked
+		if (!priLocked && allSecLocked) {
+			const lockedSecGrossSum = effectiveSecAccounts.reduce((sum, _, i) => {
+				return sum + (curSecs[i] || 0) + (computedTds[i] || 0);
+			}, 0);
+			const priAmt = Math.max(0, recdNum - lockedSecGrossSum);
+			return {
+				pri: priAmt > 0 ? formatIndianNumber(priAmt) : '',
+				secs: curSecs.map((amt) => (amt > 0 ? formatIndianNumber(amt) : '0')),
+				tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
+			};
+		}
+
+		// Case D: Primary is unlocked, and SOME secondaries are locked
+		if (!priLocked && anySecLocked) {
+			const lockedSecIndices = effectiveSecAccounts.map((_, i) => i).filter((i) => secLocked && secLocked[i]);
+			const unlockedSecIndices = effectiveSecAccounts.map((_, i) => i).filter((i) => !secLocked || !secLocked[i]);
+			const lockedSecGrossSum = lockedSecIndices.reduce((sum, i) => sum + (curSecs[i] || 0) + (computedTds[i] || 0), 0);
+			const pool = Math.max(0, recdNum - lockedSecGrossSum);
+
+			const unlockedSecWeights = unlockedSecIndices.reduce((sum, i) => sum + getSaSharePct(effectiveSecAccounts[i]), 0);
+			const totalUnlockedWeight = primarySharePct + unlockedSecWeights;
+
+			const priAmt = Math.round((pool * primarySharePct) / (totalUnlockedWeight || 1));
+			const remSec = Math.max(0, pool - priAmt);
+
+			const secAmts = [...curSecs];
+			let allocatedUnlocked = 0;
+			unlockedSecIndices.forEach((i, idx) => {
+				let gross = 0;
+				if (idx === unlockedSecIndices.length - 1) {
+					gross = Math.max(0, remSec - allocatedUnlocked);
+				} else {
+					const sPct = getSaSharePct(effectiveSecAccounts[i]);
+					gross = Math.round((remSec * sPct) / (unlockedSecWeights || 1));
+					allocatedUnlocked += gross;
+				}
+				secAmts[i] = Math.max(0, gross - (computedTds[i] || 0));
+			});
+
+			return {
+				pri: priAmt > 0 ? formatIndianNumber(priAmt) : '',
+				secs: secAmts.map((amt) => (amt > 0 ? formatIndianNumber(amt) : '0')),
+				tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
+			};
+		}
+
+		// Case E: Nothing locked (pure standard split)
+		const priAmt = Math.round((recdNum * primarySharePct) / 100);
+		const remainingSec = recdNum - priAmt;
+		const totalSecShare =
+			effectiveSecAccounts.reduce((sum, sa) => sum + getSaSharePct(sa), 0) || (100 - primarySharePct) || 1;
+
+		let allocatedSec = 0;
+		const secAmts = effectiveSecAccounts.map((sa, idx) => {
+			let grossAmt = 0;
+			if (idx === effectiveSecAccounts.length - 1) {
+				grossAmt = Math.max(0, remainingSec - allocatedSec);
+			} else {
+				const saShare = getSaSharePct(sa);
+				grossAmt = Math.round((remainingSec * saShare) / totalSecShare);
+				allocatedSec += grossAmt;
+			}
+			// Secondary account TDS is deducted from the secondary share
+			const saTds = computedTds[idx] || 0;
+			const netAmt = Math.max(0, grossAmt - saTds);
+			return String(netAmt);
+		});
+
+		return {
+			pri: priAmt > 0 ? formatIndianNumber(priAmt) : '',
+			secs: secAmts.map((amt) => (Number(amt) > 0 ? formatIndianNumber(amt) : '0')),
+			tds: computedTds.map((amt) => (amt > 0 ? formatIndianNumber(amt) : (hasSecTds ? '0' : ''))),
+		};
+	};
 
 	const [recdDate, setRecdDate] = useState(() => {
 		const today = getTodayDDMMYYYY();
@@ -3806,8 +4063,11 @@ export function PartialPaymentModal({
 		if (!rawDigits) {
 			setPayAmountInput('');
 			setError('');
-			setPrimaryAmountInput('');
-			setSecAmountsInput(effectiveSecAccounts.map(() => ''));
+			if (!isPriLocked) setPrimaryAmountInput('');
+			setSecAmountsInput((prev) => prev.map((v, i) => (lockedSecAmounts[i] ? v : '')));
+			if (hasSecTds) {
+				setSecTdsInputs((prev) => prev.map((v, i) => (lockedSecTds[i] ? v : '')));
+			}
 			return;
 		}
 
@@ -3825,9 +4085,19 @@ export function PartialPaymentModal({
 
 		const formattedVal = formatIndianNumber(recdNum);
 		setPayAmountInput(formattedVal);
-		const { pri, secs } = calculateShareSplit(recdNum);
-		setPrimaryAmountInput(pri);
-		setSecAmountsInput(secs);
+
+		const { pri, secs, tds } = calculateShareSplit(recdNum);
+		if (!isPriLocked) {
+			setPrimaryAmountInput(pri);
+		}
+		setSecAmountsInput((prev) =>
+			effectiveSecAccounts.map((_, i) => (lockedSecAmounts[i] ? prev[i] : secs[i]))
+		);
+		if (hasSecTds) {
+			setSecTdsInputs((prev) =>
+				effectiveSecAccounts.map((_, i) => (lockedSecTds[i] ? prev[i] : tds[i]))
+			);
+		}
 	};
 
 	const handlePrimaryAmountChange = (val) => {
@@ -3866,6 +4136,133 @@ export function PartialPaymentModal({
 		});
 	};
 
+	const handleSecTdsChange = (idx, val) => {
+		const rawDigits = String(val).replace(/[^0-9]/g, '');
+		let tdsNum = Number(rawDigits) || 0;
+		const maxTds = isCurrentlyPartial ? getSaBalanceTds(idx) : getSaFullTds(idx);
+		if (maxTds > 0 && tdsNum > maxTds) {
+			setError(
+				isCurrentlyPartial
+					? `Secondary account TDS cannot exceed balance TDS amount (${formatCurrency(maxTds)})`
+					: `Secondary account TDS cannot exceed total 1st EMI TDS amount (${formatCurrency(maxTds)})`
+			);
+		} else {
+			setError('');
+		}
+
+		// Current secondary net amount and previous TDS
+		const currentNet = Number(String(secAmountsInput[idx] || '').replace(/[^0-9]/g, '')) || 0;
+		const previousTds = Number(String(secTdsInputs[idx] || '').replace(/[^0-9]/g, '')) || 0;
+		const currentGross = currentNet + previousTds;
+
+		// Deduct new TDS from Gross share to get updated secondary net amount (if secondary amount is not locked)
+		if (currentGross > 0 && !lockedSecAmounts[idx]) {
+			const newNet = Math.max(0, currentGross - tdsNum);
+			setSecAmountsInput((prev) => {
+				const next = [...prev];
+				next[idx] = formatIndianNumber(newNet);
+				return next;
+			});
+		}
+
+		setSecTdsInputs((prev) => {
+			const next = [...prev];
+			next[idx] = !rawDigits ? '' : formatIndianNumber(tdsNum);
+			return next;
+		});
+	};
+
+	const togglePriLock = () => {
+		const nextLocked = !isPriLocked;
+		setIsPriLocked(nextLocked);
+		if (nextLocked && parsedInputAmount > 0) {
+			const split = calculateShareSplit(
+				parsedInputAmount,
+				null,
+				{ pri: true, secs: lockedSecAmounts, tds: lockedSecTds },
+				{ pri: primaryAmountInput, secs: secAmountsInput, tds: secTdsInputs }
+			);
+			setSecAmountsInput((prev) =>
+				effectiveSecAccounts.map((_, i) => (lockedSecAmounts[i] ? prev[i] : split.secs[i]))
+			);
+			if (hasSecTds) {
+				setSecTdsInputs((prev) =>
+					effectiveSecAccounts.map((_, i) => (lockedSecTds[i] ? prev[i] : split.tds[i]))
+				);
+			}
+			setError('');
+		}
+	};
+
+	const toggleSecAmountLock = (idx) => {
+		const nextLocked = [...lockedSecAmounts];
+		nextLocked[idx] = !nextLocked[idx];
+		setLockedSecAmounts(nextLocked);
+		if (nextLocked[idx] && parsedInputAmount > 0) {
+			const split = calculateShareSplit(
+				parsedInputAmount,
+				null,
+				{ pri: isPriLocked, secs: nextLocked, tds: lockedSecTds },
+				{ pri: primaryAmountInput, secs: secAmountsInput, tds: secTdsInputs }
+			);
+			if (!isPriLocked) {
+				setPrimaryAmountInput(split.pri);
+			}
+			setSecAmountsInput((prev) =>
+				effectiveSecAccounts.map((_, i) => (nextLocked[i] ? prev[i] : split.secs[i]))
+			);
+			if (hasSecTds) {
+				setSecTdsInputs((prev) =>
+					effectiveSecAccounts.map((_, i) => (lockedSecTds[i] ? prev[i] : split.tds[i]))
+				);
+			}
+			setError('');
+		}
+	};
+
+	const toggleSecTdsLock = (idx) => {
+		const nextLocked = [...lockedSecTds];
+		nextLocked[idx] = !nextLocked[idx];
+		setLockedSecTds(nextLocked);
+		if (nextLocked[idx] && parsedInputAmount > 0) {
+			const split = calculateShareSplit(
+				parsedInputAmount,
+				null,
+				{ pri: isPriLocked, secs: lockedSecAmounts, tds: nextLocked },
+				{ pri: primaryAmountInput, secs: secAmountsInput, tds: secTdsInputs }
+			);
+			if (!isPriLocked) {
+				setPrimaryAmountInput(split.pri);
+			}
+			setSecAmountsInput((prev) =>
+				effectiveSecAccounts.map((_, i) => (lockedSecAmounts[i] ? prev[i] : split.secs[i]))
+			);
+			setError('');
+		}
+	};
+
+	const anyLocked = isPriLocked || lockedSecAmounts.some(Boolean) || (hasSecTds && lockedSecTds.some(Boolean));
+
+	const unlockAll = () => {
+		setIsPriLocked(false);
+		setLockedSecAmounts(effectiveSecAccounts.map(() => false));
+		setLockedSecTds(effectiveSecAccounts.map(() => false));
+		if (parsedInputAmount > 0) {
+			const capped = maxAllowed > 0 ? Math.min(parsedInputAmount, maxAllowed) : parsedInputAmount;
+			const split = calculateShareSplit(
+				capped,
+				null,
+				{ pri: false, secs: effectiveSecAccounts.map(() => false), tds: effectiveSecAccounts.map(() => false) }
+			);
+			setPrimaryAmountInput(split.pri);
+			setSecAmountsInput(split.secs);
+			if (hasSecTds) {
+				setSecTdsInputs(split.tds);
+			}
+			setError('');
+		}
+	};
+
 	const parsedInputAmount = Number(String(payAmountInput).replace(/[^0-9]/g, '')) || 0;
 	const parsedPaidAmount = isCurrentlyPartial
 		? alreadyPaid + parsedInputAmount
@@ -3875,15 +4272,30 @@ export function PartialPaymentModal({
 	const parsedPriAmount = Number(String(primaryAmountInput).replace(/[^0-9]/g, '')) || 0;
 	const parsedSecAmounts = secAmountsInput.map((val) => Number(String(val).replace(/[^0-9]/g, '')) || 0);
 	const totalSecAllocated = parsedSecAmounts.reduce((sum, v) => sum + v, 0);
-	const totalAllocated = parsedPriAmount + totalSecAllocated;
+
+	const parsedSecTds = secTdsInputs.map((val) => Number(String(val).replace(/[^0-9]/g, '')) || 0);
+	const totalSecTds = parsedSecTds.reduce((sum, v) => sum + v, 0);
+
+	// Total allocated of received amount accounts for Primary + Secondary Net + Secondary TDS
+	const totalAllocated = parsedPriAmount + totalSecAllocated + (hasSecTds ? totalSecTds : 0);
 	const diffAllocated = parsedInputAmount - totalAllocated;
 
 	const handleAutoBalance = () => {
 		if (parsedInputAmount > 0) {
 			const capped = maxAllowed > 0 ? Math.min(parsedInputAmount, maxAllowed) : parsedInputAmount;
-			const { pri, secs } = calculateShareSplit(capped);
+			setIsPriLocked(false);
+			setLockedSecAmounts(effectiveSecAccounts.map(() => false));
+			setLockedSecTds(effectiveSecAccounts.map(() => false));
+			const { pri, secs, tds } = calculateShareSplit(
+				capped,
+				null,
+				{ pri: false, secs: effectiveSecAccounts.map(() => false), tds: effectiveSecAccounts.map(() => false) }
+			);
 			setPrimaryAmountInput(pri);
 			setSecAmountsInput(secs);
+			if (hasSecTds) {
+				setSecTdsInputs(tds);
+			}
 			setError('');
 		}
 	};
@@ -3934,6 +4346,20 @@ export function PartialPaymentModal({
 			return;
 		}
 
+		if (hasSecTds) {
+			for (let idx = 0; idx < effectiveSecAccounts.length; idx++) {
+				const maxTds = isCurrentlyPartial ? getSaBalanceTds(idx) : getSaFullTds(idx);
+				if (maxTds > 0 && parsedSecTds[idx] > maxTds) {
+					setError(
+						isCurrentlyPartial
+							? `TDS for ${effectiveSecAccounts[idx].accountTag || 'Secondary'} cannot exceed balance TDS of ${formatCurrency(maxTds)}`
+							: `TDS for ${effectiveSecAccounts[idx].accountTag || 'Secondary'} cannot exceed 1st EMI TDS of ${formatCurrency(maxTds)}`
+					);
+					return;
+				}
+			}
+		}
+
 		const alreadyPaidPri = isCurrentlyPartial
 			? (inst.subInstallments?.[0]?.primaryAmount != null ? Number(inst.subInstallments[0].primaryAmount) : Math.round((alreadyPaid * primarySharePct) / 100))
 			: 0;
@@ -3943,11 +4369,21 @@ export function PartialPaymentModal({
 				? inst.subInstallments[0].secAccounts.map((sa) => Number(sa.amount) || 0)
 				: effectiveSecAccounts.map(() => 0);
 
+		const alreadyPaidSecTds =
+			isCurrentlyPartial && Array.isArray(inst.subInstallments?.[0]?.secAccounts)
+				? inst.subInstallments[0].secAccounts.map((sa) => Number(sa.tds) || 0)
+				: effectiveSecAccounts.map(() => 0);
+
 		const cumulativePri = alreadyPaidPri + parsedPriAmount;
 		const cumulativeSecAmounts = parsedSecAmounts.map(
 			(amt, idx) => (alreadyPaidSecAccounts[idx] || 0) + amt
 		);
 		const cumulativeSecTotal = cumulativeSecAmounts.reduce((sum, v) => sum + v, 0);
+
+		const cumulativeSecTds = parsedSecTds.map(
+			(amt, idx) => (alreadyPaidSecTds[idx] || 0) + amt
+		);
+		const cumulativeSecTdsTotal = cumulativeSecTds.reduce((sum, v) => sum + v, 0);
 
 		onConfirm({
 			sNo: inst.sNo,
@@ -3957,18 +4393,23 @@ export function PartialPaymentModal({
 			thisPriAmount: parsedPriAmount,
 			thisSecAmounts: parsedSecAmounts,
 			thisSecAmount: totalSecAllocated,
+			thisSecTdsAmounts: parsedSecTds,
+			thisSecTds: totalSecTds,
 			recdDate,
 			payoutDate: payoutDate || recdDate,
 			remarks: (remarks || '').trim(),
 			firstPaidAmount: alreadyPaid,
 			firstPriAmount: alreadyPaidPri,
 			firstSecAmounts: alreadyPaidSecAccounts,
+			firstSecTdsAmounts: alreadyPaidSecTds,
 			firstRecdDate: inst.subInstallments?.[0]?.receivedDate || '',
 			firstPayoutDate: inst.subInstallments?.[0]?.dueDate || '',
 			firstRemarks: inst.subInstallments?.[0]?.remarks || '',
 			priAmount: cumulativePri,
 			secAmount: cumulativeSecTotal,
 			secAmounts: cumulativeSecAmounts,
+			secTds: cumulativeSecTdsTotal,
+			secTdsAmounts: cumulativeSecTds,
 			chqNoA: chqNoA.trim() || `${inst.chqNo}-A`,
 			chqNoB: chqNoB.trim() || `${inst.chqNo}-B`,
 		});
@@ -3980,7 +4421,7 @@ export function PartialPaymentModal({
 			onClick={onClose}
 		>
 			<div
-				className="bg-white rounded-2xl max-w-xl h-[calc(100vh-8rem)] max-h-[85vh] w-full flex flex-col shadow-2xl ring-1 ring-slate-200/80 overflow-hidden"
+				className="bg-white rounded-2xl max-w-2xl h-[calc(100vh-8rem)] max-h-[85vh] w-full flex flex-col shadow-2xl ring-1 ring-slate-200/80 overflow-hidden"
 				onClick={(e) => e.stopPropagation()}
 			>
 				{/* Modal Header */}
@@ -4061,6 +4502,15 @@ export function PartialPaymentModal({
 									<span className="font-bold text-slate-700 font-mono">
 										{Math.min(100, Math.round((alreadyPaid / fullAmount) * 100))}% Cleared
 									</span>
+								</div>
+							)}
+							{hasSecTds && total1stEmiTds > 0 && (
+								<div className="flex items-center justify-between text-[11px]">
+									{isCurrentlyPartial && (
+										<span className="text-slate-600 font-medium">
+											Already Deducted: <strong className="text-slate-800 font-mono">{formatCurrency(totalAlreadyPaidTds)}</strong>
+										</span>
+									)}
 								</div>
 							)}
 						</div>
@@ -4167,48 +4617,98 @@ export function PartialPaymentModal({
 
 						{/* Co-Lending Share Distribution Card */}
 						<div className="bg-white border border-slate-200/90 rounded-2xl p-4 space-y-3.5 shadow-2xs">
-							<div className="flex items-center justify-between border-b border-slate-100 pb-2">
-								<span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-									<span className="material-symbols-outlined text-[15px] text-indigo-600">pie_chart</span>
-									Co-Lending Share Distribution
-								</span>
-								<button
-									type="button"
-									onClick={handleAutoBalance}
-									className="text-[11px] font-bold text-primary hover:text-primary-dark flex items-center gap-1 cursor-pointer transition-colors"
-									title="Reset distribution to exact share percentages"
-								>
-									<span className="material-symbols-outlined text-[13px]">sync</span>
-									<span>Auto-split by %</span>
-								</button>
+							<div className="flex items-center justify-between border-b border-slate-100 pb-2 flex-wrap gap-2">
+								<div className="flex items-center gap-2 flex-wrap">
+									<span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+										<span className="material-symbols-outlined text-[15px] text-indigo-600">pie_chart</span>
+										Co-Lending Share Distribution
+									</span>
+								</div>
+								<div className="flex items-center gap-2">
+									<button
+										type="button"
+										onClick={handleAutoBalance}
+										className="text-[11px] font-bold text-primary hover:text-primary-dark flex items-center gap-1 cursor-pointer transition-colors"
+										title="Reset distribution to exact share percentages and unlock all"
+									>
+										<span className="material-symbols-outlined text-[13px]">sync</span>
+										<span>Auto-split by %</span>
+									</button>
+								</div>
 							</div>
 
 							{/* Account Share Cards Grid */}
 							<div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 items-start pt-1">
 								{/* Primary Account Card */}
-								<div className="bg-blue-50/40 border border-blue-200/80 rounded-xl p-3 space-y-2">
+								<div className={`border rounded-xl p-3 space-y-2 transition-all ${isPriLocked ? 'bg-amber-50/30 border-amber-300 ring-1 ring-amber-300/50' : 'bg-blue-50/40 border-blue-200/80'}`}>
 									<div className="flex items-center justify-between">
 										<span className="text-[11.5px] font-extrabold text-blue-950 uppercase tracking-wider flex items-center gap-1.5">
 											<span className="w-2 h-2 rounded-full bg-blue-600" />
 											{primaryTag} (Primary)
 										</span>
-										<span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-800">
-											{formatSharePercent(primarySharePct)}%
-										</span>
+										<div className="flex items-center gap-1.5">
+											<button
+												type="button"
+												onClick={togglePriLock}
+												className={`h-5 w-5 p-1 rounded flex items-center justify-center cursor-pointer transition-all ${isPriLocked
+													? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs font-extrabold'
+													: 'bg-white/80 text-slate-500 hover:text-slate-700 hover:bg-white border border-slate-200'
+												}`}
+												title={isPriLocked ? 'Primary amount is locked. Click to unlock.' : 'Lock Primary amount from auto-adjusting'}
+											>
+												<span className="material-symbols-outlined" style={{fontSize: "14px"}}>
+													{isPriLocked ? 'lock' : 'lock_open'}
+												</span>
+											</button>
+											<span className="text-[10px] font-extrabold px-1 rounded-md bg-blue-100 text-blue-800">
+												{formatSharePercent(primarySharePct)}%
+											</span>
+										</div>
 									</div>
-									<div className="relative">
-										<span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[13px]">
-											₹
-										</span>
-										<input
-											type="text"
-											inputMode="numeric"
-											value={primaryAmountInput}
-											onChange={(e) => handlePrimaryAmountChange(e.target.value)}
-											placeholder="0"
-											className="w-full pl-7 pr-3 h-[38px] bg-white border border-blue-300/80 rounded-lg text-[13.5px] font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-										/>
-									</div>
+									{hasSecTds ? (
+										<div className="pt-0.5">
+											<label className="block text-[10.5px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+												Amount
+											</label>
+											<div className="relative">
+												<span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[13px]">
+													₹
+												</span>
+												<input
+													type="text"
+													inputMode="numeric"
+													value={primaryAmountInput}
+													onChange={(e) => handlePrimaryAmountChange(e.target.value)}
+													placeholder="0"
+													className={`w-full pl-7 ${isPriLocked ? 'pr-7 bg-amber-50/30 border-amber-300 text-amber-950' : 'pr-3 bg-white border-blue-300/80 text-slate-900'} h-[36px] border rounded-lg text-[13.5px] font-bold font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all`}
+												/>
+												{isPriLocked && (
+													<span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-amber-600 pointer-events-none" title="Amount is locked">
+														<span className="material-symbols-outlined text-[14px]">lock</span>
+													</span>
+												)}
+											</div>
+										</div>
+									) : (
+										<div className="relative">
+											<span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[13px]">
+												₹
+											</span>
+											<input
+												type="text"
+												inputMode="numeric"
+												value={primaryAmountInput}
+												onChange={(e) => handlePrimaryAmountChange(e.target.value)}
+												placeholder="0"
+												className={`w-full pl-7 ${isPriLocked ? 'pr-7 bg-amber-50/30 border-amber-300 text-amber-950' : 'pr-3 bg-white border-blue-300/80 text-slate-900'} h-[38px] border rounded-lg text-[13.5px] font-bold font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all`}
+											/>
+											{isPriLocked && (
+												<span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-amber-600 pointer-events-none" title="Amount is locked">
+													<span className="material-symbols-outlined text-[14px]">lock</span>
+												</span>
+											)}
+										</div>
+									)}
 								</div>
 
 								{/* All Secondary Account Cards */}
@@ -4268,31 +4768,131 @@ export function PartialPaymentModal({
 									];
 									const theme = secColorThemes[idx % secColorThemes.length];
 									const labelText = sa.accountTag || sa.accountName || `Secondary ${idx + 1}`;
+									const isSecAmtLocked = Boolean(lockedSecAmounts[idx]);
+									const isSecTdsLocked = Boolean(lockedSecTds[idx]);
+									const isAnySaLocked = isSecAmtLocked || isSecTdsLocked;
 
 									return (
-										<div key={sa.accountTag || idx} className={`${theme.bg} border ${theme.border} rounded-xl p-3 space-y-2`}>
+										<div key={sa.accountTag || idx} className={`${theme.bg} border ${isAnySaLocked ? 'border-amber-300 ring-1 ring-amber-300/50' : theme.border} rounded-xl p-3 space-y-2 transition-all`}>
 											<div className="flex items-center justify-between">
 												<span className={`text-[11.5px] font-extrabold ${theme.text} uppercase tracking-wider flex items-center gap-1.5`}>
 													<span className={`w-2 h-2 rounded-full ${theme.dot}`} />
 													{labelText}
 												</span>
-												<span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${theme.badge}`}>
-													{formatSharePercent(sharePct)}%
-												</span>
+												<div className="flex items-center gap-1.5">
+													{!hasSecTds && (
+														<button
+															type="button"
+															onClick={() => toggleSecAmountLock(idx)}
+															className={`h-5 px-1.5 py-0.5 rounded-md text-[9.5px] font-bold flex items-center gap-1 cursor-pointer transition-all ${
+																isSecAmtLocked
+																	? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs font-extrabold'
+																	: 'bg-white/80 text-slate-500 hover:text-slate-700 hover:bg-white border border-slate-200'
+															}`}
+															title={isSecAmtLocked ? 'Secondary amount is locked. Click to unlock.' : 'Lock Secondary amount from auto-adjusting'}
+														>
+															<span className="material-symbols-outlined text-[12px]">
+																{isSecAmtLocked ? 'lock' : 'lock_open'}
+															</span>
+															<span>{isSecAmtLocked ? 'Locked' : 'Lock'}</span>
+														</button>
+													)}
+													<span className={`text-[10px] font-extrabold px-1 rounded-md ${theme.badge}`}>
+														{formatSharePercent(sharePct)}%
+													</span>
+												</div>
 											</div>
-											<div className="relative">
-												<span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[13px]">
-													₹
-												</span>
-												<input
-													type="text"
-													inputMode="numeric"
-													value={secAmountsInput[idx] ?? ''}
-													onChange={(e) => handleSecAmountChange(idx, e.target.value)}
-													placeholder="0"
-													className={`w-full pl-7 pr-3 h-[38px] bg-white border ${theme.inputBorder} rounded-lg text-[13.5px] font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 ${theme.ring} transition-all`}
-												/>
-											</div>
+											{hasSecTds ? (
+												<div className="grid grid-cols-2 gap-2 pt-0.5">
+													<div>
+														<div className="flex items-center justify-between mb-1">
+															<label className="block text-[10.5px] font-bold text-slate-600 uppercase tracking-wider">
+																Amount
+															</label>
+															<button
+																type="button"
+																onClick={() => toggleSecAmountLock(idx)}
+																className={`h-5 w-5 p-1 rounded flex items-center justify-center cursor-pointer transition-all ${
+																	isSecAmtLocked
+																		? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs font-extrabold'
+																		: 'text-slate-400 hover:text-slate-600 bg-white/60 border border-slate-200/70'
+																}`}
+																title={isSecAmtLocked ? 'Amount is locked. Click to unlock.' : 'Lock amount from auto-adjusting'}
+															>
+																<span className="material-symbols-outlined" style={{fontSize: "14px"}}>
+																	{isSecAmtLocked ? 'lock' : 'lock_open'}
+																</span>
+															</button>
+														</div>
+														<div className="relative">
+															<span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[12px]">
+																₹
+															</span>
+															<input
+																type="text"
+																inputMode="numeric"
+																value={secAmountsInput[idx] ?? ''}
+																onChange={(e) => handleSecAmountChange(idx, e.target.value)}
+																placeholder="0"
+																className={`w-full pl-6 ${isSecAmtLocked ? 'pr-6 bg-amber-50/30 border-amber-300 text-amber-950' : `pr-2 bg-white ${theme.inputBorder} text-slate-900`} h-[36px] border rounded-lg text-[13px] font-bold font-mono focus:outline-none focus:ring-2 ${theme.ring} transition-all`}
+															/>
+														</div>
+													</div>
+													<div>
+														<div className="flex items-center justify-between mb-1">
+															<label className="block text-[10.5px] font-bold text-amber-800 uppercase tracking-wider">
+																TDS
+															</label>
+															<button
+																type="button"
+																onClick={() => toggleSecTdsLock(idx)}
+																className={`h-5 w-5 p-1 rounded flex items-center justify-center cursor-pointer transition-all ${
+																	isSecTdsLocked
+																		? 'bg-amber-200 text-amber-950 border border-amber-400 shadow-2xs font-extrabold'
+																		: 'text-amber-700/70 hover:text-amber-900 bg-white/60 border border-amber-200/80'
+																}`}
+																title={isSecTdsLocked ? 'TDS is locked. Click to unlock.' : 'Lock TDS from auto-adjusting'}
+															>
+																<span className="material-symbols-outlined" style={{fontSize: "14px"}}>
+																	{isSecTdsLocked ? 'lock' : 'lock_open'}
+																</span>
+															</button>
+														</div>
+														<div className="relative">
+															<span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-amber-600 font-bold text-[12px]">
+																₹
+															</span>
+															<input
+																type="text"
+																inputMode="numeric"
+																value={secTdsInputs[idx] ?? ''}
+																onChange={(e) => handleSecTdsChange(idx, e.target.value)}
+																placeholder="0"
+																className={`w-full pl-6 ${isSecTdsLocked ? 'pr-6 bg-amber-100/70 border-amber-400 font-black' : 'pr-2 bg-amber-50/60 border-amber-300'} h-[36px] border rounded-lg text-[13px] font-bold font-mono text-amber-950 focus:outline-none focus:ring-2 focus:ring-amber-400/30 focus:border-amber-500 transition-all`}
+															/>
+														</div>
+													</div>
+												</div>
+											) : (
+												<div className="relative">
+													<span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-[13px]">
+														₹
+													</span>
+													<input
+														type="text"
+														inputMode="numeric"
+														value={secAmountsInput[idx] ?? ''}
+														onChange={(e) => handleSecAmountChange(idx, e.target.value)}
+														placeholder="0"
+														className={`w-full pl-7 ${isSecAmtLocked ? 'pr-7 bg-amber-50/30 border-amber-300 text-amber-950' : `pr-3 bg-white ${theme.inputBorder} text-slate-900`} h-[38px] border rounded-lg text-[13.5px] font-bold font-mono focus:outline-none focus:ring-2 ${theme.ring} transition-all`}
+													/>
+													{isSecAmtLocked && (
+														<span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-amber-600 pointer-events-none" title="Amount is locked">
+															<span className="material-symbols-outlined text-[14px]">lock</span>
+														</span>
+													)}
+												</div>
+											)}
 										</div>
 									);
 								})}
@@ -4301,38 +4901,42 @@ export function PartialPaymentModal({
 							{/* Distribution Share Match Indicator */}
 							{parsedInputAmount > 0 && (
 								<div
-									className={`rounded-xl px-3.5 py-2.5 text-[11.5px] flex items-center justify-between transition-colors ${diffAllocated === 0
+									className={`rounded-xl px-3 py-2 text-[10px] flex flex-col gap-1.5 transition-colors ${diffAllocated === 0
 										? 'bg-emerald-50/80 border border-emerald-200 text-emerald-800'
 										: 'bg-amber-50/90 border border-amber-300 text-amber-900'
 										}`}
 								>
-									<div className="flex items-center gap-2 font-medium flex-wrap">
-										{diffAllocated === 0 ? (
-											<span>
-												<strong>All shares match Received Amount</strong>: {primaryTag} ({formatCurrency(parsedPriAmount)})
-												{effectiveSecAccounts.map(
-													(sa, idx) =>
-														` + ${sa.accountTag || `SEC${idx + 1}`} (${formatCurrency(
-															parsedSecAmounts[idx] || 0
-														)})`
-												)} = <strong>{formatCurrency(parsedInputAmount)}</strong>
-											</span>
-										) : (
-											<span>
-												Allocated: <strong>{formatCurrency(totalAllocated)}</strong> of {formatCurrency(parsedInputAmount)}
-												{' '}&bull; Difference: <strong>{formatCurrency(Math.abs(diffAllocated))}</strong> ({diffAllocated > 0 ? 'unallocated' : 'exceeds received amount'})
-											</span>
+									<div className="flex items-center justify-between flex-wrap gap-2">
+										<div className="flex items-center gap-2 font-medium flex-wrap">
+											{diffAllocated === 0 ? (
+												<span>
+													<strong>All shares match Received Amount</strong>: {primaryTag} ({formatCurrency(parsedPriAmount)})
+													{effectiveSecAccounts.map(
+														(sa, idx) =>
+															` + ${sa.accountTag || `SEC${idx + 1}`} (${formatCurrency(
+																parsedSecAmounts[idx] || 0
+															)})`
+													)}
+													{hasSecTds && totalSecTds > 0 ? ` + TDS (${formatCurrency(totalSecTds)})` : ''}
+													{' '} = <strong>{formatCurrency(parsedInputAmount)}</strong>
+												</span>
+											) : (
+												<span>
+													Allocated: <strong>{formatCurrency(totalAllocated)}</strong> of {formatCurrency(parsedInputAmount)}
+													{' '}&bull; Difference: <strong>{formatCurrency(Math.abs(diffAllocated))}</strong> ({diffAllocated > 0 ? 'unallocated' : 'exceeds received amount'})
+												</span>
+											)}
+										</div>
+										{diffAllocated !== 0 && (
+											<button
+												type="button"
+												onClick={handleAutoBalance}
+												className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer transition-colors shrink-0 ml-auto"
+											>
+												Auto-balance
+											</button>
 										)}
 									</div>
-									{diffAllocated !== 0 && (
-										<button
-											type="button"
-											onClick={handleAutoBalance}
-											className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white shadow-2xs cursor-pointer transition-colors shrink-0 ml-2"
-										>
-											Auto-balance
-										</button>
-									)}
 								</div>
 							)}
 						</div>
@@ -5467,7 +6071,7 @@ export function JointLoanDetailsPage({
 						const existing = prev[k] || {};
 						const incoming = fromLoan[k] || {};
 						next[k] = { ...incoming, ...existing };
-						const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
+						const amountKeys = ['amountA', 'paidAmount', 'amountB', 'amountC', 'priAmount', 'priAmountA', 'priAmountB', 'priAmountC', 'secAmount', 'secAmountA', 'secAmountB', 'secAmountC', 'secAmounts', 'secAmountsA', 'secAmountsB', 'secAmountsC', 'secTds', 'secTdsA', 'secTdsB', 'secTdsC', 'secTdsAmounts', 'secTdsAmountsA', 'secTdsAmountsB', 'secTdsAmountsC'];
 						amountKeys.forEach((ak) => {
 							if (existing[ak] !== undefined && (next[ak] === undefined || next[ak] === null)) {
 								next[ak] = existing[ak];
@@ -6077,7 +6681,7 @@ export function JointLoanDetailsPage({
 							Object.entries(data.splits).forEach(([k, v]) => {
 								const existing = prev[k] || {};
 								next[k] = { ...existing, ...v };
-								const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
+								const amountKeys = ['amountA', 'paidAmount', 'amountB', 'amountC', 'priAmount', 'priAmountA', 'priAmountB', 'priAmountC', 'secAmount', 'secAmountA', 'secAmountB', 'secAmountC', 'secAmounts', 'secAmountsA', 'secAmountsB', 'secAmountsC', 'secTds', 'secTdsA', 'secTdsB', 'secTdsC', 'secTdsAmounts', 'secTdsAmountsA', 'secTdsAmountsB', 'secTdsAmountsC'];
 								amountKeys.forEach((ak) => {
 									if (existing[ak] !== undefined && (v[ak] === undefined || v[ak] === null)) {
 										next[ak] = existing[ak];
@@ -6216,6 +6820,15 @@ export function JointLoanDetailsPage({
 					: (Array.isArray(splitInfo.secAmountsA) ? splitInfo.secAmountsA : (Array.isArray(splitInfo.secAmounts) && !splitInfo.isFinalSettled ? splitInfo.secAmounts : null));
 				const customSecAmountsB = Array.isArray(splitInfo.secAmountsB) ? splitInfo.secAmountsB : null;
 
+				// Secondary accounts TDS split
+				const rawSecTdsA = splitInfo.secTdsAmountsA ?? splitInfo.secTdsAmounts ?? splitInfo.sec_tds_amounts ?? splitInfo.firstSecTdsAmounts;
+				const customSecTdsA = Array.isArray(rawSecTdsA)
+					? rawSecTdsA
+					: (Array.isArray(splitInfo.secTdsAmountsA) ? splitInfo.secTdsAmountsA : (Array.isArray(splitInfo.secTdsAmounts) && !splitInfo.isFinalSettled ? splitInfo.secTdsAmounts : null));
+				const customSecTdsB = Array.isArray(splitInfo.secTdsAmountsB) ? splitInfo.secTdsAmountsB : null;
+				const rawSecTdsSingleA = splitInfo.secTdsA ?? splitInfo.secTds ?? splitInfo.sec_tds_a ?? splitInfo.sec_tds ?? splitInfo.firstSecTds;
+				const customSecTdsSingleA = rawSecTdsSingleA !== undefined && rawSecTdsSingleA !== null && !isNaN(Number(rawSecTdsSingleA)) ? Number(rawSecTdsSingleA) : null;
+
 				const fullSecTotal = (inst.secAccounts || []).reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
 				const secAccountsA = (inst.secAccounts || []).map((sa, idx) => {
 					const saAmt = Number(sa.amount) || 0;
@@ -6231,11 +6844,18 @@ export function JointLoanDetailsPage({
 							targetAmt = Math.round((customSecAmountA * saAmt) / fullSecTotal);
 						}
 					}
+					let targetTds = Math.round(saTds * ratioA);
+					if (customSecTdsA && customSecTdsA[idx] !== undefined && customSecTdsA[idx] !== null && !isNaN(Number(customSecTdsA[idx]))) {
+						targetTds = Number(customSecTdsA[idx]);
+					} else if (customSecTdsSingleA !== null && (inst.secAccounts || []).length <= 1) {
+						targetTds = customSecTdsSingleA;
+					}
 					return {
 						...sa,
 						amount: targetAmt,
+						grossAmount: targetAmt + targetTds,
 						interest: Math.round(saInt * ratioA),
-						tds: Math.round(saTds * ratioA),
+						tds: targetTds,
 					};
 				});
 
@@ -6250,11 +6870,16 @@ export function JointLoanDetailsPage({
 					if (customSecAmountsB && customSecAmountsB[idx] !== undefined) {
 						targetAmtB = Number(customSecAmountsB[idx]);
 					}
+					let targetTdsB = Math.max(0, saTds - saTdsA);
+					if (customSecTdsB && customSecTdsB[idx] !== undefined && customSecTdsB[idx] !== null && !isNaN(Number(customSecTdsB[idx]))) {
+						targetTdsB = Number(customSecTdsB[idx]);
+					}
 					return {
 						...sa,
 						amount: targetAmtB,
+						grossAmount: targetAmtB + targetTdsB,
 						interest: saInt - saIntA,
-						tds: saTds - saTdsA,
+						tds: targetTdsB,
 					};
 				});
 
@@ -6304,6 +6929,7 @@ export function JointLoanDetailsPage({
 					secAccounts: secAccountsA,
 					secAmount: secAccountsA.reduce((sum, sa) => sum + (sa.amount || 0), 0),
 					secInterest: secAccountsA.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+					tds: secAccountsA.reduce((sum, sa) => sum + (sa.tds || 0), 0),
 					chqNo: splitInfo.chqNoA || `${inst.chqNo}-A`,
 					receivedDate: recdDateA,
 					dueDate: dueDateA,
@@ -6333,6 +6959,7 @@ export function JointLoanDetailsPage({
 					secAccounts: secAccountsB,
 					secAmount: secAccountsB.reduce((sum, sa) => sum + (sa.amount || 0), 0),
 					secInterest: secAccountsB.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+					tds: secAccountsB.reduce((sum, sa) => sum + (sa.tds || 0), 0),
 					chqNo: splitInfo.chqNoB || `${inst.chqNo}-B`,
 					receivedDate: recdDateB,
 					dueDate: dueDateB,
@@ -6423,6 +7050,7 @@ export function JointLoanDetailsPage({
 				const priInterestC = Math.max(0, fullPriInterest - (priInterestA + (isPartBPaid ? priInterestB : 0)));
 
 				const customSecAmountsC = Array.isArray(splitInfo.secAmountsC) ? splitInfo.secAmountsC : null;
+				const customSecTdsC = Array.isArray(splitInfo.secTdsAmountsC) ? splitInfo.secTdsAmountsC : null;
 				const secAccountsC = (inst.secAccounts || []).map((sa, idx) => {
 					const saAmt = Number(sa.amount) || 0;
 					const saInt = Number(sa.interest) || 0;
@@ -6437,11 +7065,16 @@ export function JointLoanDetailsPage({
 					if (customSecAmountsC && customSecAmountsC[idx] !== undefined) {
 						targetAmtC = Number(customSecAmountsC[idx]);
 					}
+					let targetTdsC = Math.max(0, saTds - (saTdsA + saTdsB));
+					if (customSecTdsC && customSecTdsC[idx] !== undefined && customSecTdsC[idx] !== null && !isNaN(Number(customSecTdsC[idx]))) {
+						targetTdsC = Number(customSecTdsC[idx]);
+					}
 					return {
 						...sa,
 						amount: targetAmtC,
+						grossAmount: targetAmtC + targetTdsC,
 						interest: Math.max(0, saInt - (saIntA + saIntB)),
-						tds: Math.max(0, saTds - (saTdsA + saTdsB)),
+						tds: targetTdsC,
 					};
 				});
 
@@ -6463,6 +7096,7 @@ export function JointLoanDetailsPage({
 						secAccounts: secAccountsC,
 						secAmount: secAccountsC.reduce((sum, sa) => sum + (sa.amount || 0), 0),
 						secInterest: secAccountsC.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+						tds: secAccountsC.reduce((sum, sa) => sum + (sa.tds || 0), 0),
 						chqNo: splitInfo.chqNoC || `${inst.chqNo}-C`,
 						receivedDate: recdDateC,
 						dueDate: dueDateC,
@@ -6506,11 +7140,14 @@ export function JointLoanDetailsPage({
 						const saAmtC = secAccountsC[idx]?.amount || 0;
 						const saIntC = secAccountsC[idx]?.interest || 0;
 						const saTdsC = secAccountsC[idx]?.tds || 0;
+						const targetTdsD = Math.max(0, saTds - (saTdsA + saTdsB + saTdsC));
+						const targetAmtD = Math.max(0, saAmt - (saAmtA + saAmtB + saAmtC));
 						return {
 							...sa,
-							amount: Math.max(0, saAmt - (saAmtA + saAmtB + saAmtC)),
+							amount: targetAmtD,
+							grossAmount: targetAmtD + targetTdsD,
 							interest: Math.max(0, saInt - (saIntA + saIntB + saIntC)),
-							tds: Math.max(0, saTds - (saTdsA + saTdsB + saTdsC)),
+							tds: targetTdsD,
 						};
 					});
 
@@ -6530,6 +7167,7 @@ export function JointLoanDetailsPage({
 						secAccounts: secAccountsD,
 						secAmount: secAccountsD.reduce((sum, sa) => sum + (sa.amount || 0), 0),
 						secInterest: secAccountsD.reduce((sum, sa) => sum + (sa.interest || 0), 0),
+						tds: secAccountsD.reduce((sum, sa) => sum + (sa.tds || 0), 0),
 						chqNo: splitInfo.chqNoD || `${inst.chqNo}-D`,
 						receivedDate: recdDateD,
 						dueDate: dueDateD,
@@ -6711,9 +7349,12 @@ export function JointLoanDetailsPage({
 		thisPriAmount,
 		thisSecAmounts,
 		thisSecAmount,
+		thisSecTdsAmounts,
+		thisSecTds,
 		firstPaidAmount,
 		firstPriAmount,
 		firstSecAmounts,
+		firstSecTdsAmounts,
 		firstRecdDate,
 		firstPayoutDate,
 		firstRemarks,
@@ -6723,6 +7364,8 @@ export function JointLoanDetailsPage({
 		priAmount,
 		secAmount,
 		secAmounts,
+		secTds,
+		secTdsAmounts,
 		chqNoA,
 		chqNoB,
 	}) => {
@@ -6791,11 +7434,15 @@ export function JointLoanDetailsPage({
 					priAmountC: thisPriAmount,
 					secAmountsC: thisSecAmounts,
 					secAmountC: thisSecAmount,
+					secTdsAmountsC: thisSecTdsAmounts,
+					secTdsC: thisSecTds,
 					payoutApprovalStatusC: payoutAppStatus,
 				} : {
 					priAmountB: thisPriAmount,
 					secAmountsB: thisSecAmounts,
 					secAmountB: thisSecAmount,
+					secTdsAmountsB: thisSecTdsAmounts,
+					secTdsB: thisSecTds,
 					payoutApprovalStatusB: payoutAppStatus,
 				}),
 				recdDate: dateRecdA,
@@ -6810,9 +7457,13 @@ export function JointLoanDetailsPage({
 				priAmountA: firstPriAmount !== undefined ? firstPriAmount : existingSplit.priAmountA,
 				secAmountsA: firstSecAmounts || existingSplit.secAmountsA,
 				secAmountA: existingSplit.secAmountA,
+				secTdsAmountsA: firstSecTdsAmounts || existingSplit.secTdsAmountsA,
+				secTdsA: existingSplit.secTdsA,
 				priAmount: priAmount !== undefined ? Number(priAmount) : undefined,
 				secAmount: secAmount !== undefined ? Number(secAmount) : undefined,
 				secAmounts: Array.isArray(secAmounts) ? secAmounts : undefined,
+				secTds: secTds !== undefined ? Number(secTds) : undefined,
+				secTdsAmounts: Array.isArray(secTdsAmounts) ? secTdsAmounts : undefined,
 				chqNoA,
 				chqNoB,
 				chqNoC: isThirdPayment ? `${sNo}-C` : undefined,
@@ -6889,7 +7540,7 @@ export function JointLoanDetailsPage({
 								Object.entries(res.splits).forEach(([k, v]) => {
 									const existing = prev[k] || {};
 									next[k] = { ...existing, ...v };
-									const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
+									const amountKeys = ['amountA', 'paidAmount', 'amountB', 'amountC', 'priAmount', 'priAmountA', 'priAmountB', 'priAmountC', 'secAmount', 'secAmountA', 'secAmountB', 'secAmountC', 'secAmounts', 'secAmountsA', 'secAmountsB', 'secAmountsC', 'secTds', 'secTdsA', 'secTdsB', 'secTdsC', 'secTdsAmounts', 'secTdsAmountsA', 'secTdsAmountsB', 'secTdsAmountsC'];
 									amountKeys.forEach((ak) => {
 										if (existing[ak] !== undefined && (v[ak] === undefined || v[ak] === null)) {
 											next[ak] = existing[ak];
@@ -6949,6 +7600,13 @@ export function JointLoanDetailsPage({
 			priAmount: priAmount !== undefined ? Number(priAmount) : undefined,
 			secAmount: secAmount !== undefined ? Number(secAmount) : undefined,
 			secAmounts: Array.isArray(secAmounts) ? secAmounts : undefined,
+			priAmountA: priAmount !== undefined ? Number(priAmount) : undefined,
+			secAmountA: secAmount !== undefined ? Number(secAmount) : undefined,
+			secAmountsA: Array.isArray(secAmounts) ? secAmounts : undefined,
+			secTds: secTds !== undefined ? Number(secTds) : undefined,
+			secTdsA: thisSecTds !== undefined ? Number(thisSecTds) : undefined,
+			secTdsAmounts: Array.isArray(secTdsAmounts) ? secTdsAmounts : undefined,
+			secTdsAmountsA: Array.isArray(thisSecTdsAmounts) ? thisSecTdsAmounts : undefined,
 			chqNoA,
 			chqNoB,
 			db_id: loan?.db_id,
@@ -7005,7 +7663,7 @@ export function JointLoanDetailsPage({
 							Object.entries(res.splits).forEach(([k, v]) => {
 								const existing = prev[k] || {};
 								next[k] = { ...existing, ...v };
-								const amountKeys = ['amountA', 'paidAmount', 'amountB', 'priAmount', 'priAmountA', 'priAmountB', 'secAmount', 'secAmountA', 'secAmountB', 'secAmounts', 'secAmountsA', 'secAmountsB'];
+								const amountKeys = ['amountA', 'paidAmount', 'amountB', 'amountC', 'priAmount', 'priAmountA', 'priAmountB', 'priAmountC', 'secAmount', 'secAmountA', 'secAmountB', 'secAmountC', 'secAmounts', 'secAmountsA', 'secAmountsB', 'secAmountsC', 'secTds', 'secTdsA', 'secTdsB', 'secTdsC', 'secTdsAmounts', 'secTdsAmountsA', 'secTdsAmountsB', 'secTdsAmountsC'];
 								amountKeys.forEach((ak) => {
 									if (existing[ak] !== undefined && (v[ak] === undefined || v[ak] === null)) {
 										next[ak] = existing[ak];
@@ -7915,7 +8573,17 @@ export function JointLoanDetailsPage({
 				firstInst?.secAccounts?.[idx]?.tds ??
 				0
 			);
-			recdSecTds[idx] = is1stPayoutFilled ? firstEmiTds : 0;
+			if (firstInst?.isPartial && Array.isArray(firstInst?.subInstallments)) {
+				let subTdsAcc = 0;
+				firstInst.subInstallments.forEach((s) => {
+					if (isDateFilled(s.dueDate)) {
+						subTdsAcc += Number(s.secAccounts?.[idx]?.tds || 0);
+					}
+				});
+				recdSecTds[idx] = subTdsAcc;
+			} else {
+				recdSecTds[idx] = is1stPayoutFilled ? firstEmiTds : 0;
+			}
 		}
 
 		return {
@@ -10832,7 +11500,20 @@ export function JointLoanDetailsPage({
 																		{isDetailedView && (
 																			<td className="py-2.5 px-3.5 text-center font-bold text-slate-400 text-[13px] whitespace-nowrap"></td>
 																		)}
-																		<td className="py-2.5 px-3.5 text-center font-bold text-slate-400 text-[13px] whitespace-nowrap"></td>
+																		<td className="py-2.5 px-3.5 text-center whitespace-nowrap">
+																			{(inst.sNo === 1 || sub.parentSNo === 1) && (sa.tds || 0) > 0 ? (
+																				<span
+																					className="font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded ring-1 ring-amber-200/70 text-[11px]"
+																					title={`${formatCurrency(sa.tds)} TDS deducted for ${sub.subLabel || 'Payment'}`}
+																				>
+																					{formatCurrency(sa.tds)}
+																				</span>
+																			) : (
+																				<span className="text-slate-400 font-bold text-[13px]">
+																					{(inst.sNo === 1 || sub.parentSNo === 1) ? '-' : ''}
+																				</span>
+																			)}
+																		</td>
 																	</React.Fragment>
 																);
 															})}
