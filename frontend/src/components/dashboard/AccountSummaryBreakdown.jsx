@@ -43,7 +43,9 @@ export default function AccountSummaryBreakdown({
 				});
 			});
 		}
-		return summaries;
+		return [...summaries].sort((a, b) =>
+			(a.accountName || '').localeCompare(b.accountName || '', undefined, { sensitivity: 'base', numeric: true })
+		);
 	}, [loans, rawAccounts, isAdmin, allowedPrimaryKeys]);
 
 	if (accountSummaries.length === 0) {
@@ -92,7 +94,12 @@ export default function AccountSummaryBreakdown({
 				<table className="w-full text-left text-xs">
 					<thead className="sticky top-0 bg-slate-50/95 backdrop-blur-sm z-10 shadow-2xs">
 						<tr className="border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-							<th className="py-2.5 px-3">Partner Account</th>
+							<th className="py-2.5 px-3">
+								<div className="flex items-center gap-1.5">
+									<span>Account Name</span>
+									<span className="material-symbols-outlined text-[13px] text-primary" title="Sorted ascending (A-Z)">arrow_upward</span>
+								</div>
+							</th>
 							<th className="py-2.5 px-3 text-center">Facilities</th>
 							<th className="py-2.5 px-3 text-right">Total Principal</th>
 							<th className="py-2.5 px-3 text-right">Total Collected</th>
