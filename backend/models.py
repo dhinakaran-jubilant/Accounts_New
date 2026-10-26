@@ -16,7 +16,7 @@ class Loan(db.Model):
     loan_ref_id = db.Column(db.String(50), nullable=True)
     client_account_name = db.Column(db.String(255), nullable=False)
     address = db.Column(db.Text, nullable=True)
-    contact = db.Column(db.String(100), nullable=True)
+    contact = db.Column(db.Text, nullable=True)
     loan_amount = db.Column(db.Float, nullable=False)
     loan_date = db.Column(db.String(100), nullable=False)
     primary_account_amount = db.Column(db.Float, nullable=False)

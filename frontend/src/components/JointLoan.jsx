@@ -10862,8 +10862,8 @@ export function JointLoanDetailsPage({
 				</div>
 			)}
 
-			{/* 5-Card Financial Metrics Strip */}
-			<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-space-md">
+			{/* 4-Card Financial Metrics Strip */}
+			<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
 				{/* KPI 1: Total Principal */}
 				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
@@ -10902,35 +10902,7 @@ export function JointLoanDetailsPage({
 					</div>
 				</div>
 
-				{/* KPI 3: Share Ratio % */}
-				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
-					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
-						<span>Share Ratio %</span>
-						<span className="material-symbols-outlined text-indigo-600 text-[20px]">
-							pie_chart
-						</span>
-					</div>
-					<div className="my-2">
-						<div className="font-extrabold text-[24px] text-slate-900 leading-tight">
-							{shareRatioText}
-						</div>
-						<div className="flex flex-wrap items-center gap-1 text-[12px] text-slate-500 mt-1">
-							<span className="font-bold text-indigo-700">
-								{primarySharePercent}% {primaryAcc?.accountTag || 'Primary'}
-							</span>
-							{secondaryAccountsList.map((a, idx) => (
-								<React.Fragment key={a.id || idx}>
-									<span>/</span>
-									<span className="font-semibold text-slate-700">
-										{secondarySharePercents[idx] ?? 0}% {a.accountTag || a.initials || 'Sec'}
-									</span>
-								</React.Fragment>
-							))}
-						</div>
-					</div>
-				</div>
-
-				{/* KPI 4: Total Repay Amount */}
+				{/* KPI 3: Total Repay Amount */}
 				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
 						<span>Total Repay Amount</span>
@@ -10948,7 +10920,7 @@ export function JointLoanDetailsPage({
 					</div>
 				</div>
 
-				{/* KPI 5: Total Penal Interest */}
+				{/* KPI 4: Total Penal Interest */}
 				<div
 					onClick={() => setActiveTab('penal')}
 					className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 hover:ring-rose-300 hover:shadow-md transition-all flex flex-col justify-between cursor-pointer group"
@@ -13701,6 +13673,9 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const [duplicateLoanError, setDuplicateLoanError] = useState(null); // { loanId, clientName, amount, date, status, message }
 	const [unauthorizedPrimaryError, setUnauthorizedPrimaryError] = useState(null); // { extractedPrimary, allowedAccounts, allowedLabels, fileName }
 	const [isSubmittingLoan, setIsSubmittingLoan] = useState(false);
+	const [customLoanId, setCustomLoanId] = useState('');
+	const [tempLoanIdInput, setTempLoanIdInput] = useState('');
+	const [showLoanIdPrompt, setShowLoanIdPrompt] = useState(false);
 
 	// Delete confirmation modal state
 	const [loanToDelete, setLoanToDelete] = useState(null);
@@ -13792,6 +13767,9 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		setDuplicateLoanError(null);
 		setUnauthorizedPrimaryError(null);
 		setIsSubmittingLoan(false);
+		setCustomLoanId('');
+		setTempLoanIdInput('');
+		setShowLoanIdPrompt(false);
 		if (fileInputRef.current) fileInputRef.current.value = '';
 	};
 
@@ -14192,6 +14170,9 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		setPrimaryAmountInput('');
 		setPrimaryShareInput('50');
 		setSecondaryAccounts([{ id: 1, accountName: '', amount: '', sharePercent: '' }]);
+		setCustomLoanId('');
+		setTempLoanIdInput('');
+		setShowLoanIdPrompt(false);
 		if (fileInputRef.current) fileInputRef.current.value = '';
 	};
 
@@ -14316,7 +14297,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 								};
 							}
 						} catch (chkErr) {
-							console.warn('Backend loan ID existence check error:', chkErr);
+							console.warn('loan ID existence check error:', chkErr);
 						}
 					}
 				}
@@ -14329,6 +14310,18 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					// Loan verified as unique and non-duplicate!
 					setPdfParsed(d);
 					setDuplicateLoanError(null);
+
+					// Docx files don't have loan id: ask for optional Loan ID
+					const isDocx = (docFile.name || '').toLowerCase().match(/\.docx?$/i);
+					if (isDocx || !d.loan_number) {
+						setCustomLoanId('');
+						setTempLoanIdInput('');
+						setShowLoanIdPrompt(true);
+					} else {
+						setCustomLoanId(d.loan_number);
+						setTempLoanIdInput(d.loan_number);
+						setShowLoanIdPrompt(false);
+					}
 
 					// Auto-fill form fields from parsed data
 					const priName = d.primary_account || '';
@@ -14853,7 +14846,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 		// If a PDF was parsed, use the proper upload+store path
 		if (pdfParsed && selectedPdfFile) {
-			const candidateId = pdfParsed.loan_number || '';
+			const candidateId = (customLoanId || pdfParsed.loan_number || '').trim();
 			const candidateClient = pdfParsed.client_account || newCoName || '';
 			const candidateDate = pdfParsed.loan_date || '';
 
@@ -15071,6 +15064,77 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		} finally {
 			setIsSubmittingLoan(false);
 		}
+	};
+
+	// Modal asking for optional Loan ID (particularly for Word/Docx documents)
+	const renderLoanIdPromptModal = () => {
+		if (!showLoanIdPrompt) return null;
+		return (
+			<div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+				<div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden p-6 space-y-4 animate-in zoom-in-95 duration-150">
+					<div className="flex items-center gap-3">
+						<div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
+							<span className="material-symbols-outlined text-[22px]">tag</span>
+						</div>
+						<div>
+							<h3 className="text-[16px] font-bold text-slate-900">
+								Loan ID <span className="text-[12px] font-normal text-slate-500">(Optional)</span>
+							</h3>
+							<p className="text-[12px] text-slate-500">
+								Word (.docx) files do not contain an embedded Loan ID.
+							</p>
+						</div>
+					</div>
+
+					<div className="space-y-1.5">
+						<label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
+							Enter Loan ID / Ref No
+						</label>
+						<input
+							type="text"
+							value={tempLoanIdInput}
+							onChange={(e) => setTempLoanIdInput(e.target.value.toUpperCase())}
+							onKeyDown={(e) => {
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									setCustomLoanId(tempLoanIdInput.trim());
+									setShowLoanIdPrompt(false);
+								}
+							}}
+							placeholder="e.g. JL-2026-0012"
+							autoFocus
+							className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono text-[13px] font-bold uppercase text-slate-900 placeholder:text-slate-400 placeholder:normal-case placeholder:font-normal focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+						/>
+						<p className="text-[11px] text-slate-400">
+							Leave blank to automatically assign the next sequential Loan ID.
+						</p>
+					</div>
+
+					<div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+						<button
+							type="button"
+							onClick={() => {
+								setCustomLoanId('');
+								setShowLoanIdPrompt(false);
+							}}
+							className="px-4 py-2 rounded-xl text-[12px] font-bold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+						>
+							Auto-Generate (Skip)
+						</button>
+						<button
+							type="button"
+							onClick={() => {
+								setCustomLoanId(tempLoanIdInput.trim());
+								setShowLoanIdPrompt(false);
+							}}
+							className="px-4 py-2 rounded-xl text-[12px] font-bold bg-primary hover:bg-primary-container text-white shadow-xs transition-all cursor-pointer"
+						>
+							Save Loan ID
+						</button>
+					</div>
+				</div>
+			</div>
+		);
 	};
 
 	// Render Delete Loan confirmation card
@@ -16444,14 +16508,68 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 														Extracted Loan Details
 													</h4>
 												</div>
-												{pdfParsed.loan_number && (
-													<span className="font-mono font-black text-[12px] text-primary bg-primary/10 px-2.5 py-1 rounded-lg border border-primary/20">
-														{pdfParsed.loan_number}
-													</span>
+												{(customLoanId || pdfParsed.loan_number) ? (
+													<div className="flex items-center gap-1.5">
+														<span className="font-mono font-black text-[12px] text-primary bg-primary/10 px-2.5 py-1 rounded-lg border border-primary/20">
+															{customLoanId || pdfParsed.loan_number}
+														</span>
+														<button
+															type="button"
+															onClick={() => {
+																setTempLoanIdInput(customLoanId || pdfParsed.loan_number || '');
+																setShowLoanIdPrompt(true);
+															}}
+															className="p-1 rounded-lg text-slate-400 hover:text-primary hover:bg-slate-100 transition-all cursor-pointer"
+															title="Edit Loan ID (Optional)"
+														>
+															<span className="material-symbols-outlined text-[15px]">edit</span>
+														</button>
+													</div>
+												) : (
+													<div className="flex items-center gap-1.5">
+														<span className="text-[11px] text-slate-400 italic">
+															ID: Auto-generated
+														</span>
+														<button
+															type="button"
+															onClick={() => {
+																setTempLoanIdInput('');
+																setShowLoanIdPrompt(true);
+															}}
+															className="inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:text-primary-container bg-primary/10 hover:bg-primary/20 px-2 py-0.5 rounded-lg border border-primary/20 transition-all cursor-pointer"
+															title="Assign custom Loan ID"
+														>
+															<span className="material-symbols-outlined text-[14px]">add</span>
+															<span>Add Loan ID (Optional)</span>
+														</button>
+													</div>
 												)}
 											</div>
 
-											<div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-[12px]">
+											<div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 text-[12px]">
+												<div>
+													<span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
+														Loan ID / Ref
+													</span>
+													<div className="flex items-center gap-1.5">
+														<span className="font-mono font-bold text-slate-900 truncate block">
+															{customLoanId || pdfParsed.loan_number || (
+																<span className="text-slate-400 font-normal italic">Auto-generated</span>
+															)}
+														</span>
+														<button
+															type="button"
+															onClick={() => {
+																setTempLoanIdInput(customLoanId || pdfParsed.loan_number || '');
+																setShowLoanIdPrompt(true);
+															}}
+															className="text-slate-400 hover:text-primary transition-colors cursor-pointer"
+															title="Set or edit Loan ID"
+														>
+															<span className="material-symbols-outlined text-[13px]">edit</span>
+														</button>
+													</div>
+												</div>
 												<div>
 													<span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">
 														Borrower / Client
@@ -16830,6 +16948,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			{renderDeleteModal()}
 			{/* Access Restricted Notification Modal */}
 			{renderAccessRestrictedModal()}
+			{/* Loan ID Prompt Modal for docx / optional loan ID */}
+			{renderLoanIdPromptModal()}
 
 			{/* Bottom Right Success Notification Alert */}
 			{renderBottomRightAlert()}

@@ -513,16 +513,27 @@ def normalize_date_str(val):
     return str(val).strip()
 
 
+def clean_entity_name(raw):
+    """
+    Cleans corporate/individual entity names:
+    - Strips 'M/s.', 'M/S', 'M/s' prefix
+    - Strips '(PAN No. ...)'
+    - Strips trailing commas and whitespace
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    s = re.sub(r'^(?:M\s*/\s*s\.?|Messrs\.?)\s*', '', s, flags=re.I)
+    s = re.sub(r'\s*\([Pp][Aa][Nn].*?\)', '', s)
+    s = re.sub(r'[,.\s\-_/]+$', '', s)
+    return s.strip()
+
+
 def extract_docx_data(docx_path):
     """
     Parses loan details and repayment schedule from Word (.docx) documents.
-    Maps:
-      - PARTY NAME -> client_account
-      - PAYMENT DATE / DATE -> loan_date
-      - PAYMENT AMT / PRINCIPAL / LOAN AMT -> loan_amount
-      - REPAYMENT AMT -> total_repayment
-      - ACCOUNT / BRANCH -> primary_account
-      - Tables with date, cheque, amount -> repayment schedule table (EMIs)
+    Supports both key-value pair format and letterhead/narrative agreement formats.
+    Supports multi-page documents and multiple schedule tables.
     """
     if not DOCX_AVAILABLE:
         raise ValueError("python-docx is not installed on this system.")
@@ -543,37 +554,91 @@ def extract_docx_data(docx_path):
         "table": []
     }
 
+    full_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
     bank_info = []
+
+    # 1. Parse simple KEY: VALUE paragraphs if present
     for p in doc.paragraphs:
         txt = p.text.strip()
         if not txt:
             continue
-        # Split on separators like '–', '—', '-', ':', '='
         parts = re.split(r'[:–—\-\u2013\u2014=]\s*', txt, maxsplit=1)
         if len(parts) == 2:
             k, v = parts[0].strip().upper(), parts[1].strip()
-            # Note: check REPAYMENT before PAYMENT AMT because REPAYMENT AMT ends with PAYMENT AMT
-            if "REPAYMENT" in k:
+            if "REPAYMENT" in k and not output["total_repayment"]:
                 output["total_repayment"] = parse_docx_amount(v)
-            elif any(x in k for x in ["PAYMENT AMT", "PRINCIPAL", "LOAN AMT", "LOAN AMOUNT"]):
+            elif any(x in k for x in ["PAYMENT AMT", "PRINCIPAL", "LOAN AMT", "LOAN AMOUNT"]) and not output["loan_amount"]:
                 output["loan_amount"] = parse_docx_amount(v)
-            elif any(x in k for x in ["PARTY NAME", "CLIENT", "BORROWER", "CUSTOMER"]):
-                output["client_account"] = clean_customer_name(v)
-            elif any(x in k for x in ["PAYMENT DATE", "LOAN DATE", "DATE"]):
+            elif any(x in k for x in ["PARTY NAME", "CLIENT", "BORROWER", "CUSTOMER"]) and not output["client_account"]:
+                output["client_account"] = clean_customer_name(clean_entity_name(v))
+            elif any(x in k for x in ["PAYMENT DATE", "LOAN DATE", "DATE"]) and not output["loan_date"]:
                 output["loan_date"] = normalize_date_str(v)
-            elif any(x in k for x in ["ACCOUNT", "BRANCH"]):
-                output["primary_account"] = v.upper()
-            elif any(x in k for x in ["LOAN NO", "LOAN NUMBER", "REF NO"]):
+            elif any(x in k for x in ["ACCOUNT", "BRANCH"]) and not output["primary_account"]:
+                output["primary_account"] = clean_entity_name(v).upper()
+            elif any(x in k for x in ["LOAN NO", "LOAN NUMBER", "REF NO"]) and not output["loan_number"]:
                 output["loan_number"] = v
             elif any(x in k for x in ["A/C", "IFSC", "BANK"]):
                 bank_info.append(f"{parts[0].strip()}: {v}")
         elif any(x in txt.upper() for x in ["A/C", "IFSC", "BANK"]):
             bank_info.append(txt)
 
-    if bank_info:
-        output["contact"] = " | ".join(bank_info)
+    # 2. Enhanced regex extraction for letter pad / narrative format
+    # 2a. Loan Date
+    if not output["loan_date"]:
+        m_date = re.search(r'(?:Date|Loan\s+Date)\s*[:–—\-=]\s*(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})', full_text, flags=re.I)
+        if m_date:
+            output["loan_date"] = normalize_date_str(m_date.group(1))
 
-    # Process table for repayment schedule
+    # 2b. Client / Borrower Name
+    if not output["client_account"]:
+        m_client = re.search(r'(?:I\s*/\s*We|I/We)\s+(?:M\s*/\s*s\.?\s+)?([A-Z0-9\s&.,\'\u2019-]+?)\s+have\s+borrowed', full_text, flags=re.I)
+        if not m_client:
+            m_client = re.search(r'From\s+Name\s*:\s*(?:M\s*/\s*s\.?\s+)?([A-Z0-9\s&.,\'\u2019-]+?)(?:,\s*Bank|\s*Bank|\n|$)', full_text, flags=re.I)
+        if m_client:
+            output["client_account"] = clean_customer_name(clean_entity_name(m_client.group(1)))
+
+    # 2c. Primary Account / Lender Name
+    if not output["primary_account"]:
+        m_primary = re.search(r'borrowed.*?from\s+(?:M\s*/\s*s\.?\s+)?([A-Z0-9\s&.,\'\u2019-]+?)(?:\.|\s*Towards|\n|$)', full_text, flags=re.I)
+        if not m_primary:
+            m_primary = re.search(r'To\s*(?:Date[^\n]*)?\n\s*(?:M\s*/\s*s\.?\s+)?([A-Z0-9\s&.,\'\u2019-]+?)(?:,\s*\(PAN|\s*\(PAN|,\s*Place|\n|$)', full_text, flags=re.I)
+        if m_primary:
+            output["primary_account"] = clean_entity_name(m_primary.group(1)).upper()
+
+    # 2d. Loan Amount
+    if not output["loan_amount"]:
+        m_amt = re.search(r'loan\s+of\s+Rs\.?\s*([\d,]+(?:\.\d+)?)/?-?', full_text, flags=re.I)
+        if not m_amt:
+            m_amt = re.search(r'borrowed.*?Rs\.?\s*([\d,]+(?:\.\d+)?)/?-?', full_text, flags=re.I)
+        if m_amt:
+            output["loan_amount"] = parse_docx_amount(m_amt.group(1))
+
+    # 2e. Bank / Contact info
+    if not output["contact"]:
+        m_bank = re.search(r'(?:From\s+Name:[^\n]*,\s*)?(Bank\s*:[^\n]+)', full_text, flags=re.I)
+        if m_bank:
+            output["contact"] = m_bank.group(1).strip()
+        elif bank_info:
+            output["contact"] = " | ".join(bank_info)
+
+    # 2f. Address info
+    if not output["address"]:
+        m_branch = re.search(r'Branch\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*?)(?:,\s*IFS|\s*IFS|\n|$)', full_text, flags=re.I)
+        if m_branch:
+            output["address"] = m_branch.group(1).strip()
+
+    # 2g. Loan Number / Reference ID if mentioned
+    if not output["loan_number"]:
+        m_ref = re.search(r'(?:Loan\s*(?:No|Number|Id|ID|Ref)|Ref\s*(?:No|Number|Id)?)\s*[:–—\-=.]\s*([A-Za-z0-9\-_/]+)', full_text, flags=re.I)
+        if m_ref:
+            output["loan_number"] = m_ref.group(1).strip()
+
+    # 3. Process tables across all pages
+    total_from_table = None
+    last_date_col = None
+    last_amt_col = None
+    last_chq_col = None
+
     for table in doc.tables:
         if not table.rows:
             continue
@@ -582,11 +647,34 @@ def extract_docx_data(docx_path):
         amt_col = next((i for i, h in enumerate(header) if any(x in h for x in ["AMOUNT", "EMI", "INSTAL"])), None)
         chq_col = next((i for i, h in enumerate(header) if any(x in h for x in ["CHEQUE", "CHQ"])), None)
 
-        for row in table.rows[1:]:
+        if date_col is not None and amt_col is not None:
+            last_date_col = date_col
+            last_amt_col = amt_col
+            last_chq_col = chq_col
+            start_row = 1
+        elif last_date_col is not None and last_amt_col is not None:
+            # Multi-page continuation table without header
+            date_col = last_date_col
+            amt_col = last_amt_col
+            chq_col = last_chq_col
+            start_row = 0
+        else:
+            continue
+
+        for row_idx in range(start_row, len(table.rows)):
+            row = table.rows[row_idx]
             cells = [c.text.strip() for c in row.cells]
-            # Ignore summary rows like 'TOTAL' or non-data rows
-            if any("TOTAL" in c.upper() for c in cells):
+            # Check for header repeat
+            if any("DATE" in c.upper() for c in cells) and any("AMOUNT" in c.upper() for c in cells):
                 continue
+            # Check for TOTAL / summary row
+            if any("TOTAL" in c.upper() for c in cells):
+                for c in cells:
+                    parsed_c = parse_docx_amount(c)
+                    if parsed_c and parsed_c > 0 and (total_from_table is None or parsed_c > total_from_table):
+                        total_from_table = parsed_c
+                continue
+
             row_date = normalize_date_str(cells[date_col]) if date_col is not None and date_col < len(cells) else ""
             row_amt = parse_docx_amount(cells[amt_col]) if amt_col is not None and amt_col < len(cells) else None
             row_chq = cells[chq_col] if chq_col is not None and chq_col < len(cells) else ""
@@ -601,18 +689,30 @@ def extract_docx_data(docx_path):
                     "payment_date": None
                 })
 
+    # 4. Final calculations for installments, EMI, total repayment, and interest
     if output["table"]:
         output["total_installments"] = len(output["table"])
         output["emi"] = output["table"][0]["amount"]
+        sum_amounts = sum(r["amount"] for r in output["table"])
+        if not output["total_repayment"]:
+            output["total_repayment"] = total_from_table if (total_from_table and total_from_table >= sum_amounts) else round(sum_amounts, 2)
+
         if (
             output["total_repayment"]
             and output["loan_amount"]
             and output["total_repayment"] >= output["loan_amount"]
         ):
-            tot_int = output["total_repayment"] - output["loan_amount"]
-            per_int = round(tot_int / len(output["table"]), 2)
-            for r in output["table"]:
-                r["interest_amount"] = per_int
+            tot_int = round(output["total_repayment"] - output["loan_amount"], 2)
+            n = len(output["table"])
+            per_int = round(tot_int / n, 2)
+            acc_int = 0.0
+            for idx, r in enumerate(output["table"]):
+                if idx == n - 1:
+                    r["interest_amount"] = round(tot_int - acc_int, 2)
+                else:
+                    r["interest_amount"] = per_int
+                    acc_int += per_int
+            output["interest_rate"] = round((tot_int / output["loan_amount"]) * 100, 2)
 
     return output
 
@@ -689,6 +789,7 @@ def build_final_output(data, remaining_accounts):
         })
 
     return {
+        "loan_number": data.get("loan_number") or "",
         "loan_date": data.get("loan_date") or "",
         "loan_amount": loan_amount,
         "total_repayment_amount": total_repayment,
