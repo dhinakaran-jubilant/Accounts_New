@@ -1,13 +1,12 @@
-import React, { useState } from 'react';
-import { DotLottieReact } from '@lottiefiles/dotlottie-react';
+import React, { useEffect } from 'react';
 
 const REMOTE_URL = 'https://lottie.host/12a145fc-c53e-4932-81d8-1d310a3cc8f0/IzI2s6UDyF.lottie';
 const LOCAL_URL = '/loading.lottie';
 
 /**
  * LottieLoader Component
- * Renders the official requested DotLottie animation (https://lottie.host/12a145fc-c53e-4932-81d8-1d310a3cc8f0/IzI2s6UDyF.lottie)
- * with graceful sizing, fallback, and optional caption.
+ * Renders the requested DotLottie animation (https://lottie.host/12a145fc-c53e-4932-81d8-1d310a3cc8f0/IzI2s6UDyF.lottie)
+ * using the standard dotlottie-player web component.
  *
  * @param {Object} props
  * @param {'xs'|'sm'|'md'|'lg'|'xl'|number} [props.size='md'] - Dimensions in pixels or preset size
@@ -23,8 +22,18 @@ export default function LottieLoader({
 	fullPage = false,
 	inline = false,
 }) {
-	const [activeSrc, setActiveSrc] = useState(REMOTE_URL);
-	const [hasError, setHasError] = useState(false);
+	// Dynamically ensure script is present if not already loaded via index.html
+	useEffect(() => {
+		if (typeof window !== 'undefined' && !window.customElements?.get('dotlottie-player')) {
+			const existing = document.querySelector('script[src*="dotlottie-player"]');
+			if (!existing) {
+				const script = document.createElement('script');
+				script.src = '/dotlottie-player.js';
+				script.async = true;
+				document.head.appendChild(script);
+			}
+		}
+	}, []);
 
 	let pixelSize = 72;
 	if (typeof size === 'number') {
@@ -51,18 +60,6 @@ export default function LottieLoader({
 		}
 	}
 
-	const handleDotLottieRef = (dotLottie) => {
-		if (!dotLottie) return;
-		dotLottie.addEventListener('loadError', () => {
-			if (activeSrc === REMOTE_URL) {
-				// Fallback to local copy in public folder
-				setActiveSrc(LOCAL_URL);
-			} else {
-				setHasError(true);
-			}
-		});
-	};
-
 	const loaderContent = (
 		<div
 			className={`flex flex-col items-center justify-center select-none ${
@@ -78,20 +75,14 @@ export default function LottieLoader({
 				}}
 				className="flex items-center justify-center overflow-hidden"
 			>
-				{!hasError ? (
-					<DotLottieReact
-						src={activeSrc}
-						loop
-						autoplay
-						dotLottieRefCallback={handleDotLottieRef}
-						style={{ width: '100%', height: '100%' }}
-					/>
-				) : (
-					<div
-						className="border-3 border-primary/20 border-t-primary rounded-full animate-spin"
-						style={{ width: `${Math.min(pixelSize, 40)}px`, height: `${Math.min(pixelSize, 40)}px` }}
-					/>
-				)}
+				<dotlottie-player
+					src={REMOTE_URL}
+					background="transparent"
+					speed="1"
+					style={{ width: `${pixelSize}px`, height: `${pixelSize}px` }}
+					loop
+					autoplay
+				/>
 			</div>
 			{text && (
 				<p className="text-xs font-bold text-slate-500 mt-2.5 tracking-tight text-center">
