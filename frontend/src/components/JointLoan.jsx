@@ -15923,7 +15923,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 											{/* 4. Client Name */}
 											<td className="py-3 px-4 max-w-[200px]">
 												<div
-													className="font-extrabold text-[13.5px] text-slate-900 group-hover:text-primary transition-colors truncate"
+													className="font-extrabold text-[13.5px] text-slate-900 group-hover:text-primary transition-colors uppercase truncate"
 													title={loan.primaryBorrower.name}
 												>
 													{loan.primaryBorrower.name}
