@@ -5659,8 +5659,9 @@ export function cleanAndConsolidateLoanHistory(historyList) {
 		deduped.push(item);
 	}
 
-	// Step 3: Clean up descriptions where oldValue was an incomplete digit string (e.g. from "20-07-202" to "20-07-2026")
-	return deduped.map((item) => {
+	// Step 3: Clean up descriptions where oldValue was an incomplete digit string (e.g. from "20-07-202" to "20-07-2026") and ensure stable unique id
+	return deduped.map((item, idx) => {
+		let updated = { ...item };
 		if (item.type === 'recd_date_update' || item.type === 'payout_date_update') {
 			let desc = item.description || '';
 			const fromMatch = desc.match(/from\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i);
@@ -5671,15 +5672,19 @@ export function cleanAndConsolidateLoanHistory(historyList) {
 					const fieldLabel = item.type === 'recd_date_update' ? 'received date' : 'payout date';
 					const emiLabel = item.emiNo !== undefined ? `EMI #${item.emiNo} ` : '';
 					desc = `${emiLabel}${fieldLabel} updated to "${newPart}".`;
-					return {
-						...item,
+					updated = {
+						...updated,
 						description: desc,
 						oldValue: '',
 					};
 				}
 			}
 		}
-		return item;
+		if (!updated.id) {
+			const fallbackId = `hist_${updated.type || 'entry'}_${updated.timestamp || 'ts'}_${updated.emiNo ?? ''}_${idx}`;
+			updated.id = fallbackId;
+		}
+		return updated;
 	});
 }
 
@@ -5985,6 +5990,9 @@ export function JointLoanDetailsPage({
 		if (loan && Array.isArray(loan.history) && loan.history.length > 0) {
 			return sortLoanHistoryRecentFirst(loan.history);
 		}
+		if (loan && Array.isArray(loan.history) && loan.history.length === 0) {
+			return [];
+		}
 		return generateInitialLoanHistory(loan);
 	});
 
@@ -5992,6 +6000,8 @@ export function JointLoanDetailsPage({
 		if (loan) {
 			if (Array.isArray(loan.history) && loan.history.length > 0) {
 				setLoanHistory(sortLoanHistoryRecentFirst(loan.history));
+			} else if (Array.isArray(loan.history) && loan.history.length === 0) {
+				setLoanHistory([]);
 			} else {
 				setLoanHistory(generateInitialLoanHistory(loan));
 			}
@@ -6006,6 +6016,14 @@ export function JointLoanDetailsPage({
 	const [noteText, setNoteText] = useState('');
 	const [noteEmiNo, setNoteEmiNo] = useState('');
 	const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
+	const [selectedHistoryIds, setSelectedHistoryIds] = useState(new Set());
+	const [isHistorySelectMode, setIsHistorySelectMode] = useState(false);
+	const [historyDeleteModal, setHistoryDeleteModal] = useState({
+		isOpen: false,
+		itemIds: [],
+		items: [],
+		isDeleting: false,
+	});
 
 	const [accounts, setAccounts] = useState(() => getLoanAccountDetails(loan));
 	const [currentStatus, setCurrentStatus] = useState(() => getComputedLoanStatus(loan) || loan?.status);
@@ -6475,15 +6493,109 @@ export function JointLoanDetailsPage({
 		if (onUpdateLoan) onUpdateLoan(updatedLoan);
 		setSaveFeedback('Audit note added to loan history!');
 
-		const loanIdentifier = loan?.db_id || loan?.id;
+		const loanIdentifier = loan?.id || loan?.loan_ref_id || loan?.db_id;
 		if (loanIdentifier) {
 			try {
-				await api.addLoanHistory(loanIdentifier, histEntry);
+				await api.updateJointLoan(loanIdentifier, {
+					history: nextHist,
+					db_id: loan?.db_id,
+				});
 			} catch (err) {
-				console.warn('Could not save note to backend:', err);
+				console.warn('Could not save note to backend via updateJointLoan:', err);
+				try {
+					await api.addLoanHistory(loanIdentifier, histEntry);
+				} catch (addErr) {
+					console.warn('Could not save note to backend:', addErr);
+				}
 			}
 		}
 	};
+
+	// History Item Selection and Deletion Handlers (Super Admin Only)
+	const handleToggleSelectHistoryItem = useCallback((id) => {
+		setSelectedHistoryIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) {
+				next.delete(id);
+			} else {
+				next.add(id);
+			}
+			return next;
+		});
+	}, []);
+
+	const handleSelectAllHistory = useCallback((itemsToSelect) => {
+		const targetItems = itemsToSelect || cleanLoanHistory;
+		const targetIds = (targetItems || []).map((h) => h?.id).filter(Boolean);
+		setSelectedHistoryIds(new Set(targetIds));
+	}, [cleanLoanHistory]);
+
+	const handleClearHistorySelection = useCallback(() => {
+		setSelectedHistoryIds(new Set());
+	}, []);
+
+	const handlePromptDeleteSelectedHistory = useCallback(() => {
+		if (selectedHistoryIds.size === 0) return;
+		const itemsToDelete = cleanLoanHistory.filter((h) => selectedHistoryIds.has(h.id));
+		setHistoryDeleteModal({
+			isOpen: true,
+			itemIds: Array.from(selectedHistoryIds),
+			items: itemsToDelete,
+			isDeleting: false,
+		});
+	}, [selectedHistoryIds, cleanLoanHistory]);
+
+	const handlePromptDeleteSingleHistory = useCallback((item) => {
+		if (!item || !item.id) return;
+		setHistoryDeleteModal({
+			isOpen: true,
+			itemIds: [item.id],
+			items: [item],
+			isDeleting: false,
+		});
+	}, []);
+
+	const handleConfirmDeleteHistory = useCallback(async () => {
+		const idsToDelete = new Set(historyDeleteModal.itemIds);
+		if (idsToDelete.size === 0) {
+			setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false });
+			return;
+		}
+
+		setHistoryDeleteModal((prev) => ({ ...prev, isDeleting: true }));
+
+		const nextHistory = loanHistory.filter((h) => !idsToDelete.has(h.id));
+		setLoanHistory(nextHistory);
+
+		setSelectedHistoryIds((prev) => {
+			const next = new Set(prev);
+			idsToDelete.forEach((id) => next.delete(id));
+			return next;
+		});
+
+		const updatedLoan = { ...loan, history: nextHistory };
+		if (onUpdateLoan) onUpdateLoan(updatedLoan);
+
+		const loanIdentifier = loan?.id || loan?.loan_ref_id || loan?.db_id;
+		if (loanIdentifier) {
+			try {
+				await api.updateJointLoan(loanIdentifier, {
+					history: nextHistory,
+					db_id: loan?.db_id,
+				});
+			} catch (err) {
+				console.warn('Could not update history via updateJointLoan, trying updateLoanHistory:', err);
+				try {
+					await api.updateLoanHistory(loanIdentifier, nextHistory);
+				} catch (updateErr) {
+					console.error('Failed to update loan history in backend:', updateErr);
+				}
+			}
+		}
+
+		setSaveFeedback(`${idsToDelete.size} history record${idsToDelete.size > 1 ? 's' : ''} deleted successfully.`);
+		setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false });
+	}, [historyDeleteModal.itemIds, loanHistory, loan, onUpdateLoan]);
 
 	const [activeTab, setActiveTab] = useState('schedule'); // 'schedule' | 'penal' | 'accounts' | 'contact' | 'history'
 	const [scheduleFilter, setScheduleFilter] = useState('ALL');
@@ -6607,7 +6719,7 @@ export function JointLoanDetailsPage({
 	});
 	const [splitModalTarget, setSplitModalTarget] = useState(null);
 
-	// Prevent background page from scrolling when modal is open (payout approval card, partial payment, edit allocations, contact edit, penal interest, etc.)
+	// Prevent background page from scrolling when modal is open (payout approval card, partial payment, edit allocations, contact edit, penal interest, delete history, etc.)
 	useEffect(() => {
 		const isAnyModalOpen = Boolean(
 			payoutModalData.isOpen ||
@@ -6617,7 +6729,9 @@ export function JointLoanDetailsPage({
 			isRejectModalOpen ||
 			isAddNoteModalOpen ||
 			isAddPenalModalOpen ||
-			penalDeleteTarget
+			penalDeleteTarget ||
+			confirmDelete ||
+			historyDeleteModal.isOpen
 		);
 
 		if (isAnyModalOpen) {
@@ -6636,6 +6750,9 @@ export function JointLoanDetailsPage({
 					}
 					if (penalDeleteTarget) {
 						setPenalDeleteTarget(null);
+					}
+					if (historyDeleteModal.isOpen && !historyDeleteModal.isDeleting) {
+						setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false });
 					}
 				}
 			};
@@ -6660,6 +6777,9 @@ export function JointLoanDetailsPage({
 		isAddNoteModalOpen,
 		isAddPenalModalOpen,
 		penalDeleteTarget,
+		confirmDelete,
+		historyDeleteModal.isOpen,
+		historyDeleteModal.isDeleting,
 	]);
 
 	// Tracks which partial EMI rows are expanded (default: collapsed/hidden)
@@ -9757,8 +9877,9 @@ export function JointLoanDetailsPage({
 							</h3>
 						</div>
 
-						{/* Action Buttons: Add Note & Approvals */}
+						{/* Action Buttons: Super Admin Select/Delete, Add Note & Approvals */}
 						<div className="flex items-center gap-2 flex-wrap">
+
 							{canSecApprove && (
 								<button
 									type="button"
@@ -9864,6 +9985,55 @@ export function JointLoanDetailsPage({
 						</div>
 					</div>
 
+					{/* Super Admin Bulk Selection Strip */}
+					{isSystemAdmin && (
+						<div className="px-6 py-2.5 bg-rose-50/70 border-b border-rose-200/80 flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-1 duration-200">
+							<div className="flex items-center gap-3">
+								<label className="flex items-center gap-2 cursor-pointer select-none text-[12.5px] font-bold text-slate-800">
+									<input
+										type="checkbox"
+										className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 border-slate-300 cursor-pointer accent-rose-600"
+										checked={filteredHistory.length > 0 && filteredHistory.every((item) => selectedHistoryIds.has(item.id))}
+										onChange={(e) => {
+											if (e.target.checked) {
+												handleSelectAllHistory(filteredHistory);
+											} else {
+												handleClearHistorySelection();
+											}
+										}}
+									/>
+									<span>Select All in this View ({filteredHistory.length})</span>
+								</label>
+								{selectedHistoryIds.size > 0 && (
+									<span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-rose-200/90 text-rose-800">
+										{selectedHistoryIds.size} selected
+									</span>
+								)}
+							</div>
+							<div className="flex items-center gap-2">
+								{selectedHistoryIds.size > 0 && (
+									<>
+										<button
+											type="button"
+											onClick={handleClearHistorySelection}
+											className="px-2.5 py-1 text-[11.5px] font-bold text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer"
+										>
+											Deselect All
+										</button>
+										<button
+											type="button"
+											onClick={handlePromptDeleteSelectedHistory}
+											className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-[12px] shadow-xs transition-all active:scale-95 cursor-pointer"
+										>
+											<span className="material-symbols-outlined text-[15px]">delete_sweep</span>
+											<span>Delete ({selectedHistoryIds.size}) Records</span>
+										</button>
+									</>
+								)}
+							</div>
+						</div>
+					)}
+
 					{/* Recent-First Audit Timeline List */}
 					<div className="p-6">
 						{filteredHistory.length === 0 ? (
@@ -9931,6 +10101,8 @@ export function JointLoanDetailsPage({
 										tagLabel = 'Payout Date';
 									}
 
+									const isItemSelected = selectedHistoryIds.has(item.id);
+
 									return (
 										<div key={item.id || idx} className="relative group">
 											{/* Timeline Dot/Icon */}
@@ -9941,10 +10113,25 @@ export function JointLoanDetailsPage({
 											</div>
 
 											{/* Event Content Box */}
-											<div className="bg-slate-50/70 hover:bg-slate-50 border border-slate-200/80 rounded-2xl p-4 transition-all hover:shadow-xs">
+											<div
+												className={`border rounded-2xl p-4 transition-all hover:shadow-xs ${
+													isItemSelected
+														? 'bg-rose-50/50 border-rose-300 ring-2 ring-rose-200/70 shadow-xs'
+														: 'bg-slate-50/70 hover:bg-slate-50 border-slate-200/80'
+												}`}
+											>
 												<div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-													{/* Title, Badge & EMI Tag */}
+													{/* Title, Checkbox, Badge & EMI Tag */}
 													<div className="flex items-center gap-2 flex-wrap">
+														{isSystemAdmin && (
+															<input
+																type="checkbox"
+																checked={isItemSelected}
+																onChange={() => handleToggleSelectHistoryItem(item.id)}
+																className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 border-slate-300 cursor-pointer accent-rose-600 mr-1"
+																title={isItemSelected ? 'Deselect item' : 'Select item'}
+															/>
+														)}
 														<span className={`text-[10.5px] uppercase font-extrabold px-2.5 py-0.5 rounded-full ring-1 ${tagBg}`}>
 															{tagLabel}
 														</span>
@@ -9958,12 +10145,30 @@ export function JointLoanDetailsPage({
 														</h4>
 													</div>
 
-													{/* Timestamp */}
-													<div className="flex items-center gap-1 font-mono text-[11.5px] font-bold text-slate-500 bg-white px-2.5 py-1 rounded-xl border border-slate-200/80 self-start sm:self-auto shrink-0 shadow-3xs">
-														<span className="material-symbols-outlined text-slate-400" style={{ fontSize: "15px" }}>
-															schedule
-														</span>
-														<span>{item.timestamp}</span>
+													{/* Timestamp & Actions */}
+													<div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+														<div className="flex items-center gap-1 font-mono text-[11.5px] font-bold text-slate-500 bg-white px-2.5 py-1 rounded-xl border border-slate-200/80 shadow-3xs">
+															<span className="material-symbols-outlined text-slate-400" style={{ fontSize: "15px" }}>
+																schedule
+															</span>
+															<span>{item.timestamp}</span>
+														</div>
+
+														{isSystemAdmin && (
+															<button
+																type="button"
+																onClick={(e) => {
+																	e.stopPropagation();
+																	handlePromptDeleteSingleHistory(item);
+																}}
+																title="Delete this history entry"
+																className="w-7 h-7 rounded-xl flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200/80 hover:border-rose-200 transition-all cursor-pointer shadow-3xs group/del"
+															>
+																<span className="material-symbols-outlined text-[16px] group-hover/del:scale-110 transition-transform">
+																	delete
+																</span>
+															</button>
+														)}
 													</div>
 												</div>
 
@@ -10070,6 +10275,113 @@ export function JointLoanDetailsPage({
 									className="px-4 py-2 rounded-xl text-[12.5px] font-bold bg-primary text-white hover:bg-primary/95 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
 								>
 									Save to History
+								</button>
+							</div>
+						</div>
+					</div>
+				)}
+
+				{/* Super Admin Delete History Confirmation Modal */}
+				{historyDeleteModal.isOpen && (
+					<div
+						className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm overflow-y-auto overscroll-contain animate-in fade-in duration-200"
+						onClick={() => {
+							if (!historyDeleteModal.isDeleting) {
+								setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false });
+							}
+						}}
+					>
+						<div
+							className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl ring-1 ring-slate-200 animate-in zoom-in-95 duration-200 my-auto"
+							onClick={(e) => e.stopPropagation()}
+						>
+							<div className="flex items-start gap-3 pb-3 border-b border-slate-100">
+								<div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+									<span className="material-symbols-outlined text-[22px]">delete_forever</span>
+								</div>
+								<div className="flex-1 min-w-0">
+									<h3 className="font-extrabold text-[16px] text-slate-900 leading-snug">
+										{historyDeleteModal.itemIds.length === 1
+											? 'Delete History Record'
+											: `Delete ${historyDeleteModal.itemIds.length} History Records`}
+									</h3>
+									<p className="text-[12px] text-slate-500 mt-0.5">
+										Super Admin History Management
+									</p>
+								</div>
+								<button
+									type="button"
+									disabled={historyDeleteModal.isDeleting}
+									onClick={() => setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false })}
+									className="w-9 h-9 flex items-center justify-center text-slate-400 hover:text-slate-600 p-1 cursor-pointer hover:bg-slate-100 rounded-xl disabled:opacity-50"
+								>
+									<span className="material-symbols-outlined text-[18px]">close</span>
+								</button>
+							</div>
+
+							<div className="mt-4 space-y-3">
+								<p className="text-[13px] text-slate-600 leading-relaxed font-medium">
+									Are you sure you want to permanently delete{' '}
+									<strong className="text-slate-900 font-bold">
+										{historyDeleteModal.itemIds.length === 1
+											? 'this history entry'
+											: `these ${historyDeleteModal.itemIds.length} history entries`}
+									</strong>{' '}
+									from this loan facility?
+								</p>
+
+								{/* Items Preview */}
+								<div className="max-h-48 overflow-y-auto space-y-2 p-2.5 bg-slate-50/80 rounded-xl border border-slate-200/80">
+									{historyDeleteModal.items.slice(0, 5).map((item, i) => (
+										<div key={item.id || i} className="p-2 bg-white rounded-lg border border-slate-200/70 text-[11.5px]">
+											<div className="flex items-center justify-between gap-2">
+												<span className="font-bold text-slate-800 truncate">{item.title}</span>
+												{item.emiNo != null && (
+													<span className="px-1.5 py-0.2 font-mono text-[10px] font-black bg-slate-900 text-white rounded">
+														EMI #{item.emiNo}
+													</span>
+												)}
+											</div>
+											<div className="flex items-center justify-between gap-2 mt-1 text-[10.5px] text-slate-400">
+												<span>{item.userName || 'Officer'}</span>
+												<span>{item.timestamp}</span>
+											</div>
+										</div>
+									))}
+									{historyDeleteModal.items.length > 5 && (
+										<p className="text-[11px] text-slate-400 text-center font-bold pt-1">
+											+ {historyDeleteModal.items.length - 5} more entries
+										</p>
+									)}
+								</div>
+							</div>
+
+							<div className="flex items-center justify-end gap-2.5 mt-5 pt-3 border-t border-slate-100">
+								<button
+									type="button"
+									disabled={historyDeleteModal.isDeleting}
+									onClick={() => setHistoryDeleteModal({ isOpen: false, itemIds: [], items: [], isDeleting: false })}
+									className="px-4 py-2 rounded-xl text-[12.5px] font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-50"
+								>
+									Cancel
+								</button>
+								<button
+									type="button"
+									disabled={historyDeleteModal.isDeleting}
+									onClick={handleConfirmDeleteHistory}
+									className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12.5px] font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+								>
+									{historyDeleteModal.isDeleting ? (
+										<>
+											<span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+											<span>Deleting...</span>
+										</>
+									) : (
+										<>
+											<span className="material-symbols-outlined text-[16px]">delete</span>
+											<span>Confirm Delete</span>
+										</>
+									)}
 								</button>
 							</div>
 						</div>
@@ -14276,7 +14588,18 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	);
 	const activeCapital = useMemo(
 		() => userPermittedLoans.filter((l) => getComputedLoanStatus(l) === 'Active')
-			.reduce((acc, curr) => acc + curr.amount, 0),
+			.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0),
+		[userPermittedLoans]
+	);
+
+	// 3. Overdue Loans (loan is active but has overdue EMI)
+	const overdueLoansCount = useMemo(
+		() => userPermittedLoans.filter((l) => getComputedLoanStatus(l) === 'Overdue').length,
+		[userPermittedLoans]
+	);
+	const overdueCapital = useMemo(
+		() => userPermittedLoans.filter((l) => getComputedLoanStatus(l) === 'Overdue')
+			.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0),
 		[userPermittedLoans]
 	);
 
@@ -14347,7 +14670,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			const result = exportOutstandingReportPerPrimaryAccount(
 				loansToExport,
 				(loan) => generateRepaymentSchedule(loan, getLoanAccountDetails(loan)),
-				availableAccountObjects
+				availableAccountObjects,
+				{ selectedAccount: (accountFilter && accountFilter !== 'ALL') ? accountFilter : null }
 			);
 			if (!result || result.success === false) {
 				const errMsg = (result && result.message) ? result.message : 'No outstanding loans';
@@ -15217,11 +15541,19 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			</div>
 
 			{/* KPI Summary Cards */}
-			<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
+			<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-space-md">
 				{/* KPI 1: Total Joints */}
-				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
+				<div
+					onClick={() => setStatusFilter('ALL')}
+					className={`bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 transition-all cursor-pointer ${
+						statusFilter === 'ALL'
+							? 'ring-1 ring-primary/80 bg-primary/5 shadow-md'
+							: 'ring-slate-200/80 hover:ring-primary/40 hover:shadow-md'
+					} flex flex-col justify-between`}
+					title="Click to view all loans"
+				>
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
-						<span>Total Loans</span>
+						<span className={statusFilter === 'ALL' ? 'text-primary font-extrabold' : ''}>Total Loans</span>
 						<span className="material-symbols-outlined text-primary text-[20px]">
 							handshake
 						</span>
@@ -15238,9 +15570,17 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				</div>
 
 				{/* KPI 2: Active Loans */}
-				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
+				<div
+					onClick={() => setStatusFilter(statusFilter === 'Active' ? 'ALL' : 'Active')}
+					className={`bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 transition-all cursor-pointer ${
+						statusFilter === 'Active'
+							? 'ring-1 ring-emerald-500 bg-emerald-50/30 shadow-md'
+							: 'ring-slate-200/80 hover:ring-emerald-300 hover:shadow-md'
+					} flex flex-col justify-between`}
+					title="Click to filter by Active loans"
+				>
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
-						<span>Active Loans</span>
+						<span className={statusFilter === 'Active' ? 'text-emerald-700 font-extrabold' : ''}>Active Loans</span>
 						<span className="material-symbols-outlined text-emerald-600 text-[20px]">
 							hub
 						</span>
@@ -15256,10 +15596,45 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					</div>
 				</div>
 
-				{/* KPI 3: Closed Loans */}
-				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
+				{/* KPI 3: Overdue Loans */}
+				<div
+					onClick={() => setStatusFilter(statusFilter === 'Overdue' ? 'ALL' : 'Overdue')}
+					className={`bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 transition-all cursor-pointer ${
+						statusFilter === 'Overdue'
+							? 'ring-1 ring-rose-500 bg-rose-50/30 shadow-md'
+							: 'ring-slate-200/80 hover:ring-rose-300 hover:shadow-md'
+					} flex flex-col justify-between`}
+					title="Click to filter by Overdue loans"
+				>
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
-						<span>Closed Loans</span>
+						<span className={statusFilter === 'Overdue' ? 'text-rose-700 font-extrabold' : ''}>Overdue Loans</span>
+						<span className="material-symbols-outlined text-rose-600 text-[20px]">
+							warning
+						</span>
+					</div>
+					<div className="my-2">
+						<div className="font-extrabold text-[28px] text-slate-900 leading-tight">
+							{overdueLoansCount}
+						</div>
+						<div className="flex items-center gap-1 text-[12px] mt-1">
+							<span className="font-bold text-rose-700">{formatCurrency(overdueCapital)}</span>
+							<span className="text-slate-500">delayed EMIs</span>
+						</div>
+					</div>
+				</div>
+
+				{/* KPI 4: Closed Loans */}
+				<div
+					onClick={() => setStatusFilter(statusFilter === 'Closed' ? 'ALL' : 'Closed')}
+					className={`bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 transition-all cursor-pointer ${
+						statusFilter === 'Closed'
+							? 'ring-1 ring-slate-600 bg-slate-100 shadow-md'
+							: 'ring-slate-200/80 hover:ring-slate-400 hover:shadow-md'
+					} flex flex-col justify-between`}
+					title="Click to filter by Closed loans"
+				>
+					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
+						<span className={statusFilter === 'Closed' ? 'text-slate-800 font-extrabold' : ''}>Closed Loans</span>
 						<span className="material-symbols-outlined text-slate-500 text-[20px]">
 							task_alt
 						</span>
@@ -15275,10 +15650,18 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					</div>
 				</div>
 
-				{/* KPI 4: Approval Pending */}
-				<div className="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 ring-slate-200/80 flex flex-col justify-between">
+				{/* KPI 5: Approval Pending */}
+				<div
+					onClick={() => setStatusFilter(statusFilter === 'Pending' ? 'ALL' : 'Pending')}
+					className={`bg-surface-container-lowest rounded-2xl p-space-md shadow-sm ring-1 transition-all cursor-pointer ${
+						statusFilter === 'Pending'
+							? 'ring-1 ring-amber-500 bg-amber-50/30 shadow-md'
+							: 'ring-slate-200/80 hover:ring-amber-300 hover:shadow-md'
+					} flex flex-col justify-between`}
+					title="Click to filter by Pending Approval loans"
+				>
 					<div className="flex items-center justify-between text-slate-500 font-bold text-[12px] uppercase tracking-wider">
-						<span>Approval Pending</span>
+						<span className={statusFilter === 'Pending' ? 'text-amber-800 font-extrabold' : ''}>Approval Pending</span>
 						<span className="material-symbols-outlined text-amber-600 text-[20px]">
 							pending_actions
 						</span>

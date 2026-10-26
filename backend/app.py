@@ -1257,19 +1257,35 @@ def update_joint_loan(loan_id):
         app.logger.error(f"Error updating loan: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/joint-loans/<loan_id>/history', methods=['POST'])
-def add_loan_history_entry(loan_id):
+@app.route('/api/joint-loans/<loan_id>/history', methods=['POST', 'PUT', 'DELETE'])
+def manage_loan_history_entry(loan_id):
     payload = request.get_json(force=True, silent=True) or {}
     loan = find_pg_loan(loan_id, payload)
     if not loan:
         return jsonify({"error": "Loan not found"}), 404
-    entry = payload.get('entry') or payload
+
     curr_hist = []
     try:
         curr_hist = json.loads(loan.history) if getattr(loan, 'history', None) and isinstance(loan.history, str) else (loan.history if isinstance(getattr(loan, 'history', None), list) else [])
     except Exception:
         curr_hist = []
-    curr_hist.append(entry)
+
+    if request.method == 'PUT':
+        new_hist = payload.get('history') if 'history' in payload else payload
+        curr_hist = new_hist if isinstance(new_hist, list) else curr_hist
+    elif request.method == 'DELETE':
+        if 'history' in payload and isinstance(payload['history'], list):
+            curr_hist = payload['history']
+        else:
+            ids_to_del = set(str(x) for x in (payload.get('ids') or payload.get('itemIds') or payload.get('keys') or []))
+            if ids_to_del:
+                curr_hist = [h for h in curr_hist if str(h.get('id', '')) not in ids_to_del and str(h.get('timestamp', '')) not in ids_to_del]
+            else:
+                curr_hist = []
+    else:
+        entry = payload.get('entry') or payload
+        curr_hist.append(entry)
+
     loan.history = json.dumps(curr_hist)
     db.session.commit()
     return jsonify({"success": True, "history": curr_hist})

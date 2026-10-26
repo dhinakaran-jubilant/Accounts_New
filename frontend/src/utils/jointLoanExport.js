@@ -35,12 +35,13 @@ export const getAccountAcronym = (acc) => {
 	if (typeof acc === 'string') return acc.trim();
 	const tag = acc.accountTag || acc.acronym || acc.tag || acc.initials;
 	if (tag && String(tag).trim()) return String(tag).trim();
-	if (acc.accountName) {
-		const words = String(acc.accountName).trim().split(/\s+/);
+	const accName = acc.accountName || acc.name;
+	if (accName) {
+		const words = String(accName).trim().split(/\s+/);
 		if (words.length > 1) {
 			return words.map((w) => w[0]).join('').slice(0, 5).toUpperCase();
 		}
-		return acc.accountName.slice(0, 4).toUpperCase();
+		return String(accName).slice(0, 4).toUpperCase();
 	}
 	return 'ACC';
 };
@@ -1380,45 +1381,110 @@ function buildSecondaryOutstandingWorksheet(
  * @param {Array} loansList - List of joint loan objects
  * @param {Function} getScheduleFn - Optional function to generate schedule for each loan
  * @param {Array} availableAccounts - Optional list of accounts to resolve tags/names
+ * @param {Object|string} options - Optional settings or selected account name/tag
  * @returns {Object} Result object with { success, filename, count, message }
  */
-export function exportOutstandingReportPerPrimaryAccount(loansList = [], getScheduleFn = null, availableAccounts = []) {
+export function exportOutstandingReportPerPrimaryAccount(
+	loansList = [],
+	getScheduleFn = null,
+	availableAccounts = [],
+	options = {}
+) {
 	if (!Array.isArray(loansList) || loansList.length === 0) {
 		return { success: false, message: 'No outstanding loans', count: 0 };
 	}
 
 	const wb = XLSX.utils.book_new();
 
+	// Parse selectedAccount if passed in options (object or direct string)
+	const rawSelected = typeof options === 'string'
+		? options
+		: (options?.selectedAccount || options?.account || null);
+	const selectedAccount = (rawSelected && String(rawSelected).trim() !== '' && String(rawSelected).trim().toUpperCase() !== 'ALL')
+		? String(rawSelected).trim()
+		: null;
+	const isSingleAccount = Boolean(selectedAccount);
+
 	// 1. Resolve distinct accounts that participate in availableAccounts or loansList
 	const accountMap = new Map();
 
-	if (Array.isArray(availableAccounts)) {
-		availableAccounts.forEach((acc) => {
-			if (!acc) return;
-			const tag = getAccountAcronym(acc);
-			const name = acc.name || acc.accountName || tag;
-			if (tag && !accountMap.has(tag)) {
-				accountMap.set(tag, { tag, name });
+	if (isSingleAccount) {
+		let targetTag = '';
+		let targetName = '';
+
+		const cleanStr = (s) => String(s || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+		const targetClean = cleanStr(selectedAccount);
+
+		if (Array.isArray(availableAccounts) && availableAccounts.length > 0) {
+			const matchedAcc = availableAccounts.find(
+				(a) => cleanStr(a?.name) === targetClean || cleanStr(a?.acronym || a?.tag || a?.accountTag) === targetClean
+			);
+			if (matchedAcc) {
+				targetTag = getAccountAcronym(matchedAcc) || matchedAcc.acronym || matchedAcc.tag;
+				targetName = matchedAcc.name || matchedAcc.accountName || targetTag;
+			}
+		}
+
+		if (!targetTag) {
+			targetTag = getAccountAcronym(selectedAccount);
+		}
+		if (!targetName) {
+			targetName = selectedAccount;
+		}
+
+		accountMap.set(targetTag, { tag: targetTag, name: targetName });
+	} else {
+		const addAccountToMap = (tag, name) => {
+			if (!tag && !name) return;
+			const cleanStr = (s) => String(s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+			const tClean = cleanStr(tag);
+			const nClean = cleanStr(name);
+
+			for (const existing of accountMap.values()) {
+				const exTag = cleanStr(existing.tag);
+				const exName = cleanStr(existing.name);
+				if ((tClean && exTag === tClean) || (nClean && exName === nClean)) {
+					return;
+				}
+				if (
+					isAccountTagOrNameMatch(tag, existing.tag, existing.name, availableAccounts) ||
+					isAccountTagOrNameMatch(name, existing.tag, existing.name, availableAccounts)
+				) {
+					return;
+				}
+			}
+
+			const resolvedTag = tag || getAccountAcronym(name) || 'ACC';
+			const resolvedName = name || resolvedTag;
+			accountMap.set(resolvedTag, { tag: resolvedTag, name: resolvedName });
+		};
+
+		if (Array.isArray(availableAccounts)) {
+			availableAccounts.forEach((acc) => {
+				if (!acc) return;
+				const tag = getAccountAcronym(acc);
+				const name = acc.name || acc.accountName || tag;
+				addAccountToMap(tag, name);
+			});
+		}
+
+		loansList.forEach((loan) => {
+			const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+			if (pri.tag) {
+				addAccountToMap(pri.tag, pri.name);
+			}
+			const secList = loan.secondaryAccounts || loan.accountDetails?.filter((a) => !a.isPrimary) || loan.remaining_accounts || [];
+			if (Array.isArray(secList)) {
+				secList.forEach((s) => {
+					const tag = getAccountAcronym(s);
+					const name = s.accountName || s.name || tag;
+					if (tag || name) {
+						addAccountToMap(tag, name);
+					}
+				});
 			}
 		});
 	}
-
-	loansList.forEach((loan) => {
-		const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
-		if (pri.tag && !accountMap.has(pri.tag)) {
-			accountMap.set(pri.tag, { tag: pri.tag, name: pri.name });
-		}
-		const secList = loan.secondaryAccounts || loan.accountDetails?.filter((a) => !a.isPrimary) || loan.remaining_accounts || [];
-		if (Array.isArray(secList)) {
-			secList.forEach((s) => {
-				const tag = getAccountAcronym(s);
-				const name = s.accountName || s.name || tag;
-				if (tag && !accountMap.has(tag)) {
-					accountMap.set(tag, { tag, name });
-				}
-			});
-		}
-	});
 
 	const usedSheetNames = new Set();
 	const getUniqueSheetName = (name) => {
@@ -1444,12 +1510,17 @@ export function exportOutstandingReportPerPrimaryAccount(loansList = [], getSche
 		const primaryLoans = loansList.filter((loan) => {
 			const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
 			return isAccountTagOrNameMatch(pri.tag, tag, name, availableAccounts) ||
-			       isAccountTagOrNameMatch(pri.name, tag, name, availableAccounts);
+			       isAccountTagOrNameMatch(pri.name, tag, name, availableAccounts) ||
+			       (isSingleAccount && selectedAccount && (
+			           isAccountTagOrNameMatch(pri.tag, selectedAccount, selectedAccount, availableAccounts) ||
+			           isAccountTagOrNameMatch(pri.name, selectedAccount, selectedAccount, availableAccounts)
+			       ));
 		});
 
 		// Loans where this account is Secondary
 		const secondaryLoans = loansList.filter((loan) => {
-			return loanHasSecondaryAccount(loan, tag, name, availableAccounts);
+			return loanHasSecondaryAccount(loan, tag, name, availableAccounts) ||
+			       (isSingleAccount && selectedAccount && loanHasSecondaryAccount(loan, selectedAccount, selectedAccount, availableAccounts));
 		});
 
 		// If this account has no loans at all in loansList, skip

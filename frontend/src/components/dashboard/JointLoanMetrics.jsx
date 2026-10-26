@@ -100,9 +100,6 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 						<span className="inline-flex items-center text-[10.5px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full ring-1 ring-emerald-200">
 							{recoveryRate}% {isSecondary ? 'Settled' : 'Recovery'}
 						</span>
-						<span className="font-medium text-[11px] text-slate-500 truncate">
-							{isSecondary ? 'Settled from Primary' : 'Collected to Date'}
-						</span>
 					</div>
 				</div>
 			</div>

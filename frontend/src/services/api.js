@@ -121,6 +121,20 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ entry }),
 		}),
+	updateLoanHistory: (loanId, history) =>
+		request(`/joint-loans/${loanId}`, {
+			method: 'PUT',
+			body: JSON.stringify({ history: Array.isArray(history) ? history : [] }),
+		}),
+	deleteLoanHistory: (loanId, payload = {}) => {
+		const hist = Array.isArray(payload)
+			? payload
+			: (Array.isArray(payload?.history) ? payload.history : []);
+		return request(`/joint-loans/${loanId}`, {
+			method: 'PUT',
+			body: JSON.stringify({ history: hist }),
+		});
+	},
 	approveJointLoanSecondary: (loanId, payload) =>
 		request(`/joint-loans/${loanId}/approve-secondary`, {
 			method: 'POST',
