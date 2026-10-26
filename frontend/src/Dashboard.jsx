@@ -863,6 +863,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 							{/* Row 3: This Week's EMIs Section: Scheduled Client Due Amounts */}
 							<ThisWeekEmis
 								loans={filteredJointLoans}
+								isLoading={isSyncing && !jointLoans.length}
 								onSelectLoan={(loan) => setSelectedJointLoan(loan)}
 								onOpenInServicing={(loan) => {
 									setSelectedJointLoan(null);
@@ -885,6 +886,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 							<div id="recent-loans-section">
 								<RecentJointLoans
 									loans={filteredJointLoans}
+									isLoading={isSyncing && !jointLoans.length}
 									onSelectLoan={(loan) => setSelectedJointLoan(loan)}
 									onNavigateToJointLoans={(loan) => {
 										if (loan && (loan.id || loan.loan_ref_id)) {

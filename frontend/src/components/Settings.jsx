@@ -9,6 +9,7 @@ Description: System settings and user preferences component for security setting
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../services/api';
+import { TableLoader } from './common/LottieLoader';
 
 // Available color presets with styling tokens
 export const COLOR_OPTIONS = [
@@ -946,12 +947,7 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 								</thead>
 								<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
 									{isLoading ? (
-										<tr>
-											<td colSpan="5" className="py-16 text-center">
-												<div className="w-10 h-10 border-3 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-3"></div>
-												<p className="text-xs font-bold text-slate-500">Loading account names from database...</p>
-											</td>
-										</tr>
+										<TableLoader colSpan={5} text="Loading account names from database..." size="lg" />
 									) : filteredAccounts.length === 0 ? (
 										<tr>
 											<td colSpan="5" className="py-16 text-center">

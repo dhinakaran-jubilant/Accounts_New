@@ -8,6 +8,7 @@ Description: Approval workflow management table for reviewing, approving, and re
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import api from '../services/api';
+import LottieLoader from './common/LottieLoader';
 import {
 	checkUserHasPrimaryAccessForLoanPrimary,
 	checkUserHasPrimaryAccessForLoanSecondary,
@@ -3287,8 +3288,7 @@ export default function Requests({
 				{/* Loans List */}
 				{isLoading ? (
 					<div className="py-16 text-center">
-						<div className="w-10 h-10 border-3 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-3"></div>
-						<p className="text-xs font-bold text-slate-500">Loading approval requests...</p>
+						<LottieLoader text="Loading approval requests..." size="lg" />
 					</div>
 				) : filteredLoans.length === 0 ? (
 					<div className="py-16 text-center max-w-sm mx-auto">

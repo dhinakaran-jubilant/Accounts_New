@@ -9,6 +9,7 @@ Description: Joint loan management component handling loan booking, repayment sc
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../services/api';
+import LottieLoader, { TableLoader } from './common/LottieLoader';
 import {
 	exportJointLoanToExcel,
 	exportJointLoansListToExcel,
@@ -10694,6 +10695,25 @@ export function JointLoanDetailsPage({
 						<span className="font-extrabold text-[11px] text-primary bg-primary/10 px-2 py-0.5 rounded-md ring-1 ring-primary/20 tracking-tight">
 							{loan.id}
 						</span>
+						{(() => {
+							const rawDate =
+								loan.loan_date ||
+								loan.appliedDate ||
+								loan.loanDate ||
+								loan.date ||
+								loan.applied_date ||
+								(Array.isArray(repaymentSchedule) && repaymentSchedule.length > 0 ? repaymentSchedule[0]?.date : '');
+							const displayDate = (typeof formatLoanDate === 'function' ? formatLoanDate(rawDate) : rawDate) || '';
+							if (!displayDate || displayDate === '-' || displayDate === 'Invalid Date') return null;
+							return (
+								<span
+									className="inline-flex items-center gap-1 font-bold text-[11px] text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md ring-1 ring-slate-200/90 tracking-tight"
+									title="Loan Date"
+								>
+									<span>{displayDate}</span>
+								</span>
+							);
+						})()}
 						<span
 							className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${badge.color}`}
 						>
@@ -13270,6 +13290,7 @@ export function JointLoanDetailsPage({
 
 export default function JointLoan({ searchQuery: propSearchQuery = '', currentUser: propCurrentUser, resetViewTrigger }) {
 	const [loans, setLoans] = useState([]);
+	const [isLoadingLoans, setIsLoadingLoans] = useState(true);
 	const [internalSearchQuery, setInternalSearchQuery] = useState('');
 	const searchQuery = propSearchQuery !== '' ? propSearchQuery : internalSearchQuery;
 	const [statusFilter, setStatusFilter] = useState('ALL');
@@ -13457,6 +13478,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	useEffect(() => {
 		let isMounted = true;
 		const loadLoans = async () => {
+			setIsLoadingLoans(true);
 			try {
 				const remote = await api.getJointLoans();
 				if (isMounted && Array.isArray(remote)) {
@@ -13464,6 +13486,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				}
 			} catch (err) {
 				console.warn('Backend joint loans unavailable:', err);
+			} finally {
+				if (isMounted) {
+					setIsLoadingLoans(false);
+				}
 			}
 		};
 		const loadAccountNames = async () => {
@@ -15841,7 +15867,9 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 							</tr>
 						</thead>
 						<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
-							{filteredLoans.length === 0 ? (
+							{isLoadingLoans ? (
+								<TableLoader colSpan={8} text="Loading joint loans..." size="lg" />
+							) : filteredLoans.length === 0 ? (
 								<tr>
 									<td colSpan="8" className="py-16 text-center">
 										<div className="max-w-sm mx-auto">
@@ -16298,18 +16326,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 										{/* Uploading & Parsing Indicator */}
 										{pdfParsing && (
-											<div className="p-8 rounded-2xl border-2 border-primary/20 bg-primary/5 text-center flex flex-col items-center justify-center gap-3">
-												<div className="w-12 h-12 rounded-full bg-primary/15 text-primary flex items-center justify-center">
-													<span className="material-symbols-outlined text-[28px] animate-spin">progress_activity</span>
-												</div>
-												<div>
-													<h4 className="text-[14px] font-bold text-slate-900">
-														Verifying &amp; Parsing Document...
-													</h4>
-													<p className="text-[12px] text-slate-500 mt-0.5">
-														Extracting details and checking database to prevent duplicate loans.
-													</p>
-												</div>
+											<div className="p-8 rounded-2xl border-2 border-primary/20 bg-primary/5 text-center flex flex-col items-center justify-center">
+												<LottieLoader size="lg" text="Verifying & Parsing Document..." inline />
+												<p className="text-[12px] text-slate-500 mt-2">
+													Extracting details and checking database to prevent duplicate loans.
+												</p>
 											</div>
 										)}
 

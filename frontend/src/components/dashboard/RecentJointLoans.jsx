@@ -9,9 +9,11 @@ Description: Dashboard list widget presenting recently booked and modified joint
 import React, { useState, useMemo } from 'react';
 import { formatIndianCurrency } from '../../utils/jointLoanUtils';
 import { getStatusBadge, getPrimaryTagColor } from '../JointLoan';
+import { TableLoader } from '../common/LottieLoader';
 
 export default function RecentJointLoans({
 	loans = [],
+	isLoading = false,
 	onSelectLoan,
 	onNavigateToJointLoans,
 	activeStatusFilter = 'ALL',
@@ -141,7 +143,9 @@ export default function RecentJointLoans({
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-slate-100 text-[13px]">
-						{filteredLoans.length === 0 ? (
+						{isLoading ? (
+							<TableLoader colSpan={6} text="Loading recent joint loans..." />
+						) : filteredLoans.length === 0 ? (
 							<tr>
 								<td colSpan={6} className="py-12 text-center text-slate-400">
 									<div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-2">

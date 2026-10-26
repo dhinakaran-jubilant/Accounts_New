@@ -9,9 +9,11 @@ Description: Dashboard schedule widget displaying upcoming EMI collections and p
 import React, { useState, useMemo } from 'react';
 import { formatIndianCurrency, formatCompactCurrency } from '../../utils/jointLoanUtils';
 import { getStatusBadge } from '../JointLoan';
+import LottieLoader from '../common/LottieLoader';
 
 export default function ThisWeekEmis({
 	loans = [],
+	isLoading = false,
 	onSelectLoan,
 	onOpenInServicing,
 }) {
@@ -286,7 +288,11 @@ export default function ThisWeekEmis({
 			</div>
 
 			{/* EMI Cards Grid */}
-			{filteredEmis.length === 0 ? (
+			{isLoading ? (
+				<div className="py-10 text-center">
+					<LottieLoader text="Loading this week's EMIs..." size="md" />
+				</div>
+			) : filteredEmis.length === 0 ? (
 				<div className="py-10 text-center">
 					<div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-2">
 						<span className="material-symbols-outlined text-[24px]">task_alt</span>

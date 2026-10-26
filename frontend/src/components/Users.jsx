@@ -9,6 +9,7 @@ Description: User administration component for managing user accounts, credentia
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../services/api';
+import { TableLoader } from './common/LottieLoader';
 
 // Available System Menus for granular assignment
 export const AVAILABLE_MENUS = [
@@ -3139,12 +3140,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 						</thead>
 						<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
 							{isLoading ? (
-								<tr>
-									<td colSpan="7" className="py-16 text-center">
-										<div className="w-10 h-10 border-3 border-primary/20 border-t-primary rounded-full animate-spin mx-auto mb-3"></div>
-										<p className="text-xs font-bold text-slate-500">Loading user records...</p>
-									</td>
-								</tr>
+								<TableLoader colSpan={7} text="Loading user records..." size="lg" />
 							) : filteredUsers.length === 0 ? (
 								<tr>
 									<td colSpan="7" className="py-16 text-center">
