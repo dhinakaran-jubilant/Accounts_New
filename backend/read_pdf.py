@@ -555,7 +555,6 @@ def extract_docx_data(docx_path):
     }
 
     full_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
-    bank_info = []
 
     # 1. Parse simple KEY: VALUE paragraphs if present
     for p in doc.paragraphs:
@@ -577,10 +576,10 @@ def extract_docx_data(docx_path):
                 output["primary_account"] = clean_entity_name(v).upper()
             elif any(x in k for x in ["LOAN NO", "LOAN NUMBER", "REF NO"]) and not output["loan_number"]:
                 output["loan_number"] = v
-            elif any(x in k for x in ["A/C", "IFSC", "BANK"]):
-                bank_info.append(f"{parts[0].strip()}: {v}")
-        elif any(x in txt.upper() for x in ["A/C", "IFSC", "BANK"]):
-            bank_info.append(txt)
+            elif len(k) < 30 and re.search(r'\b(?:CONTACT(?:\s*NO)?|PHONE(?:\s*NO)?|MOBILE(?:\s*NO)?|CELL(?:\s*NO)?|TEL(?:\s*NO)?)\b', k) and not output["contact"]:
+                digits = re.sub(r'\D', '', v)
+                if 7 <= len(digits) <= 15:
+                    output["contact"] = re.sub(r'[^\d+\s\-()]', '', v).strip()[:30]
 
     # 2. Enhanced regex extraction for letter pad / narrative format
     # 2a. Loan Date
@@ -613,19 +612,20 @@ def extract_docx_data(docx_path):
         if m_amt:
             output["loan_amount"] = parse_docx_amount(m_amt.group(1))
 
-    # 2e. Bank / Contact info
+    # 2e. Contact number (Mobile / Phone / Cell) - strictly DO NOT store bank details!
     if not output["contact"]:
-        m_bank = re.search(r'(?:From\s+Name:[^\n]*,\s*)?(Bank\s*:[^\n]+)', full_text, flags=re.I)
-        if m_bank:
-            output["contact"] = m_bank.group(1).strip()
-        elif bank_info:
-            output["contact"] = " | ".join(bank_info)
+        m_contact = re.search(r'\b(?:Contact(?:\s*No)?|Mobile(?:\s*No)?|Phone(?:\s*No)?|Cell(?:\s*No)?|Tel(?:\s*No)?)\s*[:–—\-=.]?\s*([+0-9\s,\-()]{7,25})', full_text, flags=re.I)
+        if m_contact:
+            val = m_contact.group(1).strip()
+            digits = re.sub(r'\D', '', val)
+            if 7 <= len(digits) <= 15:
+                output["contact"] = re.sub(r'[^\d+\s\-()]', '', val).strip()[:30]
 
-    # 2f. Address info
+    # 2f. Address info (Extract borrower/client address if explicitly labeled; do not store bank branch)
     if not output["address"]:
-        m_branch = re.search(r'Branch\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*?)(?:,\s*IFS|\s*IFS|\n|$)', full_text, flags=re.I)
-        if m_branch:
-            output["address"] = m_branch.group(1).strip()
+        m_addr = re.search(r'(?:Borrower\s+Address|Client\s+Address|Permanent\s+Address|Residential\s+Address)\s*[:–—\-=]\s*([^\n]+)', full_text, flags=re.I)
+        if m_addr:
+            output["address"] = m_addr.group(1).strip()
 
     # 2g. Loan Number / Reference ID if mentioned
     if not output["loan_number"]:
@@ -714,6 +714,15 @@ def extract_docx_data(docx_path):
                     acc_int += per_int
             output["interest_rate"] = round((tot_int / output["loan_amount"]) * 100, 2)
 
+    # Ensure contact is strictly a valid phone number with 7-15 digits and never bank details
+    if output.get("contact"):
+        c_str = str(output["contact"]).strip()
+        digits = re.sub(r'\D', '', c_str)
+        if len(digits) < 7 or any(b in c_str.upper() for b in ["BANK", "A/C", "ACCOUNT", "IFSC", "BRANCH"]):
+            output["contact"] = None
+        else:
+            output["contact"] = c_str[:30]
+
     return output
 
 
@@ -788,6 +797,13 @@ def build_final_output(data, remaining_accounts):
             "tds": tds
         })
 
+    raw_contact = str(data.get("contact") or "").strip()
+    digits = re.sub(r'\D', '', raw_contact)
+    if len(digits) < 7 or any(b in raw_contact.upper() for b in ["BANK", "A/C", "ACCOUNT", "IFSC", "BRANCH"]):
+        safe_contact = ""
+    else:
+        safe_contact = raw_contact[:30]
+
     return {
         "loan_number": data.get("loan_number") or "",
         "loan_date": data.get("loan_date") or "",
@@ -800,7 +816,7 @@ def build_final_output(data, remaining_accounts):
         "primary_account_interest": primary_interest,
         "client_account_name": str(data.get("client_account") or "").strip(),
         "address": str(data.get("address") or "").strip(),
-        "contact": str(data.get("contact") or "").strip(),
+        "contact": safe_contact,
         "interest_rate": data.get("interest_rate") or "",
         "remaining_accounts": formatted_remaining,
         "table": data.get("table") or []

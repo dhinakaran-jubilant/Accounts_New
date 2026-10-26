@@ -62,6 +62,7 @@ with app.app_context():
             with db.engine.begin() as conn:
                 conn.execute(db.text("ALTER TABLE loans ADD COLUMN IF NOT EXISTS address TEXT;"))
                 conn.execute(db.text("ALTER TABLE loans ADD COLUMN IF NOT EXISTS contact VARCHAR(100);"))
+                conn.execute(db.text("ALTER TABLE loans ALTER COLUMN contact TYPE TEXT;"))
                 conn.execute(db.text("ALTER TABLE loans ADD COLUMN IF NOT EXISTS history TEXT;"))
                 conn.execute(db.text("ALTER TABLE loans ADD COLUMN IF NOT EXISTS interest_rate VARCHAR(100);"))
                 conn.execute(db.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';"))
@@ -3263,11 +3264,18 @@ def handle_pdf_upload():
         # ----------------------------
 
         # Store loan record into PostgreSQL
+        safe_contact = str(final_output.get('contact') or '').strip()
+        digits = re.sub(r'\D', '', safe_contact)
+        if len(digits) < 7 or any(b in safe_contact.upper() for b in ["BANK", "A/C", "ACCOUNT", "IFSC", "BRANCH"]):
+            safe_contact = ""
+        else:
+            safe_contact = safe_contact[:30]
+
         loan = Loan(
             loan_ref_id=final_loan_ref_id,
             client_account_name=final_output['client_account_name'],
             address=final_output.get('address') or '',
-            contact=final_output.get('contact') or '',
+            contact=safe_contact,
             loan_amount=final_output['loan_amount'],
             loan_date=final_output['loan_date'],
             primary_account_amount=final_output['primary_account_amount'],
