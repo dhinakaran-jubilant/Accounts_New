@@ -2257,6 +2257,12 @@ def handle_payout_approval(loan_id, s_no):
 # --- Database Sync / Refresh Endpoint ---
 @app.route('/api/sync', methods=['GET', 'POST'])
 def sync_data():
+    import importlib
+    import sftp_service
+    try:
+        importlib.reload(sftp_service)
+    except Exception as e_rel:
+        app.logger.warning(f"Reload sftp_service warning: {e_rel}")
     from sftp_service import load_sftp_config, run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
     sftp_res = None
     if request.method == 'POST':
@@ -2277,6 +2283,53 @@ def sync_data():
         "last_sync_status": sftp_cfg_safe.get("last_sync_status"),
         "sftp_result": sftp_res
     })
+
+# --- Synced Loans & Collections Endpoint ---
+@app.route('/api/synced-loans', methods=['GET'])
+def get_synced_loans():
+    try:
+        from sftp_service import load_sftp_config
+        sftp_cfg = load_sftp_config(hide_password=True)
+
+        loans = Loan.query.filter_by(is_deleted=False).order_by(Loan.id.desc()).all()
+        synced_items = []
+        for loan in loans:
+            schedules = loan.repayment_schedule
+            for idx, sch in enumerate(schedules):
+                recd = (sch.received_date or '').strip()
+                if not recd and sch.splits:
+                    try:
+                        sp = json.loads(sch.splits) if isinstance(sch.splits, str) else sch.splits
+                        if isinstance(sp, dict):
+                            recd = (sp.get('recdDateA') or sp.get('recdDate') or '').strip()
+                    except Exception:
+                        pass
+
+                if recd and recd not in ('-', '—', 'None', 'null'):
+                    synced_items.append({
+                        'id': f"{loan.id}-{sch.id}",
+                        'loanId': loan.loan_ref_id or f"JL-{loan.id}",
+                        'dbLoanId': loan.id,
+                        'clientName': loan.client_account_name or 'Client',
+                        'emiNo': idx + 1,
+                        'emiDate': sch.date or '',
+                        'receivedDate': recd,
+                        'paymentDate': sch.payment_date or '',
+                        'amount': float(sch.amount or 0),
+                        'interest': float(sch.interest_amount or 0),
+                        'primaryAccount': loan.primary_account_name or '',
+                        'status': 'Collected'
+                    })
+        return jsonify({
+            'success': True,
+            'last_sync_time': sftp_cfg.get('last_sync_time'),
+            'synced_count': len(synced_items),
+            'items': synced_items
+        })
+    except Exception as e:
+        app.logger.warning(f"Error querying synced loans: {e}")
+        return jsonify({'success': False, 'items': [], 'error': str(e)}), 500
+
 
 # --- Accounts Name CRUD Endpoints ---
 @app.route('/api/account-names', methods=['GET'])

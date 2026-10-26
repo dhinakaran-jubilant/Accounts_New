@@ -75,6 +75,7 @@ export default function Login({ onLoginSuccess }) {
 			if (res && res.success && res.user) {
 				// Store active session for current browser tab/window
 				sessionStorage.setItem('loanDesk_user', JSON.stringify(res.user));
+				sessionStorage.setItem('loanDesk_show_synced_popup', 'true');
 				if (res.token) {
 					sessionStorage.setItem('loanDesk_token', res.token);
 				}

@@ -25,6 +25,8 @@ export default function JointLoanTopControls({
 	isAdmin = false,
 	roleFilter = 'primary', // 'primary' | 'secondary'
 	onRoleFilterChange,
+	onOpenSyncedPopup,
+	syncedCount = 0,
 }) {
 	return (
 		<div className="flex flex-wrap items-center gap-3">

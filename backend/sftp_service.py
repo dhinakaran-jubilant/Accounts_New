@@ -333,14 +333,37 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
             return ''
         return re.sub(r'[^A-Za-z0-9]', '', str(val)).lstrip('0').upper()
 
+    # Helper: Check if an EMI installment already has received_date filled
+    def is_received_filled(sch):
+        if not sch:
+            return False
+        r = str(sch.received_date or '').strip()
+        if r and r not in ('', 'None', '-', '—', 'null'):
+            return True
+        if sch.splits:
+            try:
+                sp_data = json.loads(sch.splits) if isinstance(sch.splits, str) else sch.splits
+                if isinstance(sp_data, dict):
+                    r_a = str(sp_data.get('recdDateA') or '').strip()
+                    r_gen = str(sp_data.get('recdDate') or '').strip()
+                    if (r_a and r_a not in ('', 'None', '-', '—', 'null')) or (r_gen and r_gen not in ('', 'None', '-', '—', 'null')):
+                        return True
+            except Exception:
+                pass
+        return False
+
     chq_to_schedules = {}
     for loan in joint_loans:
         for sch in loan.repayment_schedule:
+            # Once received date is filled, do not sync that EMI
+            if is_received_filled(sch):
+                continue
             c = clean_chq(sch.cheque_no)
             if c:
                 chq_to_schedules.setdefault(c, []).append((loan, sch))
 
     updated_count = 0
+    updated_items = []
     updated_details = []
     skipped_details = []
     mismatch_details = []
@@ -383,20 +406,20 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
 
         matched_pair = None
 
-        # Stage 1: Exact Cheque / Instrument No match
+        # Stage 1: Exact Cheque / Instrument No match (only if received date not filled)
         if cleaned_inst and len(cleaned_inst) >= 2:
             candidates = chq_to_schedules.get(cleaned_inst, [])
             for loan, sch in candidates:
-                if sch.id not in matched_sch_ids:
+                if sch.id not in matched_sch_ids and not is_received_filled(sch):
                     if len(candidates) == 1 or abs(float(sch.amount or 0) - credit_val) < 1.0:
                         matched_pair = (loan, sch)
                         break
 
-        # Stage 2: Cheque number inside Description/Particulars + Amount match
+        # Stage 2: Cheque number inside Description/Particulars + Amount match (only if received date not filled)
         if not matched_pair:
             for loan in joint_loans:
                 for sch in loan.repayment_schedule:
-                    if sch.id in matched_sch_ids:
+                    if sch.id in matched_sch_ids or is_received_filled(sch):
                         continue
                     c_num = clean_chq(sch.cheque_no)
                     if c_num and len(c_num) >= 4 and c_num in particulars_str.upper():
@@ -406,26 +429,27 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
                 if matched_pair:
                     break
 
-        # Stage 3: Client Account Name in Particulars + Amount match
+        # Stage 3: Client Account Name in Particulars + Amount match (only if received date not filled)
         if not matched_pair:
             for loan in joint_loans:
                 client_name = (loan.client_account_name or '').lower().strip()
                 if client_name and len(client_name) >= 3 and client_name in particulars_lower:
                     for sch in loan.repayment_schedule:
-                        if sch.id in matched_sch_ids:
+                        if sch.id in matched_sch_ids or is_received_filled(sch):
                             continue
                         sch_amt = float(sch.amount or 0)
                         tot_amt = sch_amt + float(sch.interest_amount or 0)
                         if abs(sch_amt - credit_val) < 1.0 or abs(tot_amt - credit_val) < 1.0:
-                            if not sch.received_date or str(sch.received_date).strip() in ('', 'None', '-', '—'):
-                                matched_pair = (loan, sch)
-                                break
+                            matched_pair = (loan, sch)
+                            break
                 if matched_pair:
                     break
 
-        # Apply update if matched
+        # Apply update if matched and received date is not filled
         if matched_pair:
             loan, sch = matched_pair
+            if is_received_filled(sch):
+                continue
             matched_sch_ids.add(sch.id)
             current_recd = str(sch.received_date or '').strip()
 
@@ -454,6 +478,25 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
                     sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
 
                 updated_count += 1
+                sch_emi_no = 1
+                for s_i, s_obj in enumerate(loan.repayment_schedule):
+                    if s_obj.id == sch.id:
+                        sch_emi_no = s_i + 1
+                        break
+
+                updated_items.append({
+                    'id': f"{loan.id}-{sch.id}",
+                    'loanId': loan.loan_ref_id or f"JL-{loan.id}",
+                    'dbLoanId': loan.id,
+                    'clientName': loan.client_account_name or 'Client',
+                    'emiNo': sch_emi_no,
+                    'emiDate': sch.date or '',
+                    'receivedDate': txn_date_str,
+                    'amount': float(sch.amount or 0),
+                    'primaryAccount': loan.primary_account_name or '',
+                    'status': 'Collected'
+                })
+
                 updated_details.append(
                     f"Loan #{loan.id} ({loan.client_account_name}) Inst #{sch.id} [Date: {sch.date}, Chq: {sch.cheque_no or 'N/A'}, Amt: {sch.amount}]: received_date updated from '{current_recd or 'None'}' to '{txn_date_str}'"
                 )
@@ -483,6 +526,7 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
     return {
         "success": True,
         "updated_count": updated_count,
+        "updated_items": updated_items,
         "updated_details": updated_details,
         "skipped_details": skipped_details,
         "mismatch_details": mismatch_details
@@ -508,12 +552,14 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
                 "message": "Connected to SFTP, but no Excel (.xlsx/.xls) DayBook files were found.",
                 "total_files": 0,
                 "updated_count": 0,
+                "updated_items": [],
                 "updated_details": [],
                 "skipped_details": ["No Excel files found on SFTP server"],
                 "mismatch_details": []
             }
         else:
             total_updated = 0
+            all_updated_items = []
             all_updated_details = []
             all_skipped_details = []
             all_mismatch_details = []
@@ -530,6 +576,7 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
                 if res.get('success'):
                     u_cnt = res.get('updated_count', 0)
                     total_updated += u_cnt
+                    all_updated_items.extend(res.get('updated_items', []))
                     all_updated_details.extend([f"[{fname}] {d}" for d in res.get('updated_details', [])])
                     all_skipped_details.extend([f"[{fname}] {d}" for d in res.get('skipped_details', [])])
                     all_mismatch_details.extend([f"[{fname}] {d}" for d in res.get('mismatch_details', [])])
@@ -542,6 +589,7 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
                 "message": msg,
                 "total_files": len(downloaded),
                 "updated_count": total_updated,
+                "updated_items": all_updated_items,
                 "updated_details": all_updated_details,
                 "skipped_details": all_skipped_details,
                 "mismatch_details": all_mismatch_details

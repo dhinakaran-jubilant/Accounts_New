@@ -9,7 +9,7 @@ Operates strictly on live database loan records.
 
 // Helper to format number into Indian currency representation (e.g. ₹45,10,000)
 export function formatIndianCurrency(num) {
-	if (num === null || num === undefined || isNaN(num)) return '₹0';
+	if (num === null || num === undefined || isNaN(num)) return '0';
 	const absVal = Math.abs(Number(num));
 	const isNegative = Number(num) < 0;
 	const parts = Math.round(absVal).toString();
@@ -18,12 +18,12 @@ export function formatIndianCurrency(num) {
 	if (otherNumbers !== '') {
 		lastThree = otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + lastThree;
 	}
-	return `${isNegative ? '-' : ''}₹${lastThree}`;
+	return `${isNegative ? '-' : ''}${lastThree}`;
 }
 
 // Compact currency (e.g. ₹3.36 Cr, ₹45.1 L)
 export function formatCompactCurrency(num) {
-	if (num === null || num === undefined || isNaN(num)) return '₹0';
+	if (num === null || num === undefined || isNaN(num)) return '0';
 	const val = Number(num);
 	if (val >= 10000000) {
 		return `₹${(val / 10000000).toFixed(2)} Cr`;

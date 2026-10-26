@@ -18,6 +18,7 @@ import AccountSummaryBreakdown from './components/dashboard/AccountSummaryBreakd
 import ThisWeekEmis from './components/dashboard/ThisWeekEmis';
 import RecentJointLoans from './components/dashboard/RecentJointLoans';
 import JointLoanDetailsModal from './components/dashboard/JointLoanDetailsModal';
+import SyncedLoansModal from './components/dashboard/SyncedLoansModal';
 import PendingFromPrimaryBreakdown from './components/dashboard/PendingFromPrimaryBreakdown';
 import JointLoan from './components/JointLoan';
 import Settings from './components/Settings';
@@ -154,6 +155,9 @@ export default function Dashboard({ currentUser, onLogout }) {
 	});
 	const [dashboardTab, setDashboardTab] = useState('all'); // 'all' | 'overdue'
 	const [statusFilter, setStatusFilter] = useState('ALL');
+	const [showSyncedLoansModal, setShowSyncedLoansModal] = useState(false);
+	const [backendSyncedItems, setBackendSyncedItems] = useState([]);
+	const [lastSyncResult, setLastSyncResult] = useState(null);
 
 	// Primary / Secondary Role Filter State (Default: 'primary')
 	const [accountRoleFilter, setAccountRoleFilter] = useState('primary'); // 'primary' | 'secondary'
@@ -238,10 +242,39 @@ export default function Dashboard({ currentUser, onLogout }) {
 		}
 	}, []);
 
+	// Fetch DayBook synced loan installments
+	const loadSyncedItems = useCallback(async () => {
+		try {
+			const res = await api.getSyncedLoans();
+			if (res && res.success && Array.isArray(res.items)) {
+				setBackendSyncedItems(res.items);
+				if (res.last_sync_time) {
+					setLastSyncTime(res.last_sync_time);
+				}
+			}
+		} catch (err) {
+			console.warn('Failed to load synced loans endpoint:', err);
+		}
+	}, []);
+
 	// Auto-fetch on mount and synchronize on global loan events
 	useEffect(() => {
 		loadJointLoans();
-		const handleRefresh = () => loadJointLoans();
+		loadSyncedItems();
+
+		// Check if user just logged in: display the synced loans popup card
+		try {
+			const shouldShowPopup = sessionStorage.getItem('loanDesk_show_synced_popup');
+			if (shouldShowPopup === 'true') {
+				sessionStorage.removeItem('loanDesk_show_synced_popup');
+				setShowSyncedLoansModal(true);
+			}
+		} catch (e) {}
+
+		const handleRefresh = () => {
+			loadJointLoans();
+			loadSyncedItems();
+		};
 
 		const loadSyncStatus = async () => {
 			try {
@@ -268,7 +301,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 			window.removeEventListener('loan_updated', handleRefresh);
 			window.removeEventListener('loan_approved', handleRefresh);
 		};
-	}, [loadJointLoans]);
+	}, [loadJointLoans, loadSyncedItems]);
 
 	// Handle full DayBook SFTP & DB Sync when user clicks the Sync button
 	const handleSync = useCallback(async () => {
@@ -276,6 +309,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 		setSyncFeedback(null);
 		try {
 			const syncRes = await api.syncData();
+			setLastSyncResult(syncRes);
 			const remoteLoans = await api.getJointLoans();
 			if (Array.isArray(remoteLoans)) {
 				setJointLoans(remoteLoans);
@@ -309,17 +343,57 @@ export default function Dashboard({ currentUser, onLogout }) {
 
 			// Notify other listeners that loans/daybook were synced
 			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+			await loadSyncedItems();
 
 			setIsSyncing(false);
 			setSyncFeedback('Synced');
 			setTimeout(() => setSyncFeedback(null), 2500);
+
+			// Automatically display sync results in SyncedLoansModal
+			setShowSyncedLoansModal(true);
 		} catch (err) {
 			console.error('Failed to sync daybook/database:', err);
 			setIsSyncing(false);
 			setSyncFeedback('Sync Failed');
 			setTimeout(() => setSyncFeedback(null), 2500);
+			setShowSyncedLoansModal(true);
 		}
-	}, []);
+	}, [loadSyncedItems]);
+
+	// Extract and deduplicate synced loan installments for popup card
+	const syncedInstallments = useMemo(() => {
+		if (backendSyncedItems && backendSyncedItems.length > 0) {
+			return backendSyncedItems;
+		}
+		const items = [];
+		(jointLoans || []).forEach((loan) => {
+			const schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+			schedule.forEach((sch, idx) => {
+				let recd = (sch.received_date || sch.receivedDate || '').trim();
+				if (!recd && sch.splits) {
+					try {
+						const sp = typeof sch.splits === 'string' ? JSON.parse(sch.splits) : sch.splits;
+						recd = (sp?.recdDateA || sp?.recdDate || '').trim();
+					} catch (e) {}
+				}
+				if (recd && recd !== '-' && recd !== '—' && recd !== 'None' && recd !== 'null') {
+					items.push({
+						id: `${loan.id}-${sch.id || idx}`,
+						loanId: loan.loan_ref_id || loan.id,
+						clientName: loan.client_account_name || loan.primaryBorrower?.name || 'Client',
+						emiNo: sch.sNo || sch.installmentNumber || idx + 1,
+						emiDate: sch.date || '',
+						receivedDate: recd,
+						paymentDate: sch.payment_date || '',
+						amount: Number(sch.amount) || 0,
+						primaryAccount: loan.primaryAccountName || loan.primary_account_name || '',
+						loan,
+					});
+				}
+			});
+		});
+		return items;
+	}, [backendSyncedItems, jointLoans]);
 
 	// If a non-admin user has selected an account not in their assigned accounts, reset to 'ALL'
 	useEffect(() => {
@@ -751,6 +825,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 									isAdmin={isAdmin}
 									roleFilter={accountRoleFilter}
 									onRoleFilterChange={handleRoleFilterChange}
+									onOpenSyncedPopup={() => setShowSyncedLoansModal(true)}
+									syncedCount={syncedInstallments.length}
 								/>
 							</div>
 
@@ -924,6 +1000,21 @@ export default function Dashboard({ currentUser, onLogout }) {
 					setSelectedJointLoan(null);
 					handleNavigateToLoanDetails(loan);
 				}}
+			/>
+
+			{/* DayBook Synced Loans & Collections Popup Card */}
+			<SyncedLoansModal
+				isOpen={showSyncedLoansModal}
+				onClose={() => setShowSyncedLoansModal(false)}
+				syncedItems={syncedInstallments}
+				lastSyncTime={lastSyncTime}
+				syncResult={lastSyncResult}
+				onOpenLoan={(item) => {
+					setShowSyncedLoansModal(false);
+					handleNavigateToLoanDetails(item.loan || { id: item.loanId, loan_ref_id: item.loanId });
+				}}
+				onTriggerSync={handleSync}
+				isSyncing={isSyncing}
 			/>
 		</div>
 	);

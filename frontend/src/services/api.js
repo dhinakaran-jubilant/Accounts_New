@@ -218,6 +218,7 @@ export const api = {
 	},
 	getSftpConfig: () => request('/sftp/config'),
 	syncSftpNow: () => request('/sftp/sync-now', { method: 'POST' }),
+	getSyncedLoans: () => request('/synced-loans'),
 
 	// Account Names from DB
 	getAccountNames: () => request('/account-names'),

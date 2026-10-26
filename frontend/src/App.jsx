@@ -55,14 +55,13 @@ export default function App() {
 	const handleLoginSuccess = (user) => {
 		try {
 			sessionStorage.setItem('loanDesk_user', JSON.stringify(user));
+			sessionStorage.setItem('loanDesk_show_synced_popup', 'true');
 		} catch (e) {
 			// ignore
 		}
 		setCurrentUser(user);
-		if (window.location.pathname === '/login' || window.location.pathname === '/') {
-			window.history.pushState({}, '', '/');
-			setCurrentPath('/');
-		}
+		window.history.pushState({}, '', '/');
+		setCurrentPath('/');
 	};
 
 	const handleLogout = () => {
