@@ -207,9 +207,9 @@ export default function ThisWeekEmis({
 
 
 	return (
-		<div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200/80 p-6 font-sans">
+		<div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200/80 p-6 font-sans flex flex-col max-h-[540px]">
 			{/* Top Header Row */}
-			<div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-5 border-b border-slate-100">
+			<div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-5 border-b border-slate-100 shrink-0">
 				<div>
 					<div className="flex items-center gap-3">
 						<div className="w-10 h-10 rounded-xl bg-orange-50 text-primary flex items-center justify-center">
@@ -287,42 +287,43 @@ export default function ThisWeekEmis({
 				</div>
 			</div>
 
-			{/* EMI Cards Grid */}
-			{isLoading ? (
-				<div className="py-10 text-center">
-					<LottieLoader text="Loading this week's EMIs..." size="md" />
-				</div>
-			) : filteredEmis.length === 0 ? (
-				<div className="py-10 text-center">
-					<div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-2">
-						<span className="material-symbols-outlined text-[24px]">task_alt</span>
+			{/* EMI Cards Container */}
+			<div className="overflow-y-auto mt-4 pr-1 flex-1">
+				{isLoading ? (
+					<div className="py-10 text-center">
+						<LottieLoader text="Loading this week's EMIs..." size="md" />
 					</div>
-					<h3 className="font-extrabold text-[15px] text-slate-800">
-						{statusTab === 'overdue'
-							? "No Overdue EMIs for This Week"
-							: statusTab === 'upcoming'
-							? "No Upcoming EMIs for This Week"
-							: "No Pending EMIs for This Week"}
-					</h3>
-					<p className="text-[12px] text-slate-500 mt-1 max-w-sm mx-auto">
-						{statusTab === 'overdue'
-							? `All repayments scheduled for the current week (${weekRangeLabel}) are up to date with no overdue payments.`
-							: statusTab === 'upcoming'
-							? `No upcoming payments scheduled for the remainder of this week (${weekRangeLabel}).`
-							: `All client repayment obligations for this week (${weekRangeLabel}) have been collected or settled.`}
-					</p>
-					{statusTab !== 'all' && (
-						<button
-							type="button"
-							onClick={() => setStatusTab('all')}
-							className="mt-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
-						>
-							View All This Week EMIs
-						</button>
-					)}
-				</div>
-			) : (
-				<div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mt-5">
+				) : filteredEmis.length === 0 ? (
+					<div className="py-10 text-center">
+						<div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-2">
+							<span className="material-symbols-outlined text-[24px]">task_alt</span>
+						</div>
+						<h3 className="font-extrabold text-[15px] text-slate-800">
+							{statusTab === 'overdue'
+								? "No Overdue EMIs for This Week"
+								: statusTab === 'upcoming'
+								? "No Upcoming EMIs for This Week"
+								: "No Pending EMIs for This Week"}
+						</h3>
+						<p className="text-[12px] text-slate-500 mt-1 max-w-sm mx-auto">
+							{statusTab === 'overdue'
+								? `All repayments scheduled for the current week (${weekRangeLabel}) are up to date with no overdue payments.`
+								: statusTab === 'upcoming'
+								? `No upcoming payments scheduled for the remainder of this week (${weekRangeLabel}).`
+								: `All client repayment obligations for this week (${weekRangeLabel}) have been collected or settled.`}
+						</p>
+						{statusTab !== 'all' && (
+							<button
+								type="button"
+								onClick={() => setStatusTab('all')}
+								className="mt-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold rounded-lg transition-colors cursor-pointer"
+							>
+								View All This Week EMIs
+							</button>
+						)}
+					</div>
+				) : (
+					<div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
 					{filteredEmis.map((emi, idx) => {
 						const countdown = getCountdownBadge(emi);
 						const badge = getStatusBadge(emi.status);
@@ -402,6 +403,7 @@ export default function ThisWeekEmis({
 					})}
 				</div>
 			)}
+			</div>
 		</div>
 	);
 }

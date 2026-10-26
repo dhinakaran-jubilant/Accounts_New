@@ -76,9 +76,9 @@ export default function RecentJointLoans({
 	};
 
 	return (
-		<div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200/80 font-sans overflow-hidden">
+		<div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200/80 font-sans overflow-hidden flex flex-col max-h-[580px]">
 			{/* Header Strip with Controls */}
-			<div className="p-6 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+			<div className="p-6 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 shrink-0">
 				<div>
 					<div className="flex items-center gap-2">
 						<div className='w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center'>
@@ -131,10 +131,10 @@ export default function RecentJointLoans({
 			</div>
 
 			{/* Loans Table */}
-			<div className="overflow-x-auto">
+			<div className="overflow-x-auto overflow-y-auto flex-1">
 				<table className="w-full text-left border-collapse">
-					<thead>
-						<tr className="bg-slate-50/80 text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-100">
+					<thead className="sticky top-0 bg-slate-50/95 backdrop-blur-sm z-10 shadow-2xs">
+						<tr className="text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200">
 							<th className="py-3.5 px-5">Client Name</th>
 							<th className="py-3.5 px-4">Amount &amp; Tenure</th>
 							<th className="py-3.5 px-4">Co-Lending Share</th>

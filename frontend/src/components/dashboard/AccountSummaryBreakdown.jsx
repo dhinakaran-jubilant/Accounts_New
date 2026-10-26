@@ -51,9 +51,9 @@ export default function AccountSummaryBreakdown({
 	}
 
 	return (
-		<div className="bg-white rounded-2xl p-5 shadow-sm ring-1 ring-slate-200/80 font-sans transition-all duration-300 hover:shadow-md">
+		<div className="bg-white rounded-2xl p-5 shadow-sm ring-1 ring-slate-200/80 font-sans transition-all duration-300 hover:shadow-md flex flex-col max-h-[500px]">
 			{/* Header Strip */}
-			<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+			<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 shrink-0">
 				<div className="flex items-center gap-3">
 					<div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
 						<span className="material-symbols-outlined text-[22px]">account_balance</span>
@@ -88,10 +88,10 @@ export default function AccountSummaryBreakdown({
 			</div>
 
 			{/* Responsive Table of Account Summaries */}
-			<div className="overflow-x-auto mt-3">
+			<div className="overflow-x-auto overflow-y-auto mt-3 flex-1">
 				<table className="w-full text-left text-xs">
-					<thead>
-						<tr className="border-b border-slate-100 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+					<thead className="sticky top-0 bg-slate-50/95 backdrop-blur-sm z-10 shadow-2xs">
+						<tr className="border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-500">
 							<th className="py-2.5 px-3">Partner Account</th>
 							<th className="py-2.5 px-3 text-center">Facilities</th>
 							<th className="py-2.5 px-3 text-right">Total Principal</th>
