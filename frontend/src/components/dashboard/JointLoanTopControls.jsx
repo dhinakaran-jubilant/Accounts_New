@@ -27,9 +27,6 @@ export default function JointLoanTopControls({
 	onRoleFilterChange,
 	onOpenSyncedPopup,
 	syncedCount = 0,
-	onTallySync,
-	isTallySyncing = false,
-	tallyFeedback = null,
 }) {
 	return (
 		<div className="flex flex-wrap items-center gap-3">
@@ -71,7 +68,7 @@ export default function JointLoanTopControls({
 				roleFilter={roleFilter}
 			/>
 
-			{/* 3. Sync/Refresh Button (DayBook Received Dates) */}
+			{/* 3. Unified Sync Button (DayBook Received Dates & Tally Payout Dates) */}
 			<button
 				type="button"
 				onClick={onRefresh}
@@ -79,7 +76,7 @@ export default function JointLoanTopControls({
 				className={`inline-flex items-center gap-2 bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50 rounded-xl border border-slate-200 shadow-2xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer select-none group ${
 					lastSyncTime ? 'px-3 py-1.5' : 'h-9 px-3 text-xs'
 				}`}
-				title={lastSyncTime ? `Last synced: ${lastSyncTime} • Click to sync Day Book` : 'Sync with Day Book'}
+				title={lastSyncTime ? `Last synced: ${lastSyncTime} • Click to sync DayBook & Tally` : 'Sync DayBook & Tally'}
 			>
 				<span
 					className={`material-symbols-outlined text-[17px] transition-transform ${
@@ -90,7 +87,7 @@ export default function JointLoanTopControls({
 				</span>
 				<div className="flex flex-col text-left leading-tight">
 					<span className="font-bold text-[12px] whitespace-nowrap">
-						{isRefreshing ? 'Syncing...' : syncFeedback || 'DB Sync'}
+						{isRefreshing ? 'Syncing...' : syncFeedback || 'Sync'}
 					</span>
 					{lastSyncTime && (
 						<span className="text-[9px] text-slate-400 font-medium whitespace-nowrap font-mono tracking-tight">
@@ -99,28 +96,6 @@ export default function JointLoanTopControls({
 					)}
 				</div>
 			</button>
-
-			{/* 4. Tally Sync Button (Payout Date Sync by Loan ID) */}
-			{onTallySync && (
-				<button
-					type="button"
-					onClick={onTallySync}
-					disabled={isTallySyncing}
-					className="inline-flex items-center gap-1.5 h-9 px-3 text-xs bg-white text-slate-700 hover:text-purple-700 hover:bg-purple-50/50 rounded-xl border border-slate-200 shadow-2xs transition-all active:scale-95 disabled:opacity-75 cursor-pointer select-none group"
-					title="Click to sync payout dates from Tally based on Loan ID"
-				>
-					<span
-						className={`material-symbols-outlined text-[17px] transition-transform ${
-							isTallySyncing ? 'animate-spin text-purple-600' : 'text-slate-500 group-hover:text-purple-600'
-						}`}
-					>
-						account_balance
-					</span>
-					<span className="font-bold text-[12px] whitespace-nowrap">
-						{isTallySyncing ? 'Syncing...' : tallyFeedback || 'Tally Sync'}
-					</span>
-				</button>
-			)}
 		</div>
 	);
 }

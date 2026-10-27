@@ -16,18 +16,45 @@ export default function RecentJointLoans({
 	isLoading = false,
 	onSelectLoan,
 	onNavigateToJointLoans,
+	onOpenLoanDetails,
 	activeStatusFilter = 'ALL',
 	onStatusFilterChange,
 	searchQuery: propSearchQuery = '',
+	limit = 10,
 }) {
 	const [internalSearch, setInternalSearch] = useState('');
 	const searchQuery = propSearchQuery || internalSearch;
 
 	const statusOptions = ['ALL', 'Active', 'Overdue', 'Date Overdue', 'Pending', 'Closed'];
 
-	// Filter loans by search query and active status
-	const filteredLoans = useMemo(() => {
-		return loans.filter((loan) => {
+	// Helper to extract timestamp or sorting weight from loan for chronological recency
+	const parseLoanDate = (loan) => {
+		const dateStr = loan.loan_date || loan.appliedDate || loan.created_at || loan.date || '';
+		if (dateStr) {
+			const cleanStr = String(dateStr).trim().split(' ')[0];
+			const parts = cleanStr.split(/[-/]/);
+			if (parts.length === 3) {
+				if (parts[0].length === 4) {
+					// YYYY-MM-DD
+					const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+					if (!isNaN(d.getTime())) return d.getTime();
+				} else {
+					// DD-MM-YYYY
+					const d = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+					if (!isNaN(d.getTime())) return d.getTime();
+				}
+			}
+			const parsed = new Date(cleanStr);
+			if (!isNaN(parsed.getTime())) return parsed.getTime();
+		}
+		// Fallback to numeric ID if date is not available or equal
+		const numericId = parseInt(loan.db_id || loan.id || 0, 10);
+		return isNaN(numericId) ? 0 : numericId;
+	};
+
+	// Filter loans by search query and active status, sorted by most recent date/ID descending
+	const matchedLoans = useMemo(() => {
+		const matched = loans.filter((loan) => {
 			// Status check
 			if (activeStatusFilter !== 'ALL') {
 				const s1 = (loan.status || '').toLowerCase().trim();
@@ -49,7 +76,22 @@ export default function RecentJointLoans({
 
 			return true;
 		});
+
+		// Sort strictly by most recent first
+		return [...matched].sort((a, b) => {
+			const timeB = parseLoanDate(b);
+			const timeA = parseLoanDate(a);
+			if (timeB !== timeA) return timeB - timeA;
+			const idB = parseInt(b.db_id || b.id || 0, 10) || 0;
+			const idA = parseInt(a.db_id || a.id || 0, 10) || 0;
+			return idB - idA;
+		});
 	}, [loans, activeStatusFilter, searchQuery]);
+
+	// Display only recent 10 joint loans
+	const recentLoans = useMemo(() => {
+		return matchedLoans.slice(0, limit);
+	}, [matchedLoans, limit]);
 
 	// Repayment schedule summary helper
 	const getScheduleProgress = (loan) => {
@@ -90,11 +132,16 @@ export default function RecentJointLoans({
 									Recent Joint Loans
 								</h2>
 								<span className="font-bold text-[12px] bg-slate-100 text-slate-700 px-2.5 py-0.5 rounded-full ring-1 ring-slate-200">
-									{filteredLoans.length} of {loans.length}
+									Showing {recentLoans.length} of {matchedLoans.length}
 								</span>
+								{matchedLoans.length > limit && (
+									<span className="text-[11px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full ring-1 ring-primary/20">
+										Latest {limit}
+									</span>
+								)}
 							</div>
 							<p className="text-[12px] text-slate-500 mt-0.5">
-								Real-time co-lending facilities, servicing status, and repayment progress
+								Top {limit} recently booked and servicing co-lending facilities
 							</p>	
 						</div>
 					</div>
@@ -136,7 +183,7 @@ export default function RecentJointLoans({
 					<thead className="sticky top-0 bg-slate-50/95 backdrop-blur-sm z-10 shadow-2xs">
 						<tr className="text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200">
 							<th className="py-3.5 px-5">Client Name</th>
-							<th className="py-3.5 px-4">Amount &amp; Tenure</th>
+							<th className="py-3.5 px-4">Amount</th>
 							<th className="py-3.5 px-4">Co-Lending Share</th>
 							<th className="py-3.5 px-4">Repayment Progress</th>
 							<th className="py-3.5 px-4">Status</th>
@@ -145,7 +192,7 @@ export default function RecentJointLoans({
 					<tbody className="divide-y divide-slate-100 text-[13px]">
 						{isLoading ? (
 							<TableLoader colSpan={6} text="Loading recent joint loans..." />
-						) : filteredLoans.length === 0 ? (
+						) : recentLoans.length === 0 ? (
 							<tr>
 								<td colSpan={6} className="py-12 text-center text-slate-400">
 									<div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-2">
@@ -158,7 +205,7 @@ export default function RecentJointLoans({
 								</td>
 							</tr>
 						) : (
-							filteredLoans.map((loan) => {
+							recentLoans.map((loan) => {
 								const badge = getStatusBadge(loan.status);
 								const progress = getScheduleProgress(loan);
 								const clientName = loan.client_account_name || 'Client';
@@ -175,8 +222,17 @@ export default function RecentJointLoans({
 								return (
 									<tr
 										key={loan.id || loan.db_id}
-										className="hover:bg-slate-50/60 transition-colors group cursor-pointer"
-										onClick={() => onSelectLoan && onSelectLoan(loan)}
+										className="hover:bg-slate-50/80 transition-colors group cursor-pointer"
+										title="Click to open loan details page"
+										onClick={() => {
+											if (onOpenLoanDetails) {
+												onOpenLoanDetails(loan);
+											} else if (onNavigateToJointLoans) {
+												onNavigateToJointLoans(loan);
+											} else if (onSelectLoan) {
+												onSelectLoan(loan);
+											}
+										}}
 									>
 										{/* Ref ID & Borrower */}
 										<td className="py-4 px-5">
@@ -201,12 +257,7 @@ export default function RecentJointLoans({
 										{/* Amount & Tenure */}
 										<td className="py-4 px-4">
 											<div className="font-extrabold text-[15px] text-slate-900">
-												{formatIndianCurrency(loan.amount)}
-											</div>
-											<div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
-												<span>{loan.tenure || '10 Mo'}</span>
-												<span>•</span>
-												<span className="font-semibold text-slate-700">{loan.interest_rate || loan.interestRate || (loan.rate && loan.rate !== '7.2% Fixed' ? loan.rate : '-')}</span>
+												₹ {formatIndianCurrency(loan.amount)}
 											</div>
 										</td>
 
@@ -260,12 +311,17 @@ export default function RecentJointLoans({
 											</div>
 										</td>
 
-										{/* Status Badge */}
+										{/* Status Badge & Open Arrow */}
 										<td className="py-4 px-4">
-											<span className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full ring-1 ${badge.color}`}>
-												<span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`}></span>
-												<span>{loan.status || 'Active'}</span>
-											</span>
+											<div className="flex items-center justify-between gap-2">
+												<span className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-full ring-1 ${badge.color}`}>
+													<span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`}></span>
+													<span>{loan.status || 'Active'}</span>
+												</span>
+												<span className="material-symbols-outlined text-[18px] text-slate-300 group-hover:text-primary group-hover:translate-x-0.5 transition-all">
+													chevron_right
+												</span>
+											</div>
 										</td>
 									</tr>
 								);
@@ -279,12 +335,12 @@ export default function RecentJointLoans({
 			{onNavigateToJointLoans && (
 				<div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
 					<span className="text-slate-500 font-medium">
-						Showing latest active and servicing joint loans from database
+						Showing recent {recentLoans.length} {recentLoans.length === 1 ? 'joint loan' : 'joint loans'} {matchedLoans.length > limit ? `(out of ${matchedLoans.length} total)` : ''}
 					</span>
 					<button
 						type="button"
 						onClick={onNavigateToJointLoans}
-						className="font-bold text-primary hover:underline flex items-center gap-1"
+						className="font-bold text-primary hover:underline flex items-center gap-1 cursor-pointer"
 					>
 						<span>Open Complete Joint Loan Desk</span>
 						<span className="material-symbols-outlined text-[14px]">arrow_forward</span>

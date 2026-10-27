@@ -147,8 +147,6 @@ export default function Dashboard({ currentUser, onLogout }) {
 	const [jointLoans, setJointLoans] = useState([]);
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [syncFeedback, setSyncFeedback] = useState(null);
-	const [isTallySyncing, setIsTallySyncing] = useState(false);
-	const [tallyFeedback, setTallyFeedback] = useState(null);
 	const [lastSyncTime, setLastSyncTime] = useState(() => {
 		try {
 			return localStorage.getItem('joint_loan_last_sync_time') || null;
@@ -306,17 +304,28 @@ export default function Dashboard({ currentUser, onLogout }) {
 		};
 	}, [loadJointLoans, loadSyncedItems]);
 
-	// Handle full DayBook SFTP & DB Sync when user clicks the Sync button
+	// Handle Unified Sync (DayBook SFTP Received Dates & Tally Cloud Payout Dates)
 	const handleSync = useCallback(async () => {
 		setIsSyncing(true);
 		setSyncFeedback(null);
 		try {
-			const syncRes = await api.syncData();
+			// Trigger both DayBook SFTP sync and Tally Cloud Payout sync simultaneously
+			const [daybookSettled, tallySettled] = await Promise.allSettled([
+				api.syncData(),
+				api.syncTallyNow()
+			]);
+
+			const syncRes = daybookSettled.status === 'fulfilled' ? daybookSettled.value : null;
+			const tallyRes = tallySettled.status === 'fulfilled' ? tallySettled.value : null;
+
 			setLastSyncResult(syncRes);
+
+			// Reload fresh joint loans from database
 			const remoteLoans = await api.getJointLoans();
 			if (Array.isArray(remoteLoans)) {
 				setJointLoans(remoteLoans);
 			}
+
 			try {
 				const freshAccs = await api.getAccountNames();
 				if (Array.isArray(freshAccs) && freshAccs.length > 0) {
@@ -344,51 +353,35 @@ export default function Dashboard({ currentUser, onLogout }) {
 				localStorage.setItem('joint_loan_last_sync_time', syncedTime);
 			} catch (e) {}
 
-			// Notify other listeners that loans/daybook were synced
+			// Notify other listeners that loans/daybook/tally were synced
 			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 			await loadSyncedItems();
 
 			setIsSyncing(false);
-			setSyncFeedback('Synced');
-			setTimeout(() => setSyncFeedback(null), 2500);
+
+			const tallyCount = tallyRes?.synced_count ?? 0;
+			const dbCount = syncRes?.sftp_result?.updated_count ?? syncRes?.updated_count ?? 0;
+			if (tallyCount > 0 && dbCount > 0) {
+				setSyncFeedback(`Synced (${dbCount} DB, ${tallyCount} Tally)`);
+			} else if (tallyCount > 0) {
+				setSyncFeedback(`Synced (${tallyCount} Tally)`);
+			} else if (dbCount > 0) {
+				setSyncFeedback(`Synced (${dbCount} DB)`);
+			} else {
+				setSyncFeedback('Synced');
+			}
+			setTimeout(() => setSyncFeedback(null), 3000);
 
 			// Automatically display sync results in SyncedLoansModal
 			setShowSyncedLoansModal(true);
 		} catch (err) {
-			console.error('Failed to sync daybook/database:', err);
+			console.error('Failed to sync daybook/tally:', err);
 			setIsSyncing(false);
 			setSyncFeedback('Sync Failed');
 			setTimeout(() => setSyncFeedback(null), 2500);
 			setShowSyncedLoansModal(true);
 		}
 	}, [loadSyncedItems]);
-
-	// Handle Tally Payout Date Sync based on Loan ID
-	const handleTallySync = useCallback(async () => {
-		setIsTallySyncing(true);
-		setTallyFeedback(null);
-		try {
-			const res = await api.syncTallyNow();
-			const remoteLoans = await api.getJointLoans();
-			if (Array.isArray(remoteLoans)) {
-				setJointLoans(remoteLoans);
-			}
-			setIsTallySyncing(false);
-			if (res?.success) {
-				const count = res.synced_count ?? 0;
-				setTallyFeedback(count > 0 ? `Synced (${count})` : 'Synced (0)');
-			} else {
-				setTallyFeedback('Failed');
-			}
-			setTimeout(() => setTallyFeedback(null), 3000);
-			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
-		} catch (err) {
-			console.error('Failed to sync Tally payouts:', err);
-			setIsTallySyncing(false);
-			setTallyFeedback('Failed');
-			setTimeout(() => setTallyFeedback(null), 3000);
-		}
-	}, []);
 
 	// Extract and deduplicate synced loan installments for popup card
 	const syncedInstallments = useMemo(() => {
@@ -846,9 +839,6 @@ export default function Dashboard({ currentUser, onLogout }) {
 									isRefreshing={isSyncing}
 									syncFeedback={syncFeedback}
 									lastSyncTime={lastSyncTime}
-									onTallySync={handleTallySync}
-									isTallySyncing={isTallySyncing}
-									tallyFeedback={tallyFeedback}
 									onExport={handleExport}
 									onNewLoan={() => handleSelectMenuItem('joint-loan')}
 									totalLoans={filteredJointLoans.length}
@@ -1009,7 +999,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 								<RecentJointLoans
 									loans={filteredJointLoans}
 									isLoading={isSyncing && !jointLoans.length}
-									onSelectLoan={(loan) => setSelectedJointLoan(loan)}
+									onSelectLoan={(loan) => handleNavigateToLoanDetails(loan)}
+									onOpenLoanDetails={(loan) => handleNavigateToLoanDetails(loan)}
 									onNavigateToJointLoans={(loan) => {
 										if (loan && (loan.id || loan.loan_ref_id)) {
 											handleNavigateToLoanDetails(loan);
