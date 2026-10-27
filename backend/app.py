@@ -3708,8 +3708,7 @@ def handle_tally_test():
     from tally_service import test_tally_connection
     payload = request.get_json(force=True, silent=True) or {}
     result = test_tally_connection(payload if payload else None)
-    status_code = 200 if result.get('success') else 400
-    return jsonify(result), status_code
+    return jsonify(result), 200
 
 
 @app.route('/api/tally/sync-now', methods=['POST'])

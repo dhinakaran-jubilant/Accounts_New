@@ -111,10 +111,170 @@ def normalize_date_to_ddmmyyyy(raw_date):
     return d_str
 
 
+def extract_records_from_item(item):
+    """
+    Parses an item from the incoming payload.
+    Supports:
+    1. Tally Voucher format:
+       {
+           "vchNo": "LE2257-2717870",
+           "date": "01-08-2025",
+           "narration": "Ledger change Party Bank-ex",
+           "debit_entries": [ ... ],
+           "credit_entries": [ ... ]
+       }
+    2. Flat payout record:
+       {
+           "loan_id": "PDM/23-24/C/16527",
+           "payout_date": "01-08-2025",
+           "amount": 100000
+       }
+    """
+    records = []
+    has_entries = bool(item.get("debit_entries") or item.get("credit_entries"))
+
+    if has_entries:
+        vch_no = item.get("vchNo") or item.get("voucher_no") or item.get("vch_no") or ""
+        vch_date = item.get("date") or item.get("vchDate") or ""
+        narration = item.get("narration") or item.get("remarks") or ""
+
+        debits = item.get("debit_entries") or []
+        credits = item.get("credit_entries") or []
+        all_entries = debits + credits
+
+        # Extract Bank information
+        bank_name = ""
+        inst_no = ""
+        inst_date = ""
+        for e in all_entries:
+            if not isinstance(e, dict):
+                continue
+            if e.get("Bank_Name"):
+                bank_name = e.get("Bank_Name")
+            elif not bank_name and "BANK" in (e.get("account_name") or "").upper():
+                bank_name = e.get("account_name")
+            if e.get("Inst_No"):
+                inst_no = e.get("Inst_No")
+            if e.get("Inst_Date"):
+                inst_date = e.get("Inst_Date")
+
+        norm_payout_date = normalize_date_to_ddmmyyyy(inst_date or vch_date)
+
+        # Extract Party and Bill allocations
+        party_found = False
+        for e in all_entries:
+            if not isinstance(e, dict):
+                continue
+            acc_name = (e.get("account_name") or "").strip()
+            allocs = e.get("Bill_allocations") or []
+
+            if allocs:
+                party_found = True
+                for al in allocs:
+                    if not isinstance(al, dict):
+                        continue
+                    ref_no = al.get("Ref_No") or al.get("ref_no") or al.get("bill_no") or al.get("Bill_No") or ""
+                    amt = al.get("amount") or e.get("amount")
+                    try:
+                        amt = float(amt) if amt is not None else None
+                    except Exception:
+                        amt = None
+                    records.append({
+                        "loan_id": str(ref_no).strip() if ref_no else acc_name,
+                        "party_name": acc_name,
+                        "installment_no": None,
+                        "payout_date": norm_payout_date,
+                        "amount": amt,
+                        "cheque_no": inst_no,
+                        "voucher_no": vch_no,
+                        "bank_name": bank_name or acc_name,
+                        "narration": f"{narration} | Party: {acc_name}".strip(" |"),
+                        "raw_payload": json.dumps(item)
+                    })
+            elif acc_name and acc_name != bank_name and "BANK" not in acc_name.upper():
+                party_found = True
+                amt = e.get("amount")
+                try:
+                    amt = float(amt) if amt is not None else None
+                except Exception:
+                    amt = None
+                records.append({
+                    "loan_id": acc_name,
+                    "party_name": acc_name,
+                    "installment_no": None,
+                    "payout_date": norm_payout_date,
+                    "amount": amt,
+                    "cheque_no": inst_no,
+                    "voucher_no": vch_no,
+                    "bank_name": bank_name,
+                    "narration": f"{narration} | Party: {acc_name}".strip(" |"),
+                    "raw_payload": json.dumps(item)
+                })
+
+        if not party_found:
+            records.append({
+                "loan_id": vch_no or "UNKNOWN",
+                "party_name": "",
+                "installment_no": None,
+                "payout_date": norm_payout_date,
+                "amount": None,
+                "cheque_no": inst_no,
+                "voucher_no": vch_no,
+                "bank_name": bank_name,
+                "narration": narration,
+                "raw_payload": json.dumps(item)
+            })
+    else:
+        # Flat format
+        loan_id = (
+            item.get("loan_id")
+            or item.get("loanId")
+            or item.get("loan_ref_id")
+            or item.get("loan_no")
+            or item.get("id")
+            or item.get("account_name")
+        )
+        payout_date = (
+            item.get("payout_date")
+            or item.get("payoutDate")
+            or item.get("payment_date")
+            or item.get("paymentDate")
+            or item.get("date")
+        )
+        if loan_id and payout_date:
+            amt = item.get("amount") or item.get("payout_amount") or item.get("disbursed_amount")
+            try:
+                amt = float(amt) if amt is not None else None
+            except Exception:
+                amt = None
+
+            installment_no = item.get("installment_no") or item.get("installmentNumber") or item.get("s_no") or item.get("sNo")
+            try:
+                installment_no = int(installment_no) if installment_no is not None else None
+            except Exception:
+                installment_no = None
+
+            records.append({
+                "loan_id": str(loan_id).strip(),
+                "party_name": item.get("account_name") or item.get("client_name") or "",
+                "installment_no": installment_no,
+                "payout_date": normalize_date_to_ddmmyyyy(payout_date),
+                "amount": amt,
+                "cheque_no": item.get("cheque_no") or item.get("chequeNo") or item.get("Inst_No"),
+                "voucher_no": item.get("voucher_no") or item.get("voucherNo") or item.get("vchNo"),
+                "bank_name": item.get("bank_name") or item.get("bankName") or item.get("Bank_Name"),
+                "narration": item.get("narration") or item.get("remarks"),
+                "raw_payload": json.dumps(item)
+            })
+
+    return records
+
+
 def ingest_payout_records(payload):
     """
     Ingests payout date records sent by Tally (no API key required)
     and stores them into Neon DB (tally_payouts table) with status='pending'.
+    Supports both Tally voucher payload structure and flat format.
     """
     if not payload:
         return {"success": False, "error": "Empty payload received."}
@@ -136,60 +296,27 @@ def ingest_payout_records(payload):
     inserted_count = 0
     now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
 
-    for item in raw_items:
-        if not isinstance(item, dict):
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
             continue
 
-        # Extract loan_id
-        loan_id = (
-            item.get("loan_id")
-            or item.get("loanId")
-            or item.get("loan_ref_id")
-            or item.get("loan_no")
-            or item.get("id")
-        )
-        if not loan_id:
-            continue
-
-        # Extract payout date
-        payout_date = (
-            item.get("payout_date")
-            or item.get("payoutDate")
-            or item.get("payment_date")
-            or item.get("paymentDate")
-            or item.get("date")
-        )
-        if not payout_date:
-            continue
-
-        norm_payout_date = normalize_date_to_ddmmyyyy(payout_date)
-        installment_no = item.get("installment_no") or item.get("installmentNumber") or item.get("s_no") or item.get("sNo")
-        try:
-            installment_no = int(installment_no) if installment_no is not None else None
-        except Exception:
-            installment_no = None
-
-        amt = item.get("amount") or item.get("payout_amount") or item.get("disbursed_amount")
-        try:
-            amt = float(amt) if amt is not None else None
-        except Exception:
-            amt = None
-
-        record = TallyPayout(
-            loan_id=str(loan_id).strip(),
-            installment_no=installment_no,
-            payout_date=norm_payout_date,
-            amount=amt,
-            cheque_no=item.get("cheque_no") or item.get("chequeNo"),
-            voucher_no=item.get("voucher_no") or item.get("voucherNo"),
-            bank_name=item.get("bank_name") or item.get("bankName"),
-            narration=item.get("narration") or item.get("remarks"),
-            raw_payload=json.dumps(item),
-            status="pending",
-            created_at=now_str
-        )
-        db.session.add(record)
-        inserted_count += 1
+        extracted_records = extract_records_from_item(raw_item)
+        for rec in extracted_records:
+            record = TallyPayout(
+                loan_id=rec["loan_id"],
+                installment_no=rec["installment_no"],
+                payout_date=rec["payout_date"],
+                amount=rec["amount"],
+                cheque_no=rec["cheque_no"],
+                voucher_no=rec["voucher_no"],
+                bank_name=rec["bank_name"],
+                narration=rec["narration"],
+                raw_payload=rec["raw_payload"],
+                status="pending",
+                created_at=now_str
+            )
+            db.session.add(record)
+            inserted_count += 1
 
     try:
         db.session.commit()
@@ -211,9 +338,18 @@ def test_tally_connection(cfg=None):
 
     base_url = (cfg.get("render_api_url") or "").rstrip("/").strip()
     if not base_url:
-        return {"success": False, "message": "Render API URL is not configured."}
+        msg = "Render API URL is empty. Please enter your Render Web Service URL."
+        return {"success": False, "message": msg, "error": msg}
 
-    api_key = cfg.get("api_key", "tally_live_sec_8f92e4a19b0d4c728391")
+    # Ensure protocol is present
+    if not base_url.startswith("http://") and not base_url.startswith("https://"):
+        base_url = "https://" + base_url
+
+    api_key = cfg.get("api_key") or "tally_live_sec_8f92e4a19b0d4c728391"
+    if str(api_key).startswith("***"):
+        saved_cfg = load_tally_config(hide_key=False)
+        api_key = saved_cfg.get("api_key", "tally_live_sec_8f92e4a19b0d4c728391")
+
     health_url = f"{base_url}/health"
     req = urllib.request.Request(health_url, headers={
         "User-Agent": "LoanDesk-Client/1.0",
@@ -222,20 +358,42 @@ def test_tally_connection(cfg=None):
 
     try:
         ctx = create_ssl_context()
-        with urllib.request.urlopen(req, context=ctx, timeout=12) as response:
+        # 25-second timeout to allow Render free tier wake-up from cold sleep
+        with urllib.request.urlopen(req, context=ctx, timeout=25) as response:
             res_body = response.read().decode('utf-8')
             res_json = json.loads(res_body)
             pending_count = res_json.get("pending_transactions", res_json.get("pending_payouts", 0))
+            db_type = res_json.get("database_type", "connected")
             return {
                 "success": True,
-                "message": f"Connected to Render Tally Bridge! ({pending_count} pending payouts in cloud)",
+                "message": f"Connected to Render Tally Bridge! ({pending_count} pending payouts in {db_type})",
                 "data": res_json
             }
+    except urllib.error.HTTPError as he:
+        code = he.code
+        if code in (401, 403):
+            msg = f"HTTP {code} Unauthorized: The API Key does not match the TALLY_API_KEY environment variable configured on Render."
+        elif code == 404:
+            msg = f"HTTP 404 Not Found: Could not find /health on {base_url}. Verify that your Render Web Service URL is correct."
+        elif code in (502, 503, 504):
+            msg = f"HTTP {code} Starting Up: Render service is currently waking up from cold sleep. Please wait 15-20 seconds and click Test again."
+        else:
+            msg = f"HTTP Error {code} from Render: {he.reason}"
+        return {"success": False, "message": msg, "error": msg}
+    except urllib.error.URLError as ue:
+        err_str = str(ue.reason)
+        if "getaddrinfo failed" in err_str or "Name or service not known" in err_str:
+            msg = f"Invalid Render domain '{base_url}'. The domain could not be found. Please check your Render Web Service URL in the dashboard."
+        elif "timed out" in err_str:
+            msg = "Connection timed out. If your Render service is on the free tier, it takes ~45s to wake up on first access. Please retry shortly."
+        elif "Connection refused" in err_str:
+            msg = f"Connection refused at {base_url}. Please ensure the service is running and active on Render."
+        else:
+            msg = f"Network connection error: {err_str}"
+        return {"success": False, "message": msg, "error": msg}
     except Exception as e:
-        return {
-            "success": False,
-            "message": f"Could not connect to Render Tally Bridge: {str(e)}"
-        }
+        msg = f"Could not connect to Render Tally Bridge: {str(e)}"
+        return {"success": False, "message": msg, "error": msg}
 
 
 def pull_pending_from_render():
@@ -334,27 +492,73 @@ def run_tally_sync():
             unmatched_items.append({"record_id": rec.id, "reason": "Missing loan_id"})
             continue
 
-        # Find loan in LoanDesk (by ID or loan_ref_id)
+        # Find loan in LoanDesk (by ID, loan_ref_id, client name, or bill allocation reference)
         loan = None
         if raw_lid.isdigit():
             loan = Loan.query.filter_by(id=int(raw_lid), is_deleted=False).first()
+
         if not loan:
             loan = Loan.query.filter(
                 Loan.loan_ref_id.ilike(raw_lid),
                 Loan.is_deleted == False
             ).first()
 
+        # Try matching by Client Account Name (e.g. "United Roofings And Constructions")
         if not loan:
-            # Try stripping prefix like JL- or LOAN-
-            num_match = re.search(r'\d+', raw_lid)
-            if num_match:
-                loan = Loan.query.filter_by(id=int(num_match.group(0)), is_deleted=False).first()
+            loan = Loan.query.filter(
+                Loan.client_account_name.ilike(raw_lid),
+                Loan.is_deleted == False
+            ).first()
+
+        if not loan and len(raw_lid) >= 3:
+            loan = Loan.query.filter(
+                Loan.client_account_name.ilike(f"%{raw_lid}%"),
+                Loan.is_deleted == False
+            ).first()
+
+        # Try extracting Party Name from narration if present
+        if not loan and rec.narration:
+            m_party = re.search(r'Party:\s*([^|]+)', rec.narration)
+            if m_party:
+                p_name = m_party.group(1).strip()
+                loan = Loan.query.filter(
+                    Loan.client_account_name.ilike(f"%{p_name}%"),
+                    Loan.is_deleted == False
+                ).first()
+
+        # Try numeric tokens from ref string (e.g. '16527' from 'PDM/23-24/C/16527')
+        if not loan:
+            num_tokens = re.findall(r'\d+', raw_lid)
+            for token in reversed(num_tokens):
+                # Check if matches loan primary id
+                try:
+                    candidate = Loan.query.filter_by(id=int(token), is_deleted=False).first()
+                    if candidate:
+                        loan = candidate
+                        break
+                except Exception:
+                    pass
+                # Check if matches loan_ref_id substring
+                if not loan and len(token) >= 2:
+                    candidate = Loan.query.filter(
+                        Loan.loan_ref_id.ilike(f"%{token}%"),
+                        Loan.is_deleted == False
+                    ).first()
+                    if candidate:
+                        loan = candidate
+                        break
+
+        # Try matching by Voucher No if present
+        if not loan and rec.voucher_no:
+            v_num = re.search(r'\d+', str(rec.voucher_no))
+            if v_num:
+                loan = Loan.query.filter_by(id=int(v_num.group(0)), is_deleted=False).first()
 
         if not loan:
             unmatched_items.append({
                 "record_id": rec.id,
                 "loan_id": raw_lid,
-                "reason": f"Loan ID '{raw_lid}' not found in LoanDesk"
+                "reason": f"Loan ID or Party '{raw_lid}' not found in LoanDesk"
             })
             continue
 
@@ -396,7 +600,20 @@ def run_tally_sync():
         target_sch.payout_approval_target = None
         target_sch.payout_approved_by = 'Tally Sync'
         target_sch.payout_approved_at = now_sync_time
-        target_sch.payout_notes = f"Auto-synced from Tally Payout (Voucher: {rec.voucher_no or 'N/A'})"
+
+        notes_parts = []
+        if rec.voucher_no:
+            notes_parts.append(f"Vch: {rec.voucher_no}")
+        if rec.cheque_no:
+            notes_parts.append(f"Inst: {rec.cheque_no}")
+        if rec.bank_name:
+            notes_parts.append(f"Bank: {rec.bank_name}")
+        notes_str = ", ".join(notes_parts) if notes_parts else "N/A"
+        target_sch.payout_notes = f"Auto-synced from Tally ({notes_str})"
+
+        # If instrument/cheque number provided from Tally, update installment cheque_no if blank
+        if rec.cheque_no and (not target_sch.cheque_no or target_sch.cheque_no in ('-', '—', 'CHQ')):
+            target_sch.cheque_no = rec.cheque_no
 
         # Update JSON splits if present
         if target_sch.splits:

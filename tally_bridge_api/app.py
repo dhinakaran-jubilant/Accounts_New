@@ -150,6 +150,186 @@ def normalize_date(raw_date):
     return d_str
 
 
+def extract_records_from_item(item):
+    """
+    Parses an item from the incoming payload.
+    Supports:
+    1. Tally Voucher format:
+       {
+           "vchNo": "LE2257-2717870",
+           "date": "01-08-2025",
+           "narration": "Ledger change Party Bank-ex",
+           "debit_entries": [
+               {
+                   "account_name": "HDFC BANK",
+                   "amount": 100000,
+                   "Bank_Name": "HDFC BANK",
+                   "TRANSACTIONTYPE": "e-Fund Transfer",
+                   "Inst_No": "CHANGE-50200016652923-2257-1754018208",
+                   "Inst_Date": "2025-08-01"
+               }
+           ],
+           "credit_entries": [
+               {
+                   "account_name": "United Roofings And Constructions",
+                   "amount": 100000,
+                   "Bill_allocations": [
+                       {
+                           "Ref_No": "PDM/23-24/C/16527",
+                           "Ref_Type": "Agst Ref",
+                           "amount": "100000"
+                       }
+                   ]
+               }
+           ]
+       }
+    2. Flat payout record:
+       {
+           "loan_id": "PDM/23-24/C/16527",
+           "payout_date": "01-08-2025",
+           "amount": 100000
+       }
+    """
+    records = []
+    has_entries = bool(item.get("debit_entries") or item.get("credit_entries"))
+
+    if has_entries:
+        vch_no = item.get("vchNo") or item.get("voucher_no") or item.get("vch_no") or ""
+        vch_date = item.get("date") or item.get("vchDate") or ""
+        narration = item.get("narration") or item.get("remarks") or ""
+
+        debits = item.get("debit_entries") or []
+        credits = item.get("credit_entries") or []
+        all_entries = debits + credits
+
+        # Extract Bank information
+        bank_name = ""
+        inst_no = ""
+        inst_date = ""
+        for e in all_entries:
+            if not isinstance(e, dict):
+                continue
+            if e.get("Bank_Name"):
+                bank_name = e.get("Bank_Name")
+            elif not bank_name and "BANK" in (e.get("account_name") or "").upper():
+                bank_name = e.get("account_name")
+            if e.get("Inst_No"):
+                inst_no = e.get("Inst_No")
+            if e.get("Inst_Date"):
+                inst_date = e.get("Inst_Date")
+
+        norm_payout_date = normalize_date(inst_date or vch_date)
+
+        # Extract Party and Bill allocations
+        party_found = False
+        for e in all_entries:
+            if not isinstance(e, dict):
+                continue
+            acc_name = (e.get("account_name") or "").strip()
+            allocs = e.get("Bill_allocations") or []
+
+            if allocs:
+                party_found = True
+                for al in allocs:
+                    if not isinstance(al, dict):
+                        continue
+                    ref_no = al.get("Ref_No") or al.get("ref_no") or al.get("bill_no") or al.get("Bill_No") or ""
+                    amt = al.get("amount") or e.get("amount")
+                    try:
+                        amt = float(amt) if amt is not None else None
+                    except Exception:
+                        amt = None
+                    records.append({
+                        "loan_id": str(ref_no).strip() if ref_no else acc_name,
+                        "party_name": acc_name,
+                        "installment_no": None,
+                        "payout_date": norm_payout_date,
+                        "amount": amt,
+                        "cheque_no": inst_no,
+                        "voucher_no": vch_no,
+                        "bank_name": bank_name or acc_name,
+                        "narration": f"{narration} | Party: {acc_name}".strip(" |"),
+                        "raw_payload": json.dumps(item)
+                    })
+            elif acc_name and acc_name != bank_name and "BANK" not in acc_name.upper():
+                party_found = True
+                amt = e.get("amount")
+                try:
+                    amt = float(amt) if amt is not None else None
+                except Exception:
+                    amt = None
+                records.append({
+                    "loan_id": acc_name,
+                    "party_name": acc_name,
+                    "installment_no": None,
+                    "payout_date": norm_payout_date,
+                    "amount": amt,
+                    "cheque_no": inst_no,
+                    "voucher_no": vch_no,
+                    "bank_name": bank_name,
+                    "narration": f"{narration} | Party: {acc_name}".strip(" |"),
+                    "raw_payload": json.dumps(item)
+                })
+
+        if not party_found:
+            records.append({
+                "loan_id": vch_no or "UNKNOWN",
+                "party_name": "",
+                "installment_no": None,
+                "payout_date": norm_payout_date,
+                "amount": None,
+                "cheque_no": inst_no,
+                "voucher_no": vch_no,
+                "bank_name": bank_name,
+                "narration": narration,
+                "raw_payload": json.dumps(item)
+            })
+    else:
+        # Flat format
+        loan_id = (
+            item.get("loan_id")
+            or item.get("loanId")
+            or item.get("loan_ref_id")
+            or item.get("loan_no")
+            or item.get("id")
+            or item.get("account_name")
+        )
+        payout_date = (
+            item.get("payout_date")
+            or item.get("payoutDate")
+            or item.get("payment_date")
+            or item.get("paymentDate")
+            or item.get("date")
+        )
+        if loan_id and payout_date:
+            amt = item.get("amount") or item.get("payout_amount") or item.get("disbursed_amount")
+            try:
+                amt = float(amt) if amt is not None else None
+            except Exception:
+                amt = None
+
+            installment_no = item.get("installment_no") or item.get("installmentNumber") or item.get("s_no") or item.get("sNo")
+            try:
+                installment_no = int(installment_no) if installment_no is not None else None
+            except Exception:
+                installment_no = None
+
+            records.append({
+                "loan_id": str(loan_id).strip(),
+                "party_name": item.get("account_name") or item.get("client_name") or "",
+                "installment_no": installment_no,
+                "payout_date": normalize_date(payout_date),
+                "amount": amt,
+                "cheque_no": item.get("cheque_no") or item.get("chequeNo") or item.get("Inst_No"),
+                "voucher_no": item.get("voucher_no") or item.get("voucherNo") or item.get("vchNo"),
+                "bank_name": item.get("bank_name") or item.get("bankName") or item.get("Bank_Name"),
+                "narration": item.get("narration") or item.get("remarks"),
+                "raw_payload": json.dumps(item)
+            })
+
+    return records
+
+
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
@@ -193,7 +373,8 @@ def ingest_payouts():
     """
     Ingestion endpoint for Tally team.
     Requires header: X-API-Key: <TALLY_API_KEY>
-    Accepts single object or batch of payout dates with loan_id.
+    Accepts Tally voucher structure ({ "data": [ { "vchNo": ..., "debit_entries": [...], "credit_entries": [...] } ] })
+    or flat payout records.
     """
     if not verify_auth(request):
         return jsonify({
@@ -231,76 +412,43 @@ def ingest_payouts():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    for idx, item in enumerate(raw_items):
-        if not isinstance(item, dict):
+    for idx, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
             errors.append(f"Item #{idx}: Expected JSON object.")
             continue
 
-        loan_id = (
-            item.get("loan_id")
-            or item.get("loanId")
-            or item.get("loan_ref_id")
-            or item.get("loan_no")
-            or item.get("id")
-        )
-        if not loan_id:
-            errors.append(f"Item #{idx}: Missing required 'loan_id'.")
+        extracted_records = extract_records_from_item(raw_item)
+        if not extracted_records:
+            errors.append(f"Item #{idx}: Missing or invalid loan reference or payout date.")
             continue
 
-        payout_date = (
-            item.get("payout_date")
-            or item.get("payoutDate")
-            or item.get("payment_date")
-            or item.get("paymentDate")
-            or item.get("date")
-        )
-        if not payout_date:
-            errors.append(f"Item #{idx} (Loan {loan_id}): Missing required 'payout_date'.")
-            continue
-
-        norm_date = normalize_date(payout_date)
-        installment_no = item.get("installment_no") or item.get("installmentNumber") or item.get("s_no") or item.get("sNo")
-        try:
-            installment_no = int(installment_no) if installment_no is not None else None
-        except Exception:
-            installment_no = None
-
-        amt = item.get("amount") or item.get("payout_amount") or item.get("disbursed_amount")
-        try:
-            amt = float(amt) if amt is not None else None
-        except Exception:
-            amt = None
-
-        cheque_no = item.get("cheque_no") or item.get("chequeNo")
-        voucher_no = item.get("voucher_no") or item.get("voucherNo")
-        bank_name = item.get("bank_name") or item.get("bankName")
-        narration = item.get("narration") or item.get("remarks")
-        raw_str = json.dumps(item)
-
-        try:
-            if is_neon_db():
-                cur.execute("""
-                    INSERT INTO tally_payouts (
-                        loan_id, installment_no, payout_date, amount, cheque_no,
-                        voucher_no, bank_name, narration, raw_payload, status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
-                """, (
-                    str(loan_id).strip(), installment_no, norm_date, amt, cheque_no,
-                    voucher_no, bank_name, narration, raw_str, now_str
-                ))
-            else:
-                cur.execute("""
-                    INSERT INTO tally_payouts (
-                        loan_id, installment_no, payout_date, amount, cheque_no,
-                        voucher_no, bank_name, narration, raw_payload, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-                """, (
-                    str(loan_id).strip(), installment_no, norm_date, amt, cheque_no,
-                    voucher_no, bank_name, narration, raw_str, now_str
-                ))
-            inserted_count += 1
-        except Exception as insert_err:
-            errors.append(f"Item #{idx} insert error: {str(insert_err)}")
+        for rec in extracted_records:
+            try:
+                if is_neon_db():
+                    cur.execute("""
+                        INSERT INTO tally_payouts (
+                            loan_id, installment_no, payout_date, amount, cheque_no,
+                            voucher_no, bank_name, narration, raw_payload, status, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+                    """, (
+                        rec["loan_id"], rec["installment_no"], rec["payout_date"],
+                        rec["amount"], rec["cheque_no"], rec["voucher_no"],
+                        rec["bank_name"], rec["narration"], rec["raw_payload"], now_str
+                    ))
+                else:
+                    cur.execute("""
+                        INSERT INTO tally_payouts (
+                            loan_id, installment_no, payout_date, amount, cheque_no,
+                            voucher_no, bank_name, narration, raw_payload, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    """, (
+                        rec["loan_id"], rec["installment_no"], rec["payout_date"],
+                        rec["amount"], rec["cheque_no"], rec["voucher_no"],
+                        rec["bank_name"], rec["narration"], rec["raw_payload"], now_str
+                    ))
+                inserted_count += 1
+            except Exception as insert_err:
+                errors.append(f"Record {rec.get('loan_id')} insert error: {str(insert_err)}")
 
     conn.commit()
     cur.close()

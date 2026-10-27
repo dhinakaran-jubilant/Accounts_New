@@ -6,13 +6,12 @@ This specification provides details for the **Tally ERP team** to post loan disb
 
 ## 1. Quick Integration Summary
 
-- **Endpoint**: `POST https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts`
+- **Endpoint**: `POST https://accounts-new-ljja.onrender.com/api/v1/tally/payouts`
 - **Method**: `POST`
 - **Authentication**: **API Key Required**
 - **Required Headers**:
   - `Content-Type: application/json`
   - `X-API-Key: tally_live_sec_8f92e4a19b0d4c728391`
-- **Purpose**: Receive loan payout dates, store them in Neon DB, and reconcile them with loan accounts in LoanDesk matched by **`loan_id`**.
 
 ---
 
@@ -54,50 +53,91 @@ Optional fields:
 
 ## 4. Example Request Payloads
 
-### Option A: Batch of Payouts (Recommended)
+### Option A: Tally ERP Standard Voucher Payload (Direct from Tally)
+You can directly send your standard Tally export payload with debit/credit entries, bill allocations, and instrument details:
+
+```json
+{
+    "data": [
+        {
+            "vchNo": "LE2257-2717870",
+            "date": "01-08-2025",
+            "narration": "Ledger change Party Bank-ex",
+            "debit_entries": [
+                {
+                    "account_name": "HDFC BANK",
+                    "amount": 100000,
+                    "Bank_Name": "HDFC BANK",
+                    "TRANSACTIONTYPE": "e-Fund Transfer",
+                    "Inst_No": "CHANGE-50200016652923-2257-1754018208",
+                    "Inst_Date": "2025-08-01"
+                }
+            ],
+            "credit_entries": [
+                {
+                    "account_name": "United Roofings And Constructions",
+                    "amount": 100000,
+                    "Bill_allocations": [
+                        {
+                            "Ref_No": "PDM/23-24/C/16527",
+                            "Ref_Type": "Agst Ref",
+                            "amount": "100000"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
+```
+
+#### How LoanDesk maps this payload:
+- **Loan Matching**: Matched via `Bill_allocations[0].Ref_No` (`"PDM/23-24/C/16527"`), Party Name (`"United Roofings And Constructions"`), or voucher number.
+- **Payout Date (`payment_date`)**: Set from `Inst_Date` or voucher `date` (`"01-08-2025"`).
+- **Payment Reference**: `Inst_No` (`"CHANGE-50200016652923-2257-1754018208"`) stored as Cheque / UTR number.
+- **Bank**: `Bank_Name` / `account_name` (`"HDFC BANK"`).
+- **Amount**: Disbursed amount (`100000`).
+
+---
+
+### Option B: Batch of Flat Payout Records
 ```json
 {
   "payouts": [
     {
       "loan_id": 1042,
-      "payout_date": "27-10-2026",
+      "payout_date": "01-08-2025",
       "installment_no": 1,
-      "amount": 25000.00,
+      "amount": 100000.00,
       "cheque_no": "CHQ889102",
       "voucher_no": "PAY-0081",
       "bank_name": "HDFC Bank",
-      "narration": "Disbursement / payout for Loan #1042"
-    },
-    {
-      "loan_id": 1043,
-      "payout_date": "27-10-2026",
-      "amount": 50000.00,
-      "voucher_no": "PAY-0082"
+      "narration": "Payout for Loan #1042"
     }
   ]
 }
 ```
 
-### Option B: Single Payout
+---
+
+### Option C: Single Payout Record
 ```json
 {
   "loan_id": 1042,
-  "payout_date": "27-10-2026",
-  "amount": 25000.00,
+  "payout_date": "01-08-2025",
+  "amount": 100000.00,
   "voucher_no": "PAY-0081"
 }
 ```
 
-### Option C: Direct JSON Array
+---
+
+### Option D: Direct JSON Array
 ```json
 [
   {
     "loan_id": 1042,
-    "payout_date": "27-10-2026"
-  },
-  {
-    "loan_id": 1043,
-    "payout_date": "27-10-2026"
+    "payout_date": "01-08-2025"
   }
 ]
 ```
@@ -107,7 +147,7 @@ Optional fields:
 ## 5. cURL Testing Example
 
 ```bash
-curl -X POST "https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts" \
+curl -X POST "https://accounts-new-ljja.onrender.com/api/v1/tally/payouts" \
      -H "Content-Type: application/json" \
      -H "X-API-Key: tally_live_sec_8f92e4a19b0d4c728391" \
      -d '{
@@ -127,7 +167,7 @@ curl -X POST "https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts" \
 ```json
 {
   "success": true,
-  "message": "Successfully collected and stored 1 payout record(s) in Neon DB.",
+  "message": "Successfully collected and stored 1 payout record(s).",
   "received_count": 1,
   "inserted_count": 1,
   "errors": null
@@ -141,7 +181,7 @@ curl -X POST "https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts" \
 ```python
 import requests
 
-url = "https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts"
+url = "https://accounts-new-ljja.onrender.com/api/v1/tally/payouts"
 headers = {
     "Content-Type": "application/json",
     "X-API-Key": "tally_live_sec_8f92e4a19b0d4c728391"
