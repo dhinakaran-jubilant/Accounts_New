@@ -589,7 +589,7 @@ export default function OverdueAgingBuckets({
 											{/* Client Name */}
 											<td className="py-3 px-3.5 min-w-[200px]">
 												<div className="flex items-center gap-2">
-													<span className="font-extrabold text-[13px] text-slate-900 group-hover:text-primary transition-colors">
+													<span className="font-extrabold text-[13px] text-slate-900 group-hover:text-primary transition-colors truncate">
 														{clientGroup.clientName}
 													</span>
 												</div>
