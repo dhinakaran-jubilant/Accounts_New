@@ -297,7 +297,7 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 		setTimeout(() => setToast(null), 3500);
 	};
 
-	// Settings Active Tab State: 'accounts' | 'sftp'
+	// Settings Active Tab State: 'accounts' | 'sftp' | 'tally'
 	const [activeTab, setActiveTab] = useState('accounts');
 
 	// SFTP Auto-Sync State
@@ -390,6 +390,112 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 			showToast(err.message || 'Sync failed', 'error');
 		} finally {
 			setIsSyncingSftp(false);
+		}
+	};
+
+	// Tally Cloud Bridge State
+	const [tallyConfig, setTallyConfig] = useState({
+		render_api_url: 'https://tally-loandesk-bridge.onrender.com',
+		enabled: true,
+		last_sync_time: null,
+		last_sync_status: null,
+		last_sync_message: null,
+		total_synced_count: 0,
+	});
+	const [tallyPayouts, setTallyPayouts] = useState([]);
+	const [isLoadingPayouts, setIsLoadingPayouts] = useState(false);
+	const [isSavingTally, setIsSavingTally] = useState(false);
+	const [isTestingTally, setIsTestingTally] = useState(false);
+	const [isSyncingTally, setIsSyncingTally] = useState(false);
+	const [tallyTestResult, setTallyTestResult] = useState(null);
+	const [tallySyncResult, setTallySyncResult] = useState(null);
+
+	const loadTallyConfig = async () => {
+		try {
+			const data = await api.getTallyConfig();
+			if (data) {
+				setTallyConfig((prev) => ({ ...prev, ...data }));
+			}
+		} catch (err) {
+			console.warn('Could not load Tally configuration:', err);
+		}
+	};
+
+	const loadTallyPayouts = async () => {
+		setIsLoadingPayouts(true);
+		try {
+			const res = await api.getTallyPayouts();
+			if (res && Array.isArray(res.payouts)) {
+				setTallyPayouts(res.payouts);
+			}
+		} catch (err) {
+			console.warn('Could not load Tally payouts:', err);
+		} finally {
+			setIsLoadingPayouts(false);
+		}
+	};
+
+	useEffect(() => {
+		if (activeTab === 'tally') {
+			loadTallyConfig();
+			loadTallyPayouts();
+		}
+	}, [activeTab]);
+
+	const handleSaveTally = async (e) => {
+		e?.preventDefault();
+		setIsSavingTally(true);
+		try {
+			const res = await api.saveTallyConfig(tallyConfig);
+			if (res.config) {
+				setTallyConfig((prev) => ({ ...prev, ...res.config }));
+			}
+			showToast('Tally Cloud configuration saved successfully!');
+		} catch (err) {
+			showToast(err.message || 'Failed to save Tally configuration', 'error');
+		} finally {
+			setIsSavingTally(false);
+		}
+	};
+
+	const handleTestTally = async () => {
+		setIsTestingTally(true);
+		setTallyTestResult(null);
+		try {
+			const res = await api.testTallyConnection(tallyConfig);
+			setTallyTestResult(res);
+			if (res.success) {
+				showToast('Tally Render Bridge verified successfully!');
+			} else {
+				showToast(res.message || 'Connection failed', 'error');
+			}
+		} catch (err) {
+			setTallyTestResult({ success: false, message: err.message || 'Connection test failed' });
+			showToast(err.message || 'Connection test failed', 'error');
+		} finally {
+			setIsTestingTally(false);
+		}
+	};
+
+	const handleSyncTallyNow = async () => {
+		setIsSyncingTally(true);
+		setTallySyncResult(null);
+		try {
+			const res = await api.syncTallyNow();
+			setTallySyncResult(res);
+			if (res.success) {
+				showToast(res.message || 'Tally payout sync completed successfully!');
+				loadTallyConfig();
+				loadTallyPayouts();
+				window.dispatchEvent(new Event('loan_updated'));
+			} else {
+				showToast(res.message || 'Sync failed', 'error');
+			}
+		} catch (err) {
+			setTallySyncResult({ success: false, message: err.message || 'Sync failed' });
+			showToast(err.message || 'Sync failed', 'error');
+		} finally {
+			setIsSyncingTally(false);
 		}
 	};
 
@@ -720,6 +826,19 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 				>
 					<span className="material-symbols-outlined text-[19px]">cloud_sync</span>
 					<span>SFTP Auto-Sync</span>
+				</button>
+
+				<button
+					type="button"
+					onClick={() => setActiveTab('tally')}
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+						activeTab === 'tally'
+							? 'border-primary text-primary'
+							: 'border-transparent text-slate-500 hover:text-slate-800'
+					}`}
+				>
+					<span className="material-symbols-outlined text-[19px]">account_balance</span>
+					<span>Tally Cloud Sync</span>
 				</button>
 			</div>
 
@@ -1488,6 +1607,367 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 							</div>
 						</div>
 					)}
+				</div>
+			)}
+
+			{activeTab === 'tally' && (
+				<div className="space-y-6 animate-in fade-in duration-200">
+					{/* Stat Highlights Row for Tally */}
+					<div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Cloud Bridge Status</span>
+								<span className="material-symbols-outlined text-primary text-[20px]">cloud_done</span>
+							</div>
+							<div className="mt-2 flex items-center gap-2">
+								<span className={`inline-block w-2.5 h-2.5 rounded-full ${
+									tallyConfig.last_sync_status === 'SUCCESS'
+										? 'bg-emerald-500 ring-4 ring-emerald-100'
+										: tallyConfig.last_sync_status === 'FAILED'
+										? 'bg-rose-500 ring-4 ring-rose-100'
+										: 'bg-amber-400 ring-4 ring-amber-100'
+								}`} />
+								<span className="text-[20px] font-extrabold text-slate-900 tracking-tight">
+									{tallyConfig.enabled ? (tallyConfig.last_sync_status || 'IDLE') : 'DISABLED'}
+								</span>
+							</div>
+							<div className="text-[11px] text-slate-400 mt-1">Render REST API Ingestion</div>
+						</div>
+
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Reconciled Installments</span>
+								<span className="material-symbols-outlined text-purple-600 text-[20px]">payments</span>
+							</div>
+							<div className="mt-2 text-[26px] font-extrabold text-slate-900 tracking-tight">
+								{tallyConfig.total_synced_count || 0}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-0.5">Updated in Joint Loans</div>
+						</div>
+
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Last Sync Time</span>
+								<span className="material-symbols-outlined text-teal-600 text-[20px]">update</span>
+							</div>
+							<div className="mt-2 text-[14px] font-extrabold text-slate-900 tracking-tight truncate">
+								{tallyConfig.last_sync_time || 'Never'}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-1 truncate">
+								{tallyConfig.last_sync_message || 'No sync performed yet'}
+							</div>
+						</div>
+
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Target Host</span>
+								<span className="material-symbols-outlined text-sky-600 text-[20px]">language</span>
+							</div>
+							<div className="mt-2 text-[13px] font-extrabold text-slate-900 tracking-tight truncate">
+								{tallyConfig.render_api_url ? tallyConfig.render_api_url.replace(/^https?:\/\//, '') : 'Not configured'}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-1 font-medium">
+								Hosted on Render.com
+							</div>
+						</div>
+					</div>
+
+					{/* Tally Cloud Bridge Settings Card */}
+					<div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+						<div className="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gradient-to-r from-slate-50/70 via-white to-white">
+							<div className="flex items-center gap-3">
+								<div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center ring-1 ring-primary/20 shrink-0">
+									<span className="material-symbols-outlined text-[22px]">account_balance</span>
+								</div>
+								<div>
+									<h3 className="font-extrabold text-[17px] text-slate-900 tracking-tight">
+										Tally ERP Payout Date Sync &amp; Bridge Configuration
+									</h3>
+									<p className="text-[12px] text-slate-500 font-medium">
+										Tally ERP team posts payout dates directly without an API key. Data is stored in Neon DB and synced to loans based on Loan ID.
+									</p>
+								</div>
+							</div>
+
+							{/* Enable/Disable Toggle */}
+							<label className="relative inline-flex items-center cursor-pointer select-none shrink-0">
+								<input
+									type="checkbox"
+									checked={tallyConfig.enabled}
+									onChange={(e) => setTallyConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
+									className="sr-only peer"
+								/>
+								<div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-container" />
+								<span className="ml-3 text-[12.5px] font-bold text-slate-800">
+									{tallyConfig.enabled ? 'Bridge Active' : 'Bridge Disabled'}
+								</span>
+							</label>
+						</div>
+
+						<form onSubmit={handleSaveTally} className="p-6 space-y-6">
+							<div>
+								{/* Render API URL */}
+								<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+									Render Bridge Service URL <span className="text-slate-400 font-normal">(Optional if hosted on Render)</span>
+								</label>
+								<div className="relative flex items-center">
+									<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+										link
+									</span>
+									<input
+										type="url"
+										value={tallyConfig.render_api_url || ''}
+										onChange={(e) => setTallyConfig((prev) => ({ ...prev, render_api_url: e.target.value }))}
+										placeholder="https://tally-loandesk-bridge.onrender.com"
+										className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold font-mono"
+									/>
+								</div>
+								<p className="text-[11px] text-slate-400 mt-1">
+									Base URL where your Tally microservice is deployed on Render. Neon DB connects automatically to store payouts.
+								</p>
+							</div>
+
+							{/* Action Buttons */}
+							<div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+								<button
+									type="button"
+									onClick={handleTestTally}
+									disabled={isTestingTally || !tallyConfig.render_api_url}
+									className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-[13px] font-bold transition-all disabled:opacity-40"
+								>
+									{isTestingTally ? (
+										<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+									) : (
+										<span className="material-symbols-outlined text-[18px]">network_check</span>
+									)}
+									<span>Test Cloud Connection</span>
+								</button>
+
+								<div className="flex items-center gap-2.5">
+									<button
+										type="button"
+										onClick={handleSyncTallyNow}
+										disabled={isSyncingTally}
+										className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-xs text-[13px] font-bold transition-all disabled:opacity-40 cursor-pointer active:scale-98"
+									>
+										{isSyncingTally ? (
+											<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+										) : (
+											<span className="material-symbols-outlined text-[18px]">sync</span>
+										)}
+										<span>Tally Sync (Reconcile Payouts by Loan ID)</span>
+									</button>
+
+									<button
+										type="submit"
+										disabled={isSavingTally}
+										className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary-container hover:bg-primary text-on-primary text-[13px] font-bold shadow-xs active:scale-98 transition-all disabled:opacity-50"
+									>
+										{isSavingTally ? (
+											<span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+										) : (
+											<span className="material-symbols-outlined text-[18px]">save</span>
+										)}
+										<span>Save Settings</span>
+									</button>
+								</div>
+							</div>
+						</form>
+					</div>
+
+					{/* Live Feedback / Test / Sync Result Cards */}
+					{tallyTestResult && (
+						<div className={`p-4 rounded-2xl border text-[13px] ${
+							tallyTestResult.success
+								? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+								: 'bg-rose-50 border-rose-200 text-rose-800'
+						}`}>
+							<div className="flex items-start gap-2.5">
+								<span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">
+									{tallyTestResult.success ? 'check_circle' : 'error'}
+								</span>
+								<div className="space-y-1">
+									<div className="font-extrabold">{tallyTestResult.success ? 'Render Bridge Connected' : 'Connection Failed'}</div>
+									<div className="text-[12px] opacity-90">{tallyTestResult.message}</div>
+								</div>
+							</div>
+						</div>
+					)}
+
+					{tallySyncResult && (
+						<div className={`p-5 rounded-2xl border text-[13px] ${
+							tallySyncResult.success
+								? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+								: 'bg-rose-50 border-rose-200 text-rose-800'
+						}`}>
+							<div className="flex items-start gap-3">
+								<span className="material-symbols-outlined text-[24px] shrink-0 text-emerald-600">
+									sync_saved_locally
+								</span>
+								<div className="space-y-2 flex-1">
+									<div className="font-extrabold text-[15px]">Tally Payout Sync Summary</div>
+									<p className="text-[12.5px] font-medium opacity-90">{tallySyncResult.message}</p>
+									
+									{tallySyncResult.synced_items && tallySyncResult.synced_items.length > 0 && (
+										<div className="mt-2 space-y-1 bg-white/80 p-3 rounded-xl border border-emerald-200/60 max-h-48 overflow-y-auto">
+											<div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Updated Loan Payout Dates:</div>
+											{tallySyncResult.synced_items.map((item, idx) => (
+												<div key={idx} className="text-[11.5px] text-slate-800 flex items-center justify-between gap-2 py-0.5 border-b border-slate-100 last:border-0">
+													<span className="font-semibold">{item.client_name} (Loan #{item.loan_id})</span>
+													<span className="text-slate-500 font-mono text-[11px]">EMI {item.installment_no} • Payout: <b className="text-emerald-700">{item.payout_date}</b></span>
+												</div>
+											))}
+										</div>
+									)}
+
+									{tallySyncResult.unmatched_items && tallySyncResult.unmatched_items.length > 0 && (
+										<div className="mt-2 space-y-1 bg-amber-50/80 p-3 rounded-xl border border-amber-200 max-h-40 overflow-y-auto">
+											<div className="text-[11px] font-bold uppercase tracking-wider text-amber-800">Unmatched Records:</div>
+											{tallySyncResult.unmatched_items.map((u, idx) => (
+												<div key={idx} className="text-[11px] text-amber-900">
+													Loan ID: <b>{u.loan_id}</b> — {u.reason}
+												</div>
+											))}
+										</div>
+									)}
+								</div>
+							</div>
+						</div>
+					)}
+
+					{/* Neon DB Collected Payout Records Table */}
+					<div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+						<div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+							<div className="flex items-center gap-2.5">
+								<span className="material-symbols-outlined text-primary text-[20px]">database</span>
+								<h4 className="font-extrabold text-[14.5px] text-slate-900">
+									Collected Payout Records in Neon DB
+								</h4>
+								<span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200/70 text-slate-700 font-bold">
+									{tallyPayouts.length} records
+								</span>
+							</div>
+							<button
+								type="button"
+								onClick={loadTallyPayouts}
+								disabled={isLoadingPayouts}
+								className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 transition-all cursor-pointer"
+							>
+								<span className={`material-symbols-outlined text-[16px] ${isLoadingPayouts ? 'animate-spin' : ''}`}>
+									refresh
+								</span>
+								<span>Refresh</span>
+							</button>
+						</div>
+
+						<div className="overflow-x-auto">
+							<table className="w-full text-left text-[12px] border-collapse">
+								<thead>
+									<tr className="bg-slate-50/50 text-slate-500 font-bold text-[11px] uppercase tracking-wider border-b border-slate-100">
+										<th className="px-5 py-3">Loan ID</th>
+										<th className="px-4 py-3">EMI #</th>
+										<th className="px-4 py-3">Payout Date</th>
+										<th className="px-4 py-3">Amount</th>
+										<th className="px-4 py-3">Voucher</th>
+										<th className="px-4 py-3">Status</th>
+										<th className="px-5 py-3 text-right">Collected At</th>
+									</tr>
+								</thead>
+								<tbody className="divide-y divide-slate-100 font-medium">
+									{tallyPayouts.length === 0 ? (
+										<tr>
+											<td colSpan={7} className="px-5 py-8 text-center text-slate-400">
+												No payout records in Neon DB yet. Send payout dates to your API endpoint below to test.
+											</td>
+										</tr>
+									) : (
+										tallyPayouts.slice(0, 50).map((p) => (
+											<tr key={p.id} className="hover:bg-slate-50/70 transition-colors">
+												<td className="px-5 py-2.5 font-bold text-slate-900 font-mono">
+													#{p.loan_id}
+												</td>
+												<td className="px-4 py-2.5 text-slate-600">
+													{p.installment_no ? `EMI ${p.installment_no}` : 'Auto'}
+												</td>
+												<td className="px-4 py-2.5 font-bold text-primary font-mono">
+													{p.payout_date}
+												</td>
+												<td className="px-4 py-2.5 text-slate-700 font-mono">
+													{p.amount ? `₹${Number(p.amount).toLocaleString('en-IN')}` : '—'}
+												</td>
+												<td className="px-4 py-2.5 text-slate-500 font-mono text-[11px]">
+													{p.voucher_no || '—'}
+												</td>
+												<td className="px-4 py-2.5">
+													<span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-extrabold ${
+														p.status === 'synced'
+															? 'bg-emerald-100 text-emerald-800'
+															: 'bg-amber-100 text-amber-800'
+													}`}>
+														{p.status === 'synced' ? 'Synced to Loan' : 'Pending Sync'}
+													</span>
+												</td>
+												<td className="px-5 py-2.5 text-right text-slate-400 text-[11px]">
+													{p.created_at || '—'}
+												</td>
+											</tr>
+										))
+									)}
+								</tbody>
+							</table>
+						</div>
+					</div>
+
+					{/* Tally Team Quick Integration Guide Card */}
+					<div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl p-6 text-white shadow-md">
+						<div className="flex items-start justify-between gap-4">
+							<div className="space-y-1">
+								<div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-bold">
+									<span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+									No API Key Required
+								</div>
+								<h4 className="text-[16px] font-bold text-white pt-1">
+									Share this Endpoint with the Tally ERP Team
+								</h4>
+								<p className="text-[12px] text-slate-300">
+									The Tally team can post payout dates directly via HTTP POST. Data is stored in Neon DB and synced by Loan ID.
+								</p>
+							</div>
+						</div>
+
+						<div className="mt-4 p-4 rounded-2xl bg-black/40 border border-white/10 font-mono text-[12px] space-y-2">
+							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider">Target Endpoint:</div>
+							<div className="text-emerald-400 select-all font-bold">
+								POST {tallyConfig.render_api_url ? `${tallyConfig.render_api_url}/api/v1/tally/payouts` : 'https://your-service.onrender.com/api/v1/tally/payouts'}
+							</div>
+							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider pt-2">Headers:</div>
+							<div className="text-slate-300 text-[11.5px]">
+								Content-Type: application/json<br />
+								Authentication: None
+							</div>
+							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider pt-2">Sample Payload:</div>
+							<pre className="text-amber-300 text-[11px] bg-black/60 p-2 rounded-lg overflow-x-auto">
+{JSON.stringify({
+  payouts: [
+    {
+      loan_id: 1042,
+      payout_date: "27-10-2026",
+      installment_no: 1,
+      amount: 25000,
+      voucher_no: "PAY-001"
+    }
+  ]
+}, null, 2)}
+							</pre>
+						</div>
+
+						<div className="mt-4 flex flex-wrap items-center gap-3 text-[12px]">
+							<span className="text-slate-400">Documentation:</span>
+							<code className="px-2 py-1 rounded-lg bg-white/10 font-mono text-[11px] text-amber-300">
+								tally_bridge_api/TALLY_API_DOCUMENTATION.md
+							</code>
+						</div>
+					</div>
 				</div>
 			)}
 

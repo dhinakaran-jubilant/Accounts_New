@@ -22,7 +22,7 @@ from matchup_service import (
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from models import db, Loan, RemainingAccount, RepaymentSchedule, User, Notification, ShortLoan, AccountName
+from models import db, Loan, RemainingAccount, RepaymentSchedule, User, Notification, ShortLoan, AccountName, TallyPayout
 from werkzeug.security import generate_password_hash, check_password_hash
 try:
     from read_pdf import extract_pdf_data, extract_document_data, build_final_output
@@ -2265,6 +2265,7 @@ def sync_data():
         app.logger.warning(f"Reload sftp_service warning: {e_rel}")
     from sftp_service import load_sftp_config, run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
     sftp_res = None
+    tally_res = None
     if request.method == 'POST':
         try:
             sftp_cfg = load_sftp_config(hide_password=False)
@@ -2272,6 +2273,14 @@ def sync_data():
                 sftp_res = run_sftp_sync(process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
         except Exception as e_sftp:
             app.logger.warning(f"SFTP DayBook sync during /api/sync warning: {e_sftp}")
+
+        try:
+            from tally_service import load_tally_config, run_tally_sync
+            tally_cfg = load_tally_config(hide_key=False)
+            if tally_cfg.get('render_api_url') and tally_cfg.get('enabled', True):
+                tally_res = run_tally_sync()
+        except Exception as e_tally:
+            app.logger.warning(f"Tally sync during /api/sync warning: {e_tally}")
 
     sftp_cfg_safe = load_sftp_config(hide_password=True)
     pg_loans = Loan.query.filter_by(is_deleted=False).order_by(Loan.id.desc()).all()
@@ -2281,7 +2290,8 @@ def sync_data():
         "database": "postgresql",
         "last_sync_time": sftp_cfg_safe.get("last_sync_time"),
         "last_sync_status": sftp_cfg_safe.get("last_sync_status"),
-        "sftp_result": sftp_res
+        "sftp_result": sftp_res,
+        "tally_result": tally_res
     })
 
 # --- Synced Loans & Collections Endpoint ---
@@ -3631,6 +3641,86 @@ def handle_sftp_sync_now():
     from sftp_service import run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
     try:
         res = run_sftp_sync(process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
+        status_code = 200 if res.get('success') else 400
+        return jsonify(res), status_code
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==============================================================================
+# Tally Payout Sync & Ingestion Routes (No API Key Required for Tally Team)
+# ==============================================================================
+
+@app.route('/api/v1/tally/payouts', methods=['POST'])
+@app.route('/api/v1/tally/transactions', methods=['POST'])
+@app.route('/api/tally/payouts', methods=['GET', 'POST'])
+def handle_tally_payouts_ingestion():
+    """
+    Public ingestion endpoint for Tally team.
+    Does NOT require an API key.
+    Collects payout dates and stores them directly into Neon DB (tally_payouts table).
+    """
+    from tally_service import ingest_payout_records
+    if request.method == 'GET':
+        records = TallyPayout.query.order_by(TallyPayout.id.desc()).limit(100).all()
+        return jsonify({
+            "success": True,
+            "total_records": len(records),
+            "payouts": [{
+                "id": r.id,
+                "loan_id": r.loan_id,
+                "installment_no": r.installment_no,
+                "payout_date": r.payout_date,
+                "amount": r.amount,
+                "voucher_no": r.voucher_no,
+                "status": r.status,
+                "created_at": r.created_at,
+                "synced_at": r.synced_at
+            } for r in records]
+        })
+
+    payload = request.get_json(force=True, silent=True)
+    if not payload:
+        return jsonify({"success": False, "error": "Invalid or missing JSON payload"}), 400
+
+    result = ingest_payout_records(payload)
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@app.route('/api/tally/config', methods=['GET', 'POST'])
+def handle_tally_config():
+    from tally_service import load_tally_config, save_tally_config
+    if request.method == 'GET':
+        return jsonify(load_tally_config(hide_key=True))
+    
+    payload = request.get_json(force=True, silent=True) or {}
+    updated_config = save_tally_config(payload)
+    return jsonify({
+        "success": True,
+        "message": "Tally configuration saved successfully.",
+        "config": updated_config
+    })
+
+
+@app.route('/api/tally/test', methods=['POST'])
+def handle_tally_test():
+    from tally_service import test_tally_connection
+    payload = request.get_json(force=True, silent=True) or {}
+    result = test_tally_connection(payload if payload else None)
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@app.route('/api/tally/sync-now', methods=['POST'])
+def handle_tally_sync_now():
+    """
+    Triggered when user clicks 'Tally Sync' button in LoanDesk:
+    Syncs payout dates into loans based on loan_id in Neon DB.
+    """
+    from tally_service import run_tally_sync
+    try:
+        res = run_tally_sync()
         status_code = 200 if res.get('success') else 400
         return jsonify(res), status_code
     except Exception as e:

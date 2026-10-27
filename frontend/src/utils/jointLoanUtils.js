@@ -1177,3 +1177,182 @@ export function calculateJointLoanMetrics(loans = [], selectedAccountKey = 'ALL'
 		pendingByPrimaryAccount,
 	};
 }
+
+// Calculate comprehensive Overdue Aging Buckets (Days Past Due - DPD analysis)
+export function calculateAgingBuckets(loans = [], refDate = new Date()) {
+	const today = refDate instanceof Date && !isNaN(refDate) ? new Date(refDate) : new Date();
+	today.setHours(0, 0, 0, 0);
+
+	const buckets = [
+		{
+			id: '1_15',
+			label: '1 – 15 Days',
+			shortLabel: '1-15 DPD',
+			range: [1, 15],
+			severity: 'Grace / Follow-up',
+			badgeClass: 'bg-amber-50 text-amber-700 ring-amber-200 border-amber-200',
+			pillBg: 'bg-amber-500',
+			barColor: '#f59e0b',
+			installments: [],
+			totalAmount: 0,
+			uniqueLoans: new Set(),
+		},
+		{
+			id: '16_30',
+			label: '16 – 30 Days',
+			shortLabel: '16-30 DPD',
+			range: [16, 30],
+			severity: 'Watchlist',
+			badgeClass: 'bg-orange-50 text-orange-700 ring-orange-200 border-orange-200',
+			pillBg: 'bg-orange-500',
+			barColor: '#ea580c',
+			installments: [],
+			totalAmount: 0,
+			uniqueLoans: new Set(),
+		},
+		{
+			id: '31_60',
+			label: '31 – 60 Days',
+			shortLabel: '31-60 DPD',
+			range: [31, 60],
+			severity: 'Moderate Risk',
+			badgeClass: 'bg-rose-50 text-rose-700 ring-rose-200 border-rose-200',
+			pillBg: 'bg-rose-500',
+			barColor: '#e11d48',
+			installments: [],
+			totalAmount: 0,
+			uniqueLoans: new Set(),
+		},
+		{
+			id: '61_90',
+			label: '61 – 90 Days',
+			shortLabel: '61-90 DPD',
+			range: [61, 90],
+			severity: 'High Risk',
+			badgeClass: 'bg-red-50 text-red-800 ring-red-200 border-red-200',
+			pillBg: 'bg-red-600',
+			barColor: '#dc2626',
+			installments: [],
+			totalAmount: 0,
+			uniqueLoans: new Set(),
+		},
+		{
+			id: '90_plus',
+			label: '90+ Days',
+			shortLabel: '90+ DPD (NPA)',
+			range: [91, Infinity],
+			severity: 'Critical Default',
+			badgeClass: 'bg-red-100 text-red-950 ring-red-300 border-red-300',
+			pillBg: 'bg-red-900',
+			barColor: '#991b1b',
+			installments: [],
+			totalAmount: 0,
+			uniqueLoans: new Set(),
+		},
+	];
+
+	let totalOverdueAmount = 0;
+	let totalOverdueCount = 0;
+	const allOverdueLoanIds = new Set();
+	let maxDpd = 0;
+
+	loans.forEach((loan) => {
+		const schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+		const loanId = loan.id || loan.loan_ref_id || `JL-${loan.db_id}`;
+		const clientName = loan.client_account_name || 'Borrower';
+		const primaryAccount = loan.primaryAccountName || loan.primary_account_name || loan.primary || 'Primary Account';
+
+		schedule.forEach((inst, index) => {
+			const dateStr = inst.date || '';
+			const instDate = parseLoanDate(dateStr);
+			if (!instDate) return;
+
+			instDate.setHours(0, 0, 0, 0);
+
+			// Check if collected
+			const recdMain = inst.receivedDate || inst.received_date || inst.recdDate || inst.payment_received_date;
+			let splitData = inst.splits;
+			if (typeof splitData === 'string') {
+				try {
+					splitData = JSON.parse(splitData);
+				} catch (e) {
+					splitData = null;
+				}
+			}
+			const recdA = splitData?.recdDateA || splitData?.recdDate;
+			const recdB = splitData?.recdDateB;
+			const isStatusCollected = ['collected', 'settled'].includes((inst.status || '').toLowerCase().trim());
+
+			const isCollected = Boolean(
+				isStatusCollected ||
+				(recdMain && recdMain !== '-' && recdMain !== '—' && recdMain !== 'None' && recdMain !== 'null') ||
+				(recdA && recdB)
+			);
+
+			if (isCollected) return;
+
+			// Calculate Days Past Due (DPD)
+			const diffTime = today.getTime() - instDate.getTime();
+			const dpd = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+			const isOverdue = dpd > 0 || (inst.status || '').toLowerCase().includes('overdue');
+
+			if (!isOverdue) return;
+
+			const effectiveDpd = Math.max(1, dpd);
+			if (effectiveDpd > maxDpd) {
+				maxDpd = effectiveDpd;
+			}
+
+			const iAmt = Number(inst.amount) || 0;
+			const paidAmt = Number(inst.paidAmount || inst.paid_amount || splitData?.paidAmount || 0);
+			const remainingOverdueAmt = Math.max(0, iAmt - paidAmt) || iAmt;
+
+			totalOverdueAmount += remainingOverdueAmt;
+			totalOverdueCount += 1;
+			allOverdueLoanIds.add(loanId);
+
+			const item = {
+				id: `${loanId}-${inst.id || index}`,
+				loanId,
+				dbId: loan.db_id || loan.id,
+				clientName,
+				primaryAccount,
+				installmentNo: inst.installmentNumber || inst.sNo || index + 1,
+				totalTenure: schedule.length,
+				dueDate: dateStr,
+				instDate,
+				dpd: effectiveDpd,
+				amount: remainingOverdueAmt,
+				originalAmount: iAmt,
+				paidAmount: paidAmt,
+				chequeNo: inst.cheque_no || '',
+				loan,
+				inst,
+			};
+
+			const targetBucket = buckets.find((b) => effectiveDpd >= b.range[0] && effectiveDpd <= b.range[1]) || buckets[buckets.length - 1];
+			targetBucket.installments.push(item);
+			targetBucket.totalAmount += remainingOverdueAmt;
+			targetBucket.uniqueLoans.add(loanId);
+		});
+	});
+
+	// Sort installments inside each bucket by DPD descending (longest overdue first)
+	buckets.forEach((b) => {
+		b.installments.sort((a, b) => b.dpd - a.dpd);
+	});
+
+	return {
+		buckets: buckets.map((b) => ({
+			...b,
+			loanCount: b.uniqueLoans.size,
+			installmentCount: b.installments.length,
+			percentage: totalOverdueAmount > 0 ? Math.round((b.totalAmount / totalOverdueAmount) * 100) : 0,
+		})),
+		totalOverdueAmount,
+		totalOverdueCount,
+		uniqueOverdueLoansCount: allOverdueLoanIds.size,
+		maxDpd,
+	};
+}
+

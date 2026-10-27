@@ -130,3 +130,21 @@ class AccountName(db.Model):
     type = db.Column(db.String(50), default='jl_report', nullable=True) # 'jl_report' or 'short_loan'
     is_need_approval = db.Column(db.Boolean, default=True, nullable=True)
 
+
+class TallyPayout(db.Model):
+    __tablename__ = 'tally_payouts'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    loan_id = db.Column(db.String(100), nullable=False) # e.g. "1042" or "JL-1042"
+    installment_no = db.Column(db.Integer, nullable=True) # Optional installment number (1, 2, 3...)
+    payout_date = db.Column(db.String(100), nullable=False) # Payout date sent by Tally
+    amount = db.Column(db.Float, nullable=True) # Payment / disbursement amount
+    cheque_no = db.Column(db.String(100), nullable=True)
+    voucher_no = db.Column(db.String(100), nullable=True)
+    bank_name = db.Column(db.String(255), nullable=True)
+    narration = db.Column(db.Text, nullable=True)
+    raw_payload = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(50), default='pending', nullable=False) # 'pending', 'synced'
+    created_at = db.Column(db.String(100), nullable=True)
+    synced_at = db.Column(db.String(100), nullable=True)
+
+

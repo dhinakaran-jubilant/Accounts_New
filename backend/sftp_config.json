@@ -7,13 +7,14 @@
     "key_path": "",
     "remote_dir": "/Jubilant/2/Reports/QueuedReports/VehicleLoan/DayBook",
     "daily_sync_time": "09:00",
-    "last_sync_time": "26-10-2026 09:59 PM",
+    "last_sync_time": "26-10-2026 10:41 PM",
     "last_sync_status": "SUCCESS",
     "last_sync_details": {
         "success": true,
         "message": "SFTP Sync Completed: Downloaded 1 file(s), updated 0 installment(s).",
         "total_files": 1,
         "updated_count": 0,
+        "updated_items": [],
         "updated_details": [],
         "skipped_details": [],
         "mismatch_details": [

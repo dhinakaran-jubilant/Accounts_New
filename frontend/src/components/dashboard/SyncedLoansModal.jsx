@@ -52,7 +52,7 @@ export default function SyncedLoansModal({
 		if (Array.isArray(sftp.updated_items) && sftp.updated_items.length > 0) {
 			return sftp.updated_items;
 		}
-		// 2. If updated_count is 0 or not positive, definitely 0 newly synced items
+		// 2. If updated_count is 0 or not positive, strictly 0 newly synced items
 		if (sftp.updated_count === 0) {
 			return [];
 		}
@@ -69,26 +69,8 @@ export default function SyncedLoansModal({
 		return [];
 	}, [syncResult, syncedItems]);
 
-	// View tab: when opened after a DB Sync run, default to 'newly_synced' so already-synced EMIs do not repeat
-	// When opened on login (no syncResult), default to 'all_synced'
-	const [activeTab, setActiveTab] = useState(() => (syncResult ? 'newly_synced' : 'all_synced'));
-
-	useEffect(() => {
-		if (isOpen) {
-			if (syncResult) {
-				setActiveTab('newly_synced');
-			} else {
-				setActiveTab('all_synced');
-			}
-		}
-	}, [isOpen, syncResult]);
-
-	const currentDisplayItems = useMemo(() => {
-		if (activeTab === 'newly_synced') {
-			return newlySyncedItems;
-		}
-		return syncedItems;
-	}, [activeTab, newlySyncedItems, syncedItems]);
+	// Display strictly newly synced items - already synced items must never be displayed
+	const currentDisplayItems = newlySyncedItems;
 
 	// Filter current display items based on user search term
 	const filteredItems = useMemo(() => {
@@ -150,17 +132,15 @@ export default function SyncedLoansModal({
 							<div>
 								<div className="flex items-center gap-2.5 flex-wrap">
 									<h2 id="synced-modal-title" className="text-lg sm:text-xl font-bold tracking-tight text-white">
-										{activeTab === 'newly_synced' ? 'DayBook Sync Results' : 'Synchronized Loan Collections'}
+										DayBook Sync Results
 									</h2>
 									<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white/20 text-white ring-1 ring-white/30 backdrop-blur-xs">
 										<span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
-										{currentDisplayItems.length} {activeTab === 'newly_synced' ? 'Newly Synced' : 'Synced'}
+										{currentDisplayItems.length} Newly Synced
 									</span>
 								</div>
 								<p className="text-xs text-white/85 mt-1 font-medium">
-									{activeTab === 'newly_synced'
-										? 'Displaying only installments newly matched & updated in this sync run.'
-										: 'DayBook sync only proceeds when received date is not filled. Once filled, that EMI will not be synced.'}
+									DayBook sync proceeds only when received date is empty. Once filled, that EMI will not be synced.
 								</p>
 							</div>
 						</div>
@@ -183,7 +163,7 @@ export default function SyncedLoansModal({
 							<span className="material-symbols-outlined text-white text-[20px]">payments</span>
 							<div>
 								<div className="text-[10px] text-white/75 font-semibold uppercase tracking-wider">
-									{activeTab === 'newly_synced' ? 'Volume Newly Synced' : 'Total Synced Volume'}
+									Volume Newly Synced
 								</div>
 								<div className="text-sm sm:text-base font-bold text-white">
 									₹ {formatIndianCurrency(totalAmount)}
@@ -195,10 +175,10 @@ export default function SyncedLoansModal({
 							<span className="material-symbols-outlined text-white text-[20px]">account_balance_wallet</span>
 							<div>
 								<div className="text-[10px] text-white/75 font-semibold uppercase tracking-wider">
-									{activeTab === 'newly_synced' ? 'Newly Synced Loans' : 'Synced Loans'}
+									Newly Synced Loans
 								</div>
 								<div className="text-sm sm:text-base font-bold text-white">
-									{uniqueLoansCount} Active {uniqueLoansCount === 1 ? 'Loan' : 'Loans'}
+									{uniqueLoansCount} {uniqueLoansCount === 1 ? 'Loan' : 'Loans'}
 								</div>
 							</div>
 						</div>
@@ -252,22 +232,18 @@ export default function SyncedLoansModal({
 						<div className="text-center py-12 px-4">
 							<div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3 border border-emerald-100 shadow-2xs">
 								<span className="material-symbols-outlined text-[30px]">
-									{activeTab === 'newly_synced' ? 'task_alt' : 'sync_disabled'}
+									task_alt
 								</span>
 							</div>
 							<h3 className="text-sm font-bold text-slate-800">
 								{searchTerm
 									? 'No matching EMIs found'
-									: activeTab === 'newly_synced'
-									? 'All EMIs Are Already Up To Date'
-									: 'No Synced Loans Found'}
+									: 'All EMIs Are Already Up To Date'}
 							</h3>
 							<p className="text-xs text-slate-500 max-w-lg mx-auto mt-1">
 								{searchTerm
 									? `No records matched "${searchTerm}". Try another search term.`
-									: activeTab === 'newly_synced'
-									? 'No new installments were updated in this sync run. All matching loan installments were already synced in previous runs.'
-									: 'When DayBook entries match loan installments, their received dates will be automatically displayed here.'}
+									: '0 new installments synced. All matching loan installments were already synced previously and are not repeated here.'}
 							</p>
 						</div>
 					) : (

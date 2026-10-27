@@ -366,6 +366,24 @@ export const api = {
 		request('/sftp/sync-now', {
 			method: 'POST',
 		}),
+
+	// Tally Cloud Bridge & Auto-Sync
+	getTallyConfig: () => request('/tally/config'),
+	getTallyPayouts: () => request('/tally/payouts'),
+	saveTallyConfig: (config) =>
+		request('/tally/config', {
+			method: 'POST',
+			body: JSON.stringify(config),
+		}),
+	testTallyConnection: (config) =>
+		request('/tally/test', {
+			method: 'POST',
+			body: JSON.stringify(config),
+		}),
+	syncTallyNow: () =>
+		request('/tally/sync-now', {
+			method: 'POST',
+		}),
 };
 
 export default api;

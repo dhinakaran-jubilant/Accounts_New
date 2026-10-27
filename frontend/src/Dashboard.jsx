@@ -20,6 +20,7 @@ import RecentJointLoans from './components/dashboard/RecentJointLoans';
 import JointLoanDetailsModal from './components/dashboard/JointLoanDetailsModal';
 import SyncedLoansModal from './components/dashboard/SyncedLoansModal';
 import PendingFromPrimaryBreakdown from './components/dashboard/PendingFromPrimaryBreakdown';
+import OverdueAgingBuckets from './components/dashboard/OverdueAgingBuckets';
 import JointLoan from './components/JointLoan';
 import Settings from './components/Settings';
 import Users from './components/Users';
@@ -146,6 +147,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 	const [jointLoans, setJointLoans] = useState([]);
 	const [isSyncing, setIsSyncing] = useState(false);
 	const [syncFeedback, setSyncFeedback] = useState(null);
+	const [isTallySyncing, setIsTallySyncing] = useState(false);
+	const [tallyFeedback, setTallyFeedback] = useState(null);
 	const [lastSyncTime, setLastSyncTime] = useState(() => {
 		try {
 			return localStorage.getItem('joint_loan_last_sync_time') || null;
@@ -262,12 +265,12 @@ export default function Dashboard({ currentUser, onLogout }) {
 		loadJointLoans();
 		loadSyncedItems();
 
-		// Check if user just logged in: display the synced loans popup card
+		// Check if user just logged in: run DayBook sync and display fresh sync results
 		try {
 			const shouldShowPopup = sessionStorage.getItem('loanDesk_show_synced_popup');
 			if (shouldShowPopup === 'true') {
 				sessionStorage.removeItem('loanDesk_show_synced_popup');
-				setShowSyncedLoansModal(true);
+				handleSync();
 			}
 		} catch (e) {}
 
@@ -359,6 +362,33 @@ export default function Dashboard({ currentUser, onLogout }) {
 			setShowSyncedLoansModal(true);
 		}
 	}, [loadSyncedItems]);
+
+	// Handle Tally Payout Date Sync based on Loan ID
+	const handleTallySync = useCallback(async () => {
+		setIsTallySyncing(true);
+		setTallyFeedback(null);
+		try {
+			const res = await api.syncTallyNow();
+			const remoteLoans = await api.getJointLoans();
+			if (Array.isArray(remoteLoans)) {
+				setJointLoans(remoteLoans);
+			}
+			setIsTallySyncing(false);
+			if (res?.success) {
+				const count = res.synced_count ?? 0;
+				setTallyFeedback(count > 0 ? `Synced (${count})` : 'Synced (0)');
+			} else {
+				setTallyFeedback('Failed');
+			}
+			setTimeout(() => setTallyFeedback(null), 3000);
+			window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
+		} catch (err) {
+			console.error('Failed to sync Tally payouts:', err);
+			setIsTallySyncing(false);
+			setTallyFeedback('Failed');
+			setTimeout(() => setTallyFeedback(null), 3000);
+		}
+	}, []);
 
 	// Extract and deduplicate synced loan installments for popup card
 	const syncedInstallments = useMemo(() => {
@@ -816,6 +846,9 @@ export default function Dashboard({ currentUser, onLogout }) {
 									isRefreshing={isSyncing}
 									syncFeedback={syncFeedback}
 									lastSyncTime={lastSyncTime}
+									onTallySync={handleTallySync}
+									isTallySyncing={isTallySyncing}
+									tallyFeedback={tallyFeedback}
 									onExport={handleExport}
 									onNewLoan={() => handleSelectMenuItem('joint-loan')}
 									totalLoans={filteredJointLoans.length}
@@ -902,6 +935,9 @@ export default function Dashboard({ currentUser, onLogout }) {
 											setDashboardTab('overdue');
 											setStatusFilter('Overdue');
 											handleFilterByStatus('Overdue');
+											setTimeout(() => {
+												document.getElementById('overdue-aging-section')?.scrollIntoView({ behavior: 'smooth' });
+											}, 100);
 										}}
 										className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-[12px] font-bold rounded-xl shadow-xs transition-transform active:scale-95 shrink-0 self-start sm:self-auto cursor-pointer"
 									>
@@ -933,6 +969,16 @@ export default function Dashboard({ currentUser, onLogout }) {
 									rawAccounts={rawAccounts}
 									isAdmin={isAdmin}
 									allowedPrimaryKeys={accountRoleFilter === 'secondary' ? effectiveSecondaryAccountKeys : primaryAccountKeys}
+								/>
+							</div>
+
+							{/* Row 3 Visual & Delinquency Analytics: Overdue Aging Buckets (DPD Risk Matrix) */}
+							<div id="overdue-aging-section">
+								<OverdueAgingBuckets
+									loans={filteredJointLoans}
+									onSelectLoan={(loan) => setSelectedJointLoan(loan)}
+									onOpenLoanDetails={(loan) => handleNavigateToLoanDetails(loan)}
+									accountRoleFilter={accountRoleFilter}
 								/>
 							</div>
 
