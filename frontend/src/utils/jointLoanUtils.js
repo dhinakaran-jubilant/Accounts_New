@@ -1342,13 +1342,37 @@ export function calculateAgingBuckets(loans = [], refDate = new Date()) {
 		b.installments.sort((a, b) => b.dpd - a.dpd);
 	});
 
-	return {
-		buckets: buckets.map((b) => ({
+	// Compute exact percentages and ensure rounded percentages sum to 100
+	const calculatedBuckets = buckets.map((b) => {
+		const rawPct = totalOverdueAmount > 0 ? (b.totalAmount / totalOverdueAmount) * 100 : 0;
+		return {
 			...b,
 			loanCount: b.uniqueLoans.size,
 			installmentCount: b.installments.length,
-			percentage: totalOverdueAmount > 0 ? Math.round((b.totalAmount / totalOverdueAmount) * 100) : 0,
-		})),
+			rawPercentage: rawPct,
+			percentage: Math.round(rawPct),
+		};
+	});
+
+	// If sum of rounded percentages does not equal 100 due to rounding, adjust the largest bucket
+	if (totalOverdueAmount > 0) {
+		const currentSum = calculatedBuckets.reduce((acc, b) => acc + (b.totalAmount > 0 ? b.percentage : 0), 0);
+		const diff = 100 - currentSum;
+		if (diff !== 0) {
+			let maxBucket = calculatedBuckets[0];
+			for (const b of calculatedBuckets) {
+				if (b.totalAmount > maxBucket.totalAmount) {
+					maxBucket = b;
+				}
+			}
+			if (maxBucket && maxBucket.totalAmount > 0) {
+				maxBucket.percentage += diff;
+			}
+		}
+	}
+
+	return {
+		buckets: calculatedBuckets,
 		totalOverdueAmount,
 		totalOverdueCount,
 		uniqueOverdueLoansCount: allOverdueLoanIds.size,

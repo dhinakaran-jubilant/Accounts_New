@@ -151,11 +151,14 @@ export default function OverdueAgingBuckets({
 
 				<div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden flex shadow-inner">
 					{buckets.map((b) => {
-						if (b.percentage <= 0) return null;
+						if (!b.totalAmount || b.totalAmount <= 0) return null;
 						return (
 							<div
 								key={b.id}
-								style={{ width: `${b.percentage}%`, backgroundColor: b.barColor }}
+								style={{
+									flex: `${b.totalAmount} 1 0%`,
+									backgroundColor: b.barColor,
+								}}
 								className="h-full transition-all duration-300 relative group cursor-pointer hover:opacity-90"
 								onClick={() => setActiveBucketId(b.id)}
 								title={`${b.label}: ₹${formatIndianCurrency(b.totalAmount)} (${b.percentage}%)`}
