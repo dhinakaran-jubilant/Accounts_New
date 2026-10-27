@@ -36,9 +36,12 @@ def is_neon_db():
 def get_db_connection():
     if is_neon_db():
         # Handle Render postgres:// vs postgresql:// prefix
-        url = DATABASE_URL
+        url = (DATABASE_URL or "").strip()
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
+        if "sslmode=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}sslmode=require"
         conn = psycopg2.connect(url)
         return conn
     else:
