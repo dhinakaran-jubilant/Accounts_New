@@ -18,6 +18,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tally_co
 
 DEFAULT_CONFIG = {
     "render_api_url": "https://tally-loandesk-bridge.onrender.com",
+    "api_key": "tally_live_sec_8f92e4a19b0d4c728391",
     "enabled": True,
     "last_sync_time": None,
     "last_sync_status": "IDLE",
@@ -43,6 +44,13 @@ def load_tally_config(hide_key=True):
         if k not in cfg:
             cfg[k] = v
 
+    if hide_key and cfg.get("api_key"):
+        raw_key = cfg["api_key"]
+        if len(raw_key) > 6:
+            cfg["api_key_masked"] = raw_key[:4] + "..." + raw_key[-4:]
+        else:
+            cfg["api_key_masked"] = "***"
+
     return cfg
 
 
@@ -51,6 +59,8 @@ def save_tally_config(data):
     cfg = load_tally_config(hide_key=False)
     if "render_api_url" in data:
         cfg["render_api_url"] = str(data["render_api_url"]).rstrip("/").strip()
+    if "api_key" in data and data["api_key"] and not str(data["api_key"]).startswith("***"):
+        cfg["api_key"] = str(data["api_key"]).strip()
     if "enabled" in data:
         cfg["enabled"] = bool(data["enabled"])
     if "last_sync_time" in data:
@@ -65,7 +75,7 @@ def save_tally_config(data):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(cfg, f, indent=4)
 
-    return cfg
+    return load_tally_config(hide_key=True)
 
 
 def create_ssl_context():
@@ -203,9 +213,11 @@ def test_tally_connection(cfg=None):
     if not base_url:
         return {"success": False, "message": "Render API URL is not configured."}
 
+    api_key = cfg.get("api_key", "tally_live_sec_8f92e4a19b0d4c728391")
     health_url = f"{base_url}/health"
     req = urllib.request.Request(health_url, headers={
-        "User-Agent": "LoanDesk-Client/1.0"
+        "User-Agent": "LoanDesk-Client/1.0",
+        "X-API-Key": api_key
     })
 
     try:
@@ -236,8 +248,12 @@ def pull_pending_from_render():
     if not base_url or not cfg.get("enabled", True):
         return 0
 
+    api_key = cfg.get("api_key", "tally_live_sec_8f92e4a19b0d4c728391")
     fetch_url = f"{base_url}/api/v1/tally/payouts?status=pending"
-    req = urllib.request.Request(fetch_url, headers={"User-Agent": "LoanDesk-Client/1.0"})
+    req = urllib.request.Request(fetch_url, headers={
+        "User-Agent": "LoanDesk-Client/1.0",
+        "X-API-Key": api_key
+    })
 
     try:
         ctx = create_ssl_context()
@@ -258,7 +274,8 @@ def pull_pending_from_render():
                     mark_payload = json.dumps({"ids": matched_ids}).encode('utf-8')
                     mark_req = urllib.request.Request(mark_url, data=mark_payload, headers={
                         "Content-Type": "application/json",
-                        "User-Agent": "LoanDesk-Client/1.0"
+                        "User-Agent": "LoanDesk-Client/1.0",
+                        "X-API-Key": api_key
                     })
                     with urllib.request.urlopen(mark_req, context=ctx, timeout=10) as _:
                         pass

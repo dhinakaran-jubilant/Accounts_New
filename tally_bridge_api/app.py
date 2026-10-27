@@ -27,6 +27,30 @@ CORS(app)
 # If Neon DB DATABASE_URL is set, uses Neon PostgreSQL. Otherwise falls back to SQLite.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 SQLITE_DB_PATH = os.environ.get("SQLITE_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tally_payouts.db"))
+TALLY_API_KEY = os.environ.get("TALLY_API_KEY", "tally_live_sec_8f92e4a19b0d4c728391")
+
+
+def verify_auth(req):
+    """
+    Validates API key from request:
+    1. Header: X-API-Key: <key>
+    2. Header: Authorization: Bearer <key>
+    3. Query param: ?api_key=<key>
+    """
+    if not TALLY_API_KEY:
+        return True # Auth disabled if no key configured
+
+    key = req.headers.get("X-API-Key")
+    if not key:
+        auth_header = req.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            key = auth_header[7:].strip()
+        elif auth_header:
+            key = auth_header.strip()
+    if not key:
+        key = req.args.get("api_key")
+
+    return bool(key and key.strip() == TALLY_API_KEY.strip())
 
 
 def is_neon_db():
@@ -167,10 +191,16 @@ def health():
 @app.route("/api/v1/tally/transactions", methods=["POST"])
 def ingest_payouts():
     """
-    Public ingestion endpoint for Tally team.
-    NO API KEY IS REQUIRED.
+    Ingestion endpoint for Tally team.
+    Requires header: X-API-Key: <TALLY_API_KEY>
     Accepts single object or batch of payout dates with loan_id.
     """
+    if not verify_auth(request):
+        return jsonify({
+            "success": False,
+            "error": "Unauthorized: Invalid or missing API Key. Please provide header 'X-API-Key: <your_api_key>'."
+        }), 401
+
     payload = request.get_json(force=True, silent=True)
     if not payload:
         return jsonify({
@@ -288,7 +318,13 @@ def ingest_payouts():
 @app.route("/api/v1/tally/payouts", methods=["GET"])
 @app.route("/api/v1/tally/transactions", methods=["GET"])
 def get_payouts():
-    """Returns stored payouts (default: pending only)."""
+    """Returns stored payouts (default: pending only). Requires API Key."""
+    if not verify_auth(request):
+        return jsonify({
+            "success": False,
+            "error": "Unauthorized: Invalid or missing API Key."
+        }), 401
+
     status_filter = request.args.get("status", "pending")
     limit = min(int(request.args.get("limit", 200)), 500)
 
@@ -325,7 +361,13 @@ def get_payouts():
 @app.route("/api/v1/tally/payouts/mark-collected", methods=["POST"])
 @app.route("/api/v1/tally/transactions/mark-collected", methods=["POST"])
 def mark_collected():
-    """Marks synced records as collected."""
+    """Marks synced records as collected. Requires API Key."""
+    if not verify_auth(request):
+        return jsonify({
+            "success": False,
+            "error": "Unauthorized: Invalid or missing API Key."
+        }), 401
+
     payload = request.get_json(force=True, silent=True) or {}
     ids = payload.get("ids", [])
     if not ids:

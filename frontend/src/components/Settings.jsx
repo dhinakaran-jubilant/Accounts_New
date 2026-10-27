@@ -1705,26 +1705,50 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 						</div>
 
 						<form onSubmit={handleSaveTally} className="p-6 space-y-6">
-							<div>
+							<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 								{/* Render API URL */}
-								<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-									Render Bridge Service URL <span className="text-slate-400 font-normal">(Optional if hosted on Render)</span>
-								</label>
-								<div className="relative flex items-center">
-									<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
-										link
-									</span>
-									<input
-										type="url"
-										value={tallyConfig.render_api_url || ''}
-										onChange={(e) => setTallyConfig((prev) => ({ ...prev, render_api_url: e.target.value }))}
-										placeholder="https://tally-loandesk-bridge.onrender.com"
-										className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold font-mono"
-									/>
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Render Bridge Service URL <span className="text-slate-400 font-normal">(Optional if hosted on Render)</span>
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											link
+										</span>
+										<input
+											type="url"
+											value={tallyConfig.render_api_url || ''}
+											onChange={(e) => setTallyConfig((prev) => ({ ...prev, render_api_url: e.target.value }))}
+											placeholder="https://tally-loandesk-bridge.onrender.com"
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold font-mono"
+										/>
+									</div>
+									<p className="text-[11px] text-slate-400 mt-1">
+										Base URL where your Tally microservice is deployed on Render.
+									</p>
 								</div>
-								<p className="text-[11px] text-slate-400 mt-1">
-									Base URL where your Tally microservice is deployed on Render. Neon DB connects automatically to store payouts.
-								</p>
+
+								{/* Shared API Key */}
+								<div>
+									<label className="block text-[11.5px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+										Secret API Key (X-API-Key) <span className="text-rose-500">*</span>
+									</label>
+									<div className="relative flex items-center">
+										<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+											key
+										</span>
+										<input
+											type="text"
+											value={tallyConfig.api_key || ''}
+											onChange={(e) => setTallyConfig((prev) => ({ ...prev, api_key: e.target.value }))}
+											placeholder={tallyConfig.api_key_masked || 'tally_live_sec_8f92e4a19b0d4c728391'}
+											className="w-full pl-9 pr-3.5 py-2.5 rounded-xl text-[12.5px] bg-slate-50 border border-slate-200/90 focus:bg-white focus:border-[#ff5c00] focus:ring-0 focus:outline-none transition-all text-slate-900 font-semibold font-mono"
+										/>
+									</div>
+									<p className="text-[11px] text-slate-400 mt-1">
+										Share this secret token with the Tally team to include in HTTP headers.
+									</p>
+								</div>
 							</div>
 
 							{/* Action Buttons */}
@@ -1924,13 +1948,13 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 							<div className="space-y-1">
 								<div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-bold">
 									<span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-									No API Key Required
+									API Key Secured Endpoint
 								</div>
 								<h4 className="text-[16px] font-bold text-white pt-1">
-									Share this Endpoint with the Tally ERP Team
+									Share these Integration Details with the Tally ERP Team
 								</h4>
 								<p className="text-[12px] text-slate-300">
-									The Tally team can post payout dates directly via HTTP POST. Data is stored in Neon DB and synced by Loan ID.
+									The Tally team can post payout dates with the secret API Key. Data is stored in Neon DB and synced by Loan ID.
 								</p>
 							</div>
 						</div>
@@ -1940,10 +1964,10 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 							<div className="text-emerald-400 select-all font-bold">
 								POST {tallyConfig.render_api_url ? `${tallyConfig.render_api_url}/api/v1/tally/payouts` : 'https://your-service.onrender.com/api/v1/tally/payouts'}
 							</div>
-							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider pt-2">Headers:</div>
-							<div className="text-slate-300 text-[11.5px]">
+							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider pt-2">Required Headers:</div>
+							<div className="text-slate-300 text-[11.5px] leading-relaxed">
 								Content-Type: application/json<br />
-								Authentication: None
+								X-API-Key: <span className="text-amber-300 font-bold select-all">{tallyConfig.api_key || tallyConfig.api_key_masked || 'tally_live_sec_8f92e4a19b0d4c728391'}</span>
 							</div>
 							<div className="text-slate-400 font-sans text-[11px] font-semibold uppercase tracking-wider pt-2">Sample Payload:</div>
 							<pre className="text-amber-300 text-[11px] bg-black/60 p-2 rounded-lg overflow-x-auto">

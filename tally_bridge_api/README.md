@@ -18,15 +18,18 @@ Deploy this microservice on Render to collect loan payout dates sent by the Tall
    - **Root Directory**: `tally_bridge_api`
    - **Environment**: `Python 3`
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn app:app`
+   - **Start Command**: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120`
 4. Under **Environment Variables**, add:
    - `DATABASE_URL`: Paste your Neon DB connection string.
+   - `TALLY_API_KEY`: `tally_live_sec_8f92e4a19b0d4c728391`
 5. Click **Deploy Web Service**.
 
 ---
 
-### Step 3: Provide the API URL to Tally Team
-Give the Tally ERP team your Render service URL:
-`POST https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts`
+### Step 3: Provide Endpoint & API Key to Tally Team
+Give the Tally ERP team your endpoint details:
+- **URL**: `POST https://<YOUR-RENDER-APP>.onrender.com/api/v1/tally/payouts`
+- **Header**: `X-API-Key: tally_live_sec_8f92e4a19b0d4c728391`
+- **Header**: `Content-Type: application/json`
 
-No API key or special headers are required. Refer to `TALLY_API_DOCUMENTATION.md` for full payload schemas.
+Refer to `TALLY_API_DOCUMENTATION.md` for complete payload schemas and code examples.

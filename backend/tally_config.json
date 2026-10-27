@@ -1,0 +1,8 @@
+{
+    "render_api_url": "https://tally-loandesk-bridge.onrender.com",
+    "enabled": true,
+    "last_sync_time": null,
+    "last_sync_status": "IDLE",
+    "last_sync_message": null,
+    "total_synced_count": 0
+}

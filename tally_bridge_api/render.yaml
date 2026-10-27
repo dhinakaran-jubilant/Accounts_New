@@ -13,3 +13,5 @@ services:
         value: 3.11.9
       - key: DATABASE_URL
         sync: false # Set to your Neon DB PostgreSQL connection string in Render Dashboard
+      - key: TALLY_API_KEY
+        value: tally_live_sec_8f92e4a19b0d4c728391
