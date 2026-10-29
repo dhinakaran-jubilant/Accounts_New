@@ -159,6 +159,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 	const [showSyncedLoansModal, setShowSyncedLoansModal] = useState(false);
 	const [backendSyncedItems, setBackendSyncedItems] = useState([]);
 	const [lastSyncResult, setLastSyncResult] = useState(null);
+	const [dailySyncTime, setDailySyncTime] = useState('09:00');
+	const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
 
 	// Primary / Secondary Role Filter State (Default: 'primary')
 	const [accountRoleFilter, setAccountRoleFilter] = useState('primary'); // 'primary' | 'secondary'
@@ -263,13 +265,9 @@ export default function Dashboard({ currentUser, onLogout }) {
 		loadJointLoans();
 		loadSyncedItems();
 
-		// Check if user just logged in: run DayBook sync and display fresh sync results
+		// Clear any lingering sync popup flag on load so modal never opens automatically
 		try {
-			const shouldShowPopup = sessionStorage.getItem('loanDesk_show_synced_popup');
-			if (shouldShowPopup === 'true') {
-				sessionStorage.removeItem('loanDesk_show_synced_popup');
-				handleSync();
-			}
+			sessionStorage.removeItem('loanDesk_show_synced_popup');
 		} catch (e) {}
 
 		const handleRefresh = () => {
@@ -286,17 +284,56 @@ export default function Dashboard({ currentUser, onLogout }) {
 						localStorage.setItem('joint_loan_last_sync_time', status.last_sync_time);
 					} catch (e) {}
 				}
+				if (status?.sftp_result) {
+					setLastSyncResult(status.sftp_result);
+				}
+				if (status?.daily_sync_time) {
+					setDailySyncTime(status.daily_sync_time);
+				}
+				if (status?.auto_sync_enabled !== undefined) {
+					setAutoSyncEnabled(status.auto_sync_enabled);
+				}
 			} catch (err) {
 				console.warn('Sync status load warning in dashboard:', err);
 			}
 		};
 		loadSyncStatus();
 
+		// Periodic background polling (every 60s) for scheduled auto-sync results
+		const syncPollInterval = setInterval(async () => {
+			try {
+				const status = await api.getSyncStatus();
+				if (status?.last_sync_time) {
+					setLastSyncTime((prev) => {
+						if (prev && status.last_sync_time && prev !== status.last_sync_time) {
+							// Scheduled auto-sync completed in background! Refresh data silently without opening modal popup
+							loadJointLoans();
+							loadSyncedItems();
+							if (status.sftp_result) {
+								setLastSyncResult(status.sftp_result);
+							}
+							try {
+								localStorage.setItem('joint_loan_last_sync_time', status.last_sync_time);
+							} catch (e) {}
+						}
+						return status.last_sync_time;
+					});
+				}
+				if (status?.daily_sync_time) {
+					setDailySyncTime(status.daily_sync_time);
+				}
+				if (status?.auto_sync_enabled !== undefined) {
+					setAutoSyncEnabled(status.auto_sync_enabled);
+				}
+			} catch (e) {}
+		}, 60000);
+
 		window.addEventListener('loanDesk_loans_updated', handleRefresh);
 		window.addEventListener('loanDesk_notifications_updated', handleRefresh);
 		window.addEventListener('loan_updated', handleRefresh);
 		window.addEventListener('loan_approved', handleRefresh);
 		return () => {
+			clearInterval(syncPollInterval);
 			window.removeEventListener('loanDesk_loans_updated', handleRefresh);
 			window.removeEventListener('loanDesk_notifications_updated', handleRefresh);
 			window.removeEventListener('loan_updated', handleRefresh);
@@ -305,7 +342,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 	}, [loadJointLoans, loadSyncedItems]);
 
 	// Handle Unified Sync (DayBook SFTP Received Dates & Tally Cloud Payout Dates)
-	const handleSync = useCallback(async () => {
+	const handleSync = useCallback(async (options = { showModal: true }) => {
+		const shouldShowModal = options?.showModal !== false;
 		setIsSyncing(true);
 		setSyncFeedback(null);
 		try {
@@ -372,14 +410,18 @@ export default function Dashboard({ currentUser, onLogout }) {
 			}
 			setTimeout(() => setSyncFeedback(null), 3000);
 
-			// Automatically display sync results in SyncedLoansModal
-			setShowSyncedLoansModal(true);
+			// Display sync results in SyncedLoansModal only when triggered with showModal: true
+			if (shouldShowModal) {
+				setShowSyncedLoansModal(true);
+			}
 		} catch (err) {
 			console.error('Failed to sync daybook/tally:', err);
 			setIsSyncing(false);
 			setSyncFeedback('Sync Failed');
 			setTimeout(() => setSyncFeedback(null), 2500);
-			setShowSyncedLoansModal(true);
+			if (shouldShowModal) {
+				setShowSyncedLoansModal(true);
+			}
 		}
 	}, [loadSyncedItems]);
 
@@ -403,6 +445,7 @@ export default function Dashboard({ currentUser, onLogout }) {
 					items.push({
 						id: `${loan.id}-${sch.id || idx}`,
 						loanId: loan.loan_ref_id || loan.id,
+						dbLoanId: loan.id,
 						clientName: loan.client_account_name || loan.primaryBorrower?.name || 'Client',
 						emiNo: sch.sNo || sch.installmentNumber || idx + 1,
 						emiDate: sch.date || '',
@@ -1046,6 +1089,8 @@ export default function Dashboard({ currentUser, onLogout }) {
 				syncedItems={syncedInstallments}
 				lastSyncTime={lastSyncTime}
 				syncResult={lastSyncResult}
+				dailySyncTime={dailySyncTime}
+				autoSyncEnabled={autoSyncEnabled}
 				onOpenLoan={(item) => {
 					setShowSyncedLoansModal(false);
 					handleNavigateToLoanDetails(item.loan || { id: item.loanId, loan_ref_id: item.loanId });

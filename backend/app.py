@@ -2290,7 +2290,9 @@ def sync_data():
         "database": "postgresql",
         "last_sync_time": sftp_cfg_safe.get("last_sync_time"),
         "last_sync_status": sftp_cfg_safe.get("last_sync_status"),
-        "sftp_result": sftp_res,
+        "daily_sync_time": sftp_cfg_safe.get("daily_sync_time", "09:00"),
+        "auto_sync_enabled": sftp_cfg_safe.get("enabled", True),
+        "sftp_result": sftp_res if sftp_res is not None else sftp_cfg_safe.get("last_sync_details"),
         "tally_result": tally_res
     })
 
@@ -3637,8 +3639,9 @@ def handle_sftp_test():
 
 
 @app.route('/api/sftp/sync-now', methods=['POST'])
+@app.route('/api/sftp/sync', methods=['POST'])
 def handle_sftp_sync_now():
-    from sftp_service import run_sftp_sync, process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER
+    from sftp_service import run_sftp_sync, process_day_book_for_joint_loans, process_day_book_file_internal, DEFAULT_DOWNLOAD_FOLDER
     try:
         res = run_sftp_sync(process_day_book_for_joint_loans, DEFAULT_DOWNLOAD_FOLDER)
         status_code = 200 if res.get('success') else 400

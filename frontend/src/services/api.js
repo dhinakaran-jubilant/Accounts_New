@@ -175,28 +175,26 @@ export const api = {
 		} catch (err) {
 			console.warn('[API] /sync failed:', err);
 		}
-		// Also invoke SFTP sync-now to pull latest DayBook from SFTP server
-		try {
-			const sftpRes = await request('/sftp/sync-now', { method: 'POST' });
-			const cfg = await request('/sftp/config');
-			return {
-				...syncRes,
-				last_sync_time: cfg?.last_sync_time || syncRes?.last_sync_time,
-				last_sync_status: cfg?.last_sync_status || syncRes?.last_sync_status,
-				sftp_result: sftpRes,
-			};
-		} catch (sftpErr) {
-			console.warn('[API] SFTP sync-now warning:', sftpErr);
-		}
-		// If last_sync_time is not in syncRes, attempt fallback to sftp config
-		if (!syncRes?.last_sync_time) {
+		// Only invoke explicit /sftp/sync-now if /sync did not already run SFTP sync.
+		// Avoid running SFTP sync twice, which wipes out newly updated items on the second pass.
+		if (!syncRes?.sftp_result) {
 			try {
-				const cfg = await request('/sftp/config');
-				if (cfg?.last_sync_time) {
-					return { ...syncRes, last_sync_time: cfg.last_sync_time, last_sync_status: cfg.last_sync_status };
-				}
-			} catch (e) {}
+				const sftpRes = await request('/sftp/sync-now', { method: 'POST' });
+				syncRes.sftp_result = sftpRes;
+			} catch (sftpErr) {
+				console.warn('[API] SFTP sync-now warning:', sftpErr);
+			}
 		}
+		try {
+			const cfg = await request('/sftp/config');
+			if (cfg) {
+				syncRes.last_sync_time = cfg?.last_sync_time || syncRes?.last_sync_time;
+				syncRes.last_sync_status = cfg?.last_sync_status || syncRes?.last_sync_status;
+				if (!syncRes.sftp_result && cfg.last_sync_details) {
+					syncRes.sftp_result = cfg.last_sync_details;
+				}
+			}
+		} catch (e) {}
 		return syncRes;
 	},
 	getSyncStatus: async () => {
@@ -211,9 +209,12 @@ export const api = {
 			return {
 				last_sync_time: sftp?.last_sync_time || null,
 				last_sync_status: sftp?.last_sync_status || null,
+				daily_sync_time: sftp?.daily_sync_time || '09:00',
+				auto_sync_enabled: sftp?.enabled ?? true,
+				sftp_result: sftp?.last_sync_details || null,
 			};
 		} catch (e) {
-			return { last_sync_time: null };
+			return { last_sync_time: null, daily_sync_time: '09:00', auto_sync_enabled: true };
 		}
 	},
 	getSftpConfig: () => request('/sftp/config'),

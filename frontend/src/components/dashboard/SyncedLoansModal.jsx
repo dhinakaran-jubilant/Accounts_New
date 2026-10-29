@@ -18,6 +18,8 @@ export default function SyncedLoansModal({
 	onOpenLoan,
 	onTriggerSync,
 	isSyncing = false,
+	dailySyncTime = '09:00',
+	autoSyncEnabled = true,
 }) {
 	const [searchTerm, setSearchTerm] = useState('');
 
@@ -61,16 +63,37 @@ export default function SyncedLoansModal({
 			const detailStr = sftp.updated_details.join(' ');
 			return syncedItems.filter((item) => {
 				const idMatch = item.dbLoanId && detailStr.includes(`Loan #${item.dbLoanId}`);
+				const loanRefMatch = item.loanId && detailStr.includes(item.loanId);
 				const clientMatch = item.clientName && detailStr.includes(item.clientName);
+				const emiMatch = item.emiNo && detailStr.includes(`EMI ${item.emiNo}`);
 				const dateMatch = item.receivedDate && detailStr.includes(item.receivedDate);
-				return (idMatch || clientMatch) && dateMatch;
+				return idMatch || loanRefMatch || (clientMatch && emiMatch) || (clientMatch && dateMatch);
 			});
 		}
 		return [];
 	}, [syncResult, syncedItems]);
 
-	// Display strictly newly synced items - already synced items must never be displayed
-	const currentDisplayItems = newlySyncedItems;
+	// Active View Tab: 'newly_synced' | 'all_synced'
+	// When opened with newly synced items, default to 'newly_synced'.
+	// When opened directly or 0 new items, default to 'all_synced' so synced loans are always visible.
+	const [activeTab, setActiveTab] = useState(() => (newlySyncedItems.length > 0 ? 'newly_synced' : 'all_synced'));
+
+	useEffect(() => {
+		if (isOpen) {
+			if (newlySyncedItems.length > 0) {
+				setActiveTab('newly_synced');
+			} else {
+				setActiveTab('all_synced');
+			}
+		}
+	}, [isOpen, newlySyncedItems.length]);
+
+	const currentDisplayItems = useMemo(() => {
+		if (activeTab === 'newly_synced') {
+			return newlySyncedItems;
+		}
+		return syncedItems;
+	}, [activeTab, newlySyncedItems, syncedItems]);
 
 	// Filter current display items based on user search term
 	const filteredItems = useMemo(() => {
@@ -132,15 +155,17 @@ export default function SyncedLoansModal({
 							<div>
 								<div className="flex items-center gap-2.5 flex-wrap">
 									<h2 id="synced-modal-title" className="text-lg sm:text-xl font-bold tracking-tight text-white">
-										DayBook Sync Results
+										{activeTab === 'newly_synced' ? 'DayBook Sync Results' : 'DayBook Synced Loan Collections'}
 									</h2>
 									<span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white/20 text-white ring-1 ring-white/30 backdrop-blur-xs">
 										<span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
-										{currentDisplayItems.length} Newly Synced
+										{currentDisplayItems.length} {activeTab === 'newly_synced' ? 'Newly Synced' : 'Collections'}
 									</span>
 								</div>
 								<p className="text-xs text-white/85 mt-1 font-medium">
-									DayBook sync proceeds only when received date is empty. Once filled, that EMI will not be synced.
+									{activeTab === 'newly_synced'
+										? 'Displaying loan installments newly matched and updated from DayBook.'
+										: 'DayBook sync proceeds only when received date is empty. Once filled, that EMI will not be re-synced.'}
 								</p>
 							</div>
 						</div>
@@ -163,7 +188,7 @@ export default function SyncedLoansModal({
 							<span className="material-symbols-outlined text-white text-[20px]">payments</span>
 							<div>
 								<div className="text-[10px] text-white/75 font-semibold uppercase tracking-wider">
-									Volume Newly Synced
+									{activeTab === 'newly_synced' ? 'Volume Newly Synced' : 'Total Synced Volume'}
 								</div>
 								<div className="text-sm sm:text-base font-bold text-white">
 									₹ {formatIndianCurrency(totalAmount)}
@@ -175,7 +200,7 @@ export default function SyncedLoansModal({
 							<span className="material-symbols-outlined text-white text-[20px]">account_balance_wallet</span>
 							<div>
 								<div className="text-[10px] text-white/75 font-semibold uppercase tracking-wider">
-									Newly Synced Loans
+									{activeTab === 'newly_synced' ? 'Newly Synced Loans' : 'Total Synced Loans'}
 								</div>
 								<div className="text-sm sm:text-base font-bold text-white">
 									{uniqueLoansCount} {uniqueLoansCount === 1 ? 'Loan' : 'Loans'}
@@ -190,14 +215,47 @@ export default function SyncedLoansModal({
 								<div className="text-xs sm:text-sm font-bold text-white truncate font-mono">
 									{lastSyncTime || 'Auto-Synced via SFTP'}
 								</div>
+								<div className="text-[10px] text-emerald-200/90 font-medium flex items-center gap-1 mt-0.5">
+									<span className="w-1 h-1 rounded-full bg-emerald-400"></span>
+									<span>Daily auto-sync: {dailySyncTime}</span>
+								</div>
 							</div>
 						</div>
 					</div>
 				</div>
 
-				{/* Search & Filter Toolbar */}
+				{/* Search & Tab Filter Toolbar */}
 				<div className="px-6 py-3 bg-slate-50/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
-					<div className="relative flex-1 max-w-[420px]">
+					{/* Tab Switcher Pills */}
+					<div className="inline-flex items-center bg-slate-200/70 p-1 rounded-xl ring-1 ring-slate-300/60 text-xs font-bold shadow-2xs">
+						<button
+							type="button"
+							onClick={() => setActiveTab('newly_synced')}
+							className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+								activeTab === 'newly_synced'
+									? 'bg-white text-primary shadow-xs'
+									: 'text-slate-600 hover:text-slate-900'
+							}`}
+						>
+							<span className="material-symbols-outlined text-[15px]">flash_on</span>
+							<span>Newly Synced ({newlySyncedItems.length})</span>
+						</button>
+						<button
+							type="button"
+							onClick={() => setActiveTab('all_synced')}
+							className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+								activeTab === 'all_synced'
+									? 'bg-white text-primary shadow-xs'
+									: 'text-slate-600 hover:text-slate-900'
+							}`}
+						>
+							<span className="material-symbols-outlined text-[15px]">format_list_bulleted</span>
+							<span>All Synced Collections ({syncedItems.length})</span>
+						</button>
+					</div>
+
+					{/* Search Box */}
+					<div className="relative flex-1 max-w-[340px]">
 						<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
 							search
 						</span>
@@ -205,7 +263,7 @@ export default function SyncedLoansModal({
 							type="text"
 							value={searchTerm}
 							onChange={(e) => setSearchTerm(e.target.value)}
-							placeholder="Search by client name, loan ID, EMI date, received date..."
+							placeholder="Search client, loan ID, EMI date, received date..."
 							className="w-full pl-9 pr-8 py-1.5 bg-white border border-slate-200 rounded-xl text-[12px] text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs"
 						/>
 						{searchTerm && (
@@ -232,19 +290,33 @@ export default function SyncedLoansModal({
 						<div className="text-center py-12 px-4">
 							<div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3 border border-emerald-100 shadow-2xs">
 								<span className="material-symbols-outlined text-[30px]">
-									task_alt
+									{activeTab === 'newly_synced' ? 'task_alt' : 'sync_disabled'}
 								</span>
 							</div>
 							<h3 className="text-sm font-bold text-slate-800">
 								{searchTerm
 									? 'No matching EMIs found'
-									: 'All EMIs Are Already Up To Date'}
+									: activeTab === 'newly_synced'
+									? 'All EMIs Are Already Up To Date'
+									: 'No Synced Loans Found'}
 							</h3>
 							<p className="text-xs text-slate-500 max-w-lg mx-auto mt-1">
 								{searchTerm
 									? `No records matched "${searchTerm}". Try another search term.`
-									: '0 new installments synced. All matching loan installments were already synced previously and are not repeated here.'}
+									: activeTab === 'newly_synced'
+									? '0 new installments updated in this sync run. All matching loan installments were already synced previously and are kept up to date.'
+									: 'When DayBook entries match loan installments, their received dates will be automatically displayed here.'}
 							</p>
+							{!searchTerm && activeTab === 'newly_synced' && syncedItems.length > 0 && (
+								<button
+									type="button"
+									onClick={() => setActiveTab('all_synced')}
+									className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-primary hover:bg-primary-focus shadow-xs active:scale-95 transition-all cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[16px]">visibility</span>
+									<span>View All {syncedItems.length} Synced Collections</span>
+								</button>
+							)}
 						</div>
 					) : (
 						<div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-2xs bg-white">
@@ -262,14 +334,6 @@ export default function SyncedLoansModal({
 								</thead>
 								<tbody className="divide-y divide-slate-100 font-medium">
 									{filteredItems.map((item, index) => {
-										const initials = (item.clientName || 'C')
-											.split(' ')
-											.filter(Boolean)
-											.slice(0, 2)
-											.map((n) => n[0])
-											.join('')
-											.toUpperCase();
-
 										return (
 											<tr
 												key={item.id || `${item.loanId}-${item.emiNo}-${index}`}
@@ -306,7 +370,7 @@ export default function SyncedLoansModal({
 															title="View loan details"
 														>
 															<span>{item.loanId}</span>
-															<span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity" style={{fontSize: "14px"}}>
+															<span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity" style={{fontSize: '14px'}}>
 																open_in_new
 															</span>
 														</button>
@@ -355,20 +419,9 @@ export default function SyncedLoansModal({
 				</div>
 
 				{/* Modal Footer Section */}
-				<div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
-					<div className="text-xs text-slate-500">
-						💡 <span className="font-semibold text-slate-700">Sync Rule:</span> DayBook sync proceeds only when received date is empty. Once filled, that EMI will not be re-synced.
-					</div>
-
-					<div className="flex items-center gap-2.5">
-						<button
-							type="button"
-							onClick={onClose}
-							className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-primary to-orange-600 hover:from-primary/95 hover:to-orange-500 shadow-md shadow-primary/25 active:scale-95 transition-all cursor-pointer inline-flex items-center gap-1.5"
-						>
-							<span className="material-symbols-outlined text-[16px]">done_all</span>
-							<span>Continue to Dashboard</span>
-						</button>
+				<div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
+					<div className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs text-slate-500">
+						<span>💡 <span className="font-semibold text-slate-700">Sync Rule:</span> DayBook sync proceeds only when received date is empty. Once filled, that EMI will not be re-synced.</span>
 					</div>
 				</div>
 			</div>

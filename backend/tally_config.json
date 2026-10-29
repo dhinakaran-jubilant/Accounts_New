@@ -1,9 +1,9 @@
 {
     "render_api_url": "https://accounts-new-ljja.onrender.com",
     "enabled": true,
-    "last_sync_time": "27-10-2026 03:01 PM",
+    "last_sync_time": "28-10-2026 05:28 PM",
     "last_sync_status": "SUCCESS",
-    "last_sync_message": "Synced 1 payout date(s) into LoanDesk based on Loan ID.",
+    "last_sync_message": "Synced 0 payout date(s) into LoanDesk based on Loan ID.",
     "total_synced_count": 1,
     "api_key": "tally_live_sec_8f92e4a19b0d4c728391"
 }

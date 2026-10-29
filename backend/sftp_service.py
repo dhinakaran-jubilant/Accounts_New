@@ -12,9 +12,13 @@ import json
 import time
 import datetime
 import threading
+import pandas as pd
 try:
     import paramiko
-except ImportError:
+except Exception as _p_err:
+    print(f"[SFTP] Failed to import paramiko: {_p_err}")
+    import traceback
+    traceback.print_exc()
     paramiko = None
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'sftp_config.json')
@@ -85,6 +89,20 @@ def get_sftp_connection(config=None):
     username = config.get("username", "").strip()
     password = config.get("password", "")
     key_path = config.get("key_path", "").strip()
+
+    global paramiko
+    if paramiko is None:
+        try:
+            import paramiko as _p
+            paramiko = _p
+        except Exception:
+            try:
+                import subprocess, sys
+                subprocess.run([sys.executable, "-m", "pip", "install", "paramiko"], capture_output=True, timeout=90)
+                import paramiko as _p
+                paramiko = _p
+            except Exception:
+                pass
 
     if paramiko is None:
         raise ValueError("The 'paramiko' library is required for SFTP. Please run: pip install paramiko")
@@ -163,7 +181,10 @@ def test_sftp_connection(config_data=None):
 
 
 def download_sftp_daybooks(target_folder=None, config_data=None):
-    """Download only the latest uploaded daybook Excel file from remote SFTP server to local target folder."""
+    """
+    Connects to the SFTP server, locates the configured folder path, finds the last uploaded
+    DayBook file (most recent based on filename date and modified timestamp), and downloads it.
+    """
     if not target_folder:
         target_folder = DEFAULT_DOWNLOAD_FOLDER
 
@@ -177,37 +198,53 @@ def download_sftp_daybooks(target_folder=None, config_data=None):
     downloaded_files = []
 
     try:
+        # Locate remote folder path
         try:
             file_list = sftp.listdir_attr(remote_dir)
         except Exception:
-            remote_dir = "."
-            file_list = sftp.listdir_attr(remote_dir)
+            clean_remote = remote_dir.strip('"').strip("'").rstrip('/')
+            try:
+                file_list = sftp.listdir_attr(clean_remote)
+                remote_dir = clean_remote
+            except Exception:
+                remote_dir = "."
+                file_list = sftp.listdir_attr(remote_dir)
 
-        # Filter valid Excel files (ignore hidden / temp files starting with . or ~$)
-        excel_items = []
+        # Filter valid DayBook files (ignore hidden or temporary lock files starting with . or ~$)
+        daybook_items = []
         for attr in file_list:
             fname = attr.filename
             if fname.startswith('.') or fname.startswith('~$'):
                 continue
-            if fname.lower().endswith(('.xlsx', '.xls')):
-                excel_items.append(attr)
+            if fname.lower().endswith(('.xlsx', '.xls', '.csv')):
+                daybook_items.append(attr)
 
-        if excel_items:
+        if daybook_items:
             def file_sort_key(attr):
                 fname = attr.filename
-                m = re.search(r'\d{8}', fname)
-                date_num = int(m.group(0)) if m else 0
-                mtime = getattr(attr, 'st_mtime', 0)
+                # Extract date from filename (e.g. 20261027 or 2026-10-27)
+                m = re.search(r'(\d{4})[-_]?(\d{2})[-_]?(\d{2})', fname)
+                date_num = 0
+                if m:
+                    try:
+                        date_num = int(m.group(1) + m.group(2) + m.group(3))
+                    except Exception:
+                        pass
+                mtime = getattr(attr, 'st_mtime', 0) or 0
                 return (date_num, mtime)
 
-            excel_items.sort(key=file_sort_key, reverse=True)
-            latest_attr = excel_items[0]
-            fname = latest_attr.filename
-
-            remote_path = fname if remote_dir in (".", "/") else f"{remote_dir.rstrip('/')}/{fname}"
-            local_path = os.path.join(target_folder, fname)
-            sftp.get(remote_path, local_path)
-            downloaded_files.append((local_path, fname))
+            # Sort descending to get newest files first
+            daybook_items.sort(key=file_sort_key, reverse=True)
+            # Download recent files (up to 5 most recent DayBook files)
+            for attr in daybook_items[:5]:
+                fname = attr.filename
+                remote_path = fname if remote_dir in (".", "/") else f"{remote_dir.rstrip('/')}/{fname}"
+                local_path = os.path.join(target_folder, fname)
+                try:
+                    sftp.get(remote_path, local_path)
+                    downloaded_files.append((local_path, fname))
+                except Exception as _e_dl:
+                    print(f"[SFTP] Warning downloading {fname}: {_e_dl}")
 
         return downloaded_files
     finally:
@@ -219,93 +256,96 @@ def download_sftp_daybooks(target_folder=None, config_data=None):
             except Exception: pass
 
 
-def process_day_book_for_joint_loans(file_path, account_name=None):
-    """
-    Parses a DayBook Excel file (from SFTP or manual upload), identifies collection/receipt
-    transactions, and automatically updates the corresponding Joint Loan repayment schedule's
-    received_date (`recd_date`) in PostgreSQL.
-    """
-    if not os.path.exists(file_path):
-        return {"success": False, "error": f"File '{file_path}' does not exist."}
+def parse_date_robustly(val):
+    """Parse various date formats into datetime.datetime object."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
+    if isinstance(val, datetime.datetime):
+        return val
+    if isinstance(val, datetime.date):
+        return datetime.datetime(val.year, val.month, val.day)
+    s = str(val).strip()
+    if not s or s.lower() in ('nan', 'none', 'null', '-', '—', 'dd-mm-yyyy'):
+        return None
+    s = re.sub(r'[/.]', '-', s)
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d-%m-%y", "%m-%d-%Y", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except (ValueError, TypeError):
+            continue
+    m = re.match(r"^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})$", s)
+    if m:
+        try:
+            return datetime.datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except Exception:
+            pass
+    return None
 
+
+def get_acronym(name):
+    """Resolve acronym for a primary account name."""
+    if not name:
+        return ''
+    raw_str = str(name).strip()
+    if not raw_str:
+        return ''
+    n = raw_str.lower()
+    try:
+        from models import AccountName
+        all_accounts = AccountName.query.all()
+        for acc in all_accounts:
+            acr = (acc.acronym or '').strip().upper()
+            acc_name = (acc.name or '').strip().lower()
+            if acr.lower() == n or acc_name == n:
+                return acr
+    except Exception:
+        pass
+    words = raw_str.split()
+    if len(words) > 1:
+        return ''.join(w[0] for w in words).upper()
+    return raw_str[:4].upper()
+
+
+def is_installment_received_filled(inst):
+    """
+    Check if an installment already has a valid received date filled,
+    either in received_date column or inside splits JSON.
+    User requirement: "if recd date is filled dont sync that"
+    """
+    if not inst:
+        return False
+    import json
+    recd = str(inst.received_date or '').strip()
+    if recd and recd.lower() not in ('-', '—', 'none', 'null', 'dd-mm-yyyy', ''):
+        return True
+    if getattr(inst, 'splits', None):
+        try:
+            sp = json.loads(inst.splits) if isinstance(inst.splits, str) else inst.splits
+            if isinstance(sp, dict):
+                r_a = str(sp.get('recdDateA') or '').strip()
+                if r_a and r_a.lower() not in ('-', '—', 'none', 'null', 'dd-mm-yyyy', ''):
+                    return True
+                r_d = str(sp.get('recdDate') or '').strip()
+                if r_d and r_d.lower() not in ('-', '—', 'none', 'null', 'dd-mm-yyyy', ''):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def process_day_book_file_internal(file_path, account_name='Unknown'):
+    """
+    Parses a DayBook Excel file, handles Reversal Payment Vouchers, validates account folder,
+    and updates matching Joint Loan repayment schedule received dates and splits in PostgreSQL.
+    """
     import pandas as pd
     from models import db, Loan, RepaymentSchedule
 
-    # 1. Read Excel file with auto-header promotion
-    try:
-        df_raw = pd.read_excel(file_path, header=None)
-        header_idx = None
-        for idx in range(min(30, len(df_raw))):
-            row_vals = [str(c).strip().upper() for c in df_raw.iloc[idx] if pd.notna(c)]
-            if len(row_vals) >= 4:
-                has_date = any('DATE' in v for v in row_vals)
-                has_particulars_or_vch = any(k in v for v in row_vals for k in ('PARTICULARS', 'DETAILS', 'VOUCHER', 'INSTRUMENT'))
-                if has_date and has_particulars_or_vch:
-                    header_idx = idx
-                    break
-
-        if header_idx is not None:
-            headers = [
-                str(c).strip() if pd.notna(c) and str(c).strip().lower() not in ('nan', 'none') else f"Col_{i}"
-                for i, c in enumerate(df_raw.iloc[header_idx])
-            ]
-            df = df_raw.iloc[header_idx + 1:].copy()
-            df.columns = headers
-            df = df.dropna(how='all').reset_index(drop=True)
-        else:
-            df = pd.read_excel(file_path)
-    except Exception as e:
-        return {"success": False, "error": f"Could not read Excel file: {str(e)}"}
-
-    if df.empty:
-        return {
-            "success": True,
-            "updated_count": 0,
-            "updated_details": [],
-            "skipped_details": ["Excel file contains no data rows."],
-            "mismatch_details": []
-        }
-
-    # 2. Identify relevant column names
-    col_map = {}
-    for col in df.columns:
-        c_norm = re.sub(r'[\s_\-]+', ' ', str(col).strip().lower())
-        if not col_map.get('date') and any(k in c_norm for k in ('txn date', 'trans date', 'value date', 'date')):
-            col_map['date'] = col
-        elif not col_map.get('inst_no') and any(k in c_norm for k in ('instrument no', 'cheque no', 'chq no', 'ref no', 'instrument', 'cheque')):
-            col_map['inst_no'] = col
-        elif not col_map.get('credit') and ('credit' in c_norm or 'cr' == c_norm):
-            col_map['credit'] = col
-        elif not col_map.get('debit') and ('debit' in c_norm or 'dr' == c_norm):
-            col_map['debit'] = col
-        elif not col_map.get('amount') and any(k in c_norm for k in ('amount', 'total')):
-            col_map['amount'] = col
-        elif not col_map.get('particulars') and any(k in c_norm for k in ('particulars', 'party', 'ledger', 'customer', 'description', 'narration', 'details')):
-            col_map['particulars'] = col
-        elif not col_map.get('voucher_type') and any(k in c_norm for k in ('voucher type', 'vch type')):
-            col_map['voucher_type'] = col
-
-    # Helper date formatter
-    def normalize_date_str(val):
-        if pd.isna(val) or val is None:
-            return ''
-        if hasattr(val, 'strftime'):
-            return val.strftime('%d-%m-%Y')
-        s = str(val).strip()
-        if s.lower() in ('nan', 'none', ''):
-            return ''
-        m = re.match(r"^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{4})$", s)
-        if m:
-            return f"{int(m.group(1)):02d}-{int(m.group(2)):02d}-{m.group(3)}"
-        m2 = re.match(r"^(\d{1,2})[\-\/](\d{1,2})[\-\/](\d{2})$", s)
-        if m2:
-            return f"{int(m2.group(1)):02d}-{int(m2.group(2)):02d}-20{m2.group(3)}"
-        m3 = re.match(r"^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})", s)
-        if m3:
-            return f"{int(m3.group(3)):02d}-{int(m3.group(2)):02d}-{m3.group(1)}"
-        return s
-
-    # 3. Fetch active Joint Loans from DB
     from flask import current_app
     ctx = None
     if not current_app:
@@ -317,220 +357,398 @@ def process_day_book_for_joint_loans(file_path, account_name=None):
             pass
 
     try:
-        loans = Loan.query.filter(Loan.is_deleted == False).all()
-        joint_loans = [
-            l for l in loans 
-            if not getattr(l, 'loan_type', None) or str(l.loan_type).lower() in ('joint', 'joint_loan', 'joint-loan')
-        ]
-        if not joint_loans:
-            joint_loans = loans
-    except Exception as db_err:
-        return {"success": False, "error": f"Database query failed: {str(db_err)}"}
+        df = pd.read_excel(file_path)
+        cols = [str(c).strip() for c in df.columns]
+        if 'Voucher Type' not in cols or 'Particulars' not in cols:
+            # Header not in row 0, inspect top 30 rows for the table header row
+            raw_df = pd.read_excel(file_path, header=None)
+            header_idx = None
+            for idx, row in raw_df.head(30).iterrows():
+                row_str = [str(x).strip() for x in row.values if pd.notna(x)]
+                if 'Voucher Type' in row_str or ('Particulars' in row_str and 'Transaction Date' in row_str):
+                    header_idx = idx
+                    break
+            if header_idx is not None:
+                df = pd.read_excel(file_path, header=header_idx)
 
-    # Clean cheque function: remove non-alphanumeric, strip leading zeroes, uppercase
-    def clean_chq(val):
-        if not val or pd.isna(val):
-            return ''
-        return re.sub(r'[^A-Za-z0-9]', '', str(val)).lstrip('0').upper()
+        # Clean column names to prevent matching issues from trailing spaces
+        df.columns = df.columns.str.strip()
 
-    # Helper: Check if an EMI installment already has received_date filled
-    def is_received_filled(sch):
-        if not sch:
-            return False
-        r = str(sch.received_date or '').strip()
-        if r and r not in ('', 'None', '-', '—', 'null'):
-            return True
-        if sch.splits:
-            try:
-                sp_data = json.loads(sch.splits) if isinstance(sch.splits, str) else sch.splits
-                if isinstance(sp_data, dict):
-                    r_a = str(sp_data.get('recdDateA') or '').strip()
-                    r_gen = str(sp_data.get('recdDate') or '').strip()
-                    if (r_a and r_a not in ('', 'None', '-', '—', 'null')) or (r_gen and r_gen not in ('', 'None', '-', '—', 'null')):
-                        return True
-            except Exception:
-                pass
-        return False
+        # Clean Voucher Type values
+        if "Voucher Type" in df.columns:
+            df["Voucher Type"] = df["Voucher Type"].astype(str).str.strip()
 
-    chq_to_schedules = {}
-    for loan in joint_loans:
-        for sch in loan.repayment_schedule:
-            # Once received date is filled, do not sync that EMI
-            if is_received_filled(sch):
-                continue
-            c = clean_chq(sch.cheque_no)
-            if c:
-                chq_to_schedules.setdefault(c, []).append((loan, sch))
+        receipt_df = df[df["Voucher Type"] == "Receipt Voucher"].copy()
 
-    updated_count = 0
-    updated_items = []
-    updated_details = []
-    skipped_details = []
-    mismatch_details = []
-    matched_sch_ids = set()
+        # --- Pre-check for Reversals and Execute DB Reversals ---
+        reversed_instruments = set()
+        reversed_vouchers = set()
 
-    for idx, row in df.iterrows():
-        # A. Filter for Receipt vouchers if Voucher Type column is present
-        vch_type = str(row.get(col_map.get('voucher_type', ''), '')).lower() if col_map.get('voucher_type') else ''
-        if vch_type and 'receipt' not in vch_type and 'rcpt' not in vch_type:
-            continue
+        # Clean values (like Instrument No or Voucher Number): remove .0 and strip whitespace
+        def clean_val(v):
+            if pd.isna(v) or v is None:
+                return None
+            s = str(v).strip()
+            if s.endswith('.0'):
+                s = s[:-2]
+            return s if s else None
 
-        # Determine credit/receipt amount
-        credit_val = 0.0
-        if col_map.get('credit') and pd.notna(row[col_map['credit']]):
-            try:
-                credit_val = float(str(row[col_map['credit']]).replace(',', '').strip() or 0)
-            except Exception:
-                credit_val = 0.0
-        elif col_map.get('amount') and pd.notna(row[col_map['amount']]):
-            try:
-                credit_val = float(str(row[col_map['amount']]).replace(',', '').strip() or 0)
-            except Exception:
-                credit_val = 0.0
+        def extract_vnum_from_comment(comment):
+            if not isinstance(comment, str):
+                return None
+            match = re.search(r'([A-Za-z0-9]+)_\d+', comment)
+            if match:
+                return clean_val(match.group(1))
+            return None
 
-        if credit_val <= 0:
-            continue
+        # Build mapping of Receipt Voucher Number -> EMI number from receipt vouchers
+        voucher_to_emi_map = {}
+        for _, r_row in df[df["Voucher Type"] == "Receipt Voucher"].iterrows():
+            v_num = clean_val(r_row.get("Voucher Number"))
+            r_comm = str(r_row.get("Comments", ""))
+            r_part = str(r_row.get("Particulars", ""))
+            emi_no = None
+            if '_' in r_comm:
+                try:
+                    emi_m = re.search(r'_(\d+)\b', r_comm)
+                    if emi_m:
+                        emi_no = int(emi_m.group(1))
+                    else:
+                        emi_no = int(r_comm.split('_')[-1].strip())
+                except (ValueError, TypeError):
+                    pass
+            if v_num and emi_no:
+                voucher_to_emi_map[v_num] = (r_part, emi_no)
 
-        # B. Get transaction date
-        raw_date = row.get(col_map.get('date', '')) if col_map.get('date') else None
-        txn_date_str = normalize_date_str(raw_date)
-        if not txn_date_str:
-            continue
+        updated_count = 0
+        updated_items = []
+        updated_details = []
+        skipped_details = []
+        mismatch_details = []
 
-        # C. Get instrument number & particulars
-        raw_inst = str(row.get(col_map.get('inst_no', ''), '')).strip() if col_map.get('inst_no') else ''
-        cleaned_inst = clean_chq(raw_inst)
+        # Snapshot of all loan installments where received date is ALREADY filled in PostgreSQL
+        # User requirement: "if recd date is filled dont sync that"
+        already_filled_installments = set()
+        for l_rec in Loan.query.filter_by(approval_status='APPROVED', is_deleted=False).all():
+            sys_s = [s for s in l_rec.repayment_schedule if s.type != 'manual']
+            for s_idx, s_inst in enumerate(sys_s):
+                if is_installment_received_filled(s_inst):
+                    already_filled_installments.add((l_rec.id, s_idx + 1))
+                    if l_rec.loan_ref_id:
+                        already_filled_installments.add((l_rec.loan_ref_id.strip().upper(), s_idx + 1))
 
-        particulars_str = str(row.get(col_map.get('particulars', ''), '')).strip() if col_map.get('particulars') else ''
-        particulars_lower = particulars_str.lower()
+        if "Voucher Type" in df.columns and "Comments" in df.columns:
+            rev_mask = (df["Voucher Type"] == "Payment Voucher") & (df["Comments"].astype(str).str.contains("Reversal EMI", na=False, case=False))
 
-        matched_pair = None
+            if "Instrument No." in df.columns:
+                reversed_instruments = {clean_val(v) for v in df[rev_mask]["Instrument No."].dropna() if clean_val(v)}
 
-        # Stage 1: Exact Cheque / Instrument No match (only if received date not filled)
-        if cleaned_inst and len(cleaned_inst) >= 2:
-            candidates = chq_to_schedules.get(cleaned_inst, [])
-            for loan, sch in candidates:
-                if sch.id not in matched_sch_ids and not is_received_filled(sch):
-                    if len(candidates) == 1 or abs(float(sch.amount or 0) - credit_val) < 1.0:
-                        matched_pair = (loan, sch)
+            receipt_vcs = set()
+            if "Voucher Number" in df.columns:
+                receipt_vcs = {clean_val(v) for v in df[df["Voucher Type"] == "Receipt Voucher"]["Voucher Number"].dropna() if clean_val(v)}
+
+            for rc in df[df["Voucher Type"] == "Receipt Voucher"]["Comments"].dropna().astype(str):
+                ev = extract_vnum_from_comment(rc)
+                if ev:
+                    receipt_vcs.add(ev)
+
+            rev_comments = df[rev_mask]["Comments"].dropna().astype(str).tolist()
+            for comment in rev_comments:
+                for vnum in receipt_vcs:
+                    if vnum and vnum in comment:
+                        reversed_vouchers.add(vnum)
+
+            # --- Clear DB received_date for Reversal Payment Vouchers ---
+            all_approved_loans_rev = [l for l in Loan.query.filter_by(approval_status='APPROVED', is_deleted=False).all() if l.loan_ref_id]
+            for _, rev_row in df[rev_mask].iterrows():
+                rev_comm = str(rev_row.get("Comments", ""))
+                rev_part = str(rev_row.get("Particulars", ""))
+                rev_det = str(rev_row.get("Details", ""))
+                row_full_text = f"{rev_part} {rev_det} {rev_comm}"
+
+                rev_vnum = extract_vnum_from_comment(rev_comm)
+                if not rev_vnum and "_" in rev_comm:
+                    rev_vnum = rev_comm.split('_')[-1].strip()
+
+                if rev_vnum and rev_vnum in voucher_to_emi_map:
+                    mapped_text, _ = voucher_to_emi_map[rev_vnum]
+                    row_full_text += f" {mapped_text}"
+
+                loan_obj = None
+                row_text_upper = row_full_text.upper()
+                for l in all_approved_loans_rev:
+                    lid = (l.loan_ref_id or "").strip()
+                    lid_upper = lid.upper()
+                    core_lid = lid_upper[2:] if lid_upper.startswith('JL') else lid_upper
+                    if lid in row_full_text or lid_upper in row_text_upper:
+                        loan_obj = l
+                        break
+                    if core_lid and core_lid in row_text_upper:
+                        loan_obj = l
                         break
 
-        # Stage 2: Cheque number inside Description/Particulars + Amount match (only if received date not filled)
-        if not matched_pair:
-            for loan in joint_loans:
-                for sch in loan.repayment_schedule:
-                    if sch.id in matched_sch_ids or is_received_filled(sch):
-                        continue
-                    c_num = clean_chq(sch.cheque_no)
-                    if c_num and len(c_num) >= 4 and c_num in particulars_str.upper():
-                        if abs(float(sch.amount or 0) - credit_val) < 1.0 or abs(float(sch.amount or 0) + float(sch.interest_amount or 0) - credit_val) < 1.0:
-                            matched_pair = (loan, sch)
-                            break
-                if matched_pair:
-                    break
-
-        # Stage 3: Client Account Name in Particulars + Amount match (only if received date not filled)
-        if not matched_pair:
-            for loan in joint_loans:
-                client_name = (loan.client_account_name or '').lower().strip()
-                if client_name and len(client_name) >= 3 and client_name in particulars_lower:
-                    for sch in loan.repayment_schedule:
-                        if sch.id in matched_sch_ids or is_received_filled(sch):
-                            continue
-                        sch_amt = float(sch.amount or 0)
-                        tot_amt = sch_amt + float(sch.interest_amount or 0)
-                        if abs(sch_amt - credit_val) < 1.0 or abs(tot_amt - credit_val) < 1.0:
-                            matched_pair = (loan, sch)
-                            break
-                if matched_pair:
-                    break
-
-        # Apply update if matched and received date is not filled
-        if matched_pair:
-            loan, sch = matched_pair
-            if is_received_filled(sch):
-                continue
-            matched_sch_ids.add(sch.id)
-            current_recd = str(sch.received_date or '').strip()
-
-            if current_recd != txn_date_str:
-                sch.received_date = txn_date_str
-
-                # Update splits JSON if present
-                if sch.splits:
+                emi_no = None
+                if rev_vnum and rev_vnum in voucher_to_emi_map:
+                    _, emi_no = voucher_to_emi_map[rev_vnum]
+                elif '_' in rev_comm:
                     try:
-                        sp_data = json.loads(sch.splits) if isinstance(sch.splits, str) else sch.splits
+                        emi_m = re.search(r'_(\d+)\b', rev_comm)
+                        if emi_m:
+                            emi_no = int(emi_m.group(1))
+                        else:
+                            emi_no = int(rev_comm.split('_')[-1].strip())
+                    except (ValueError, TypeError):
+                        pass
+
+                if loan_obj and emi_no:
+                    sys_schedule = [s for s in loan_obj.repayment_schedule if s.type != 'manual']
+                    if 1 <= emi_no <= len(sys_schedule):
+                        target_inst = sys_schedule[emi_no - 1]
+                        # User requirement: "if recd date is filled dont sync that"
+                        # If received date is already filled, never clear or re-sync it
+                        if (loan_obj.id, emi_no) in already_filled_installments or is_installment_received_filled(target_inst):
+                            skipped_details.append(
+                                f"Reversal skipped for Loan #{loan_obj.id} ({loan_obj.loan_ref_id}) EMI {emi_no}: "
+                                f"Received date is already filled ('{target_inst.received_date}')."
+                            )
+                            continue
+
+                        if target_inst.received_date and str(target_inst.received_date).strip() and str(target_inst.received_date).strip() != 'dd-mm-yyyy':
+                            target_inst.received_date = ''
+                            if target_inst.splits:
+                                try:
+                                    sp_d = json.loads(target_inst.splits) if isinstance(target_inst.splits, str) else target_inst.splits
+                                    if isinstance(sp_d, dict):
+                                        sp_d['recdDateA'] = ''
+                                        sp_d['recdDate'] = ''
+                                        target_inst.splits = json.dumps(sp_d)
+                                except Exception:
+                                    pass
+                            updated_count += 1
+                            updated_details.append(f"REVERSED & CLEARED: Loan #{loan_obj.id} - {loan_obj.loan_ref_id} - {loan_obj.client_account_name} - EMI {emi_no}")
+        # -------------------------------
+
+        # --- Validation: Ensure file matches the account folder ---
+        mismatch_found = False
+        mismatch_acronym = ""
+        valid_sample_count = 0
+
+        # Skip validation for individual imports (where account_name is "Unknown")
+        if account_name != 'Unknown':
+            for _, row in receipt_df.iterrows():
+                try:
+                    p_text = str(row.get("Particulars", ""))
+                    p_parts = p_text.split('-')
+                    if len(p_parts) < 2:
+                        continue
+                    l_ref = p_parts[-1].strip()
+
+                    loan_obj = Loan.query.filter_by(loan_ref_id=l_ref, is_deleted=False).first()
+                    if not loan_obj and not l_ref.upper().startswith('JL'):
+                        loan_obj = Loan.query.filter_by(loan_ref_id=f"JL{l_ref}", is_deleted=False).first()
+                    if loan_obj:
+                        loan_acronym = get_acronym(loan_obj.primary_account_name)
+                        if loan_acronym != account_name:
+                            mismatch_found = True
+                            mismatch_acronym = loan_acronym
+                            break
+                        valid_sample_count += 1
+                        if valid_sample_count >= 5: # Checked 5 and they all match
+                            break
+                except Exception:
+                    continue
+
+            if mismatch_found:
+                return {
+                    'success': False,
+                    'error': f'Incorrect Folder: This file appears to contain data for {mismatch_acronym}, but was uploaded to the {account_name} folder. Please upload to the correct folder.'
+                }
+        # ---------------------------------------------------------
+
+        # Get all approved loans for substring matching (sorted by length descending for precision)
+        all_approved_loans = [l for l in Loan.query.filter_by(approval_status='APPROVED', is_deleted=False).all() if l.loan_ref_id]
+        all_approved_loans.sort(key=lambda x: len(x.loan_ref_id), reverse=True)
+
+        for index, row in receipt_df.iterrows():
+            try:
+                # Robust cleaning for Instrument No
+                inst_raw = row.get("Instrument No.")
+                instrument_no = clean_val(inst_raw) if pd.notna(inst_raw) else ""
+
+                if instrument_no and instrument_no in reversed_instruments:
+                    skipped_details.append(f"Row {index+1}: Instrument No '{instrument_no}' is in Reversal Set")
+                    continue
+
+                vnum_raw = row.get("Voucher Number")
+                vnum = clean_val(vnum_raw) if pd.notna(vnum_raw) else ""
+
+                if not vnum:
+                    vnum = extract_vnum_from_comment(str(row.get("Comments", "")))
+
+                if vnum and vnum in reversed_vouchers:
+                    skipped_details.append(f"Row {index+1}: Voucher Number '{vnum}' is in Reversal Set")
+                    continue
+
+                particulars = str(row.get("Particulars", ""))
+                comments = str(row.get("Comments", ""))
+                trans_date_raw = row.get("Transaction Date")
+
+                # --- New Substring Matching Logic ---
+                # Check which DB loan ID is present in the daybook particulars or comments
+                loan = None
+                p_upper = particulars.upper()
+                c_upper = comments.upper()
+                for l in all_approved_loans:
+                    lid = (l.loan_ref_id or "").strip()
+                    lid_upper = lid.upper()
+                    core_lid = lid_upper[2:] if lid_upper.startswith('JL') else lid_upper
+                    if lid in particulars or lid in comments or lid_upper in p_upper or lid_upper in c_upper:
+                        loan = l
+                        break
+                    if core_lid and (core_lid in p_upper or core_lid in c_upper):
+                        loan = l
+                        break
+
+                if not loan:
+                    skipped_details.append(f"Row {index+1}: No matching Loan ID found in Particulars '{particulars}'")
+                    continue
+
+                loan_ref_id = loan.loan_ref_id
+                # -------------------------------------
+
+                emi_parts = comments.split('_')
+                if len(emi_parts) < 2:
+                    skipped_details.append(f"Row {index+1} ({loan_ref_id}): Comments '{comments}' missing '_'")
+                    continue
+                try:
+                    emi_m = re.search(r'_\s*(\d+)\b', comments)
+                    if emi_m:
+                        emi_no = int(emi_m.group(1))
+                    else:
+                        emi_no = int(emi_parts[-1].strip())
+                except ValueError:
+                    skipped_details.append(f"Row {index+1} ({loan_ref_id}): EMI '{emi_parts[-1]}' not a number")
+                    continue
+
+                rec_dt = parse_date_robustly(trans_date_raw)
+                if not rec_dt:
+                    skipped_details.append(f"Row {index+1} ({loan_ref_id}): Missing or Invalid Transaction Date")
+                    continue
+                received_date = rec_dt.strftime("%d-%m-%Y")
+
+                if loan.approval_status != 'APPROVED':
+                    skipped_details.append(f"{loan_ref_id}: Status '{loan.approval_status}' is not APPROVED")
+                    continue
+
+                system_schedule = [s for s in loan.repayment_schedule if s.type != 'manual']
+                if emi_no < 1 or emi_no > len(system_schedule):
+                    skipped_details.append(f"{loan_ref_id}: EMI {emi_no} out of range (Total {len(system_schedule)})")
+                    continue
+
+                target_installment = system_schedule[emi_no - 1]
+
+                loan_key_id = (loan.id, emi_no)
+                loan_key_ref = (loan.loan_ref_id.strip().upper(), emi_no) if loan.loan_ref_id else None
+
+                # User requirement: "if recd date is filled dont sync that"
+                # Strictly skip if received date is already filled in received_date or splits
+                if (loan_key_id in already_filled_installments or 
+                    (loan_key_ref and loan_key_ref in already_filled_installments) or 
+                    is_installment_received_filled(target_installment)):
+                    existing_dt = str(target_installment.received_date or '').strip()
+                    if not existing_dt and target_installment.splits:
+                        try:
+                            sp_t = json.loads(target_installment.splits) if isinstance(target_installment.splits, str) else target_installment.splits
+                            existing_dt = sp_t.get('recdDateA') or sp_t.get('recdDate') or ''
+                        except Exception:
+                            pass
+                    skipped_details.append(f"{loan_ref_id} EMI {emi_no}: Already has received date '{existing_dt or 'filled'}', skipping sync.")
+                    continue
+
+                try:
+                    due_dt = parse_date_robustly(target_installment.date)
+                    if not due_dt:
+                        skipped_details.append(f"{loan_ref_id} EMI {emi_no}: Installment due date '{target_installment.date}' format invalid")
+                        continue
+                except Exception as e:
+                    skipped_details.append(f"{loan_ref_id} EMI {emi_no}: Date Error ({str(e)})")
+                    continue
+
+                # Compare Credit with total installment amount - checked only after EMI number and Date checks pass
+                expected_amount = target_installment.amount
+
+                credit_val = row.get("Credit")
+                try:
+                    # Clean and parse Credit amount
+                    credit_str = str(credit_val).replace(',', '').strip() if pd.notna(credit_val) else "0"
+                    credit_amount = float(credit_str)
+                except ValueError:
+                    credit_amount = 0.0
+
+                if round(abs(expected_amount - credit_amount), 2) > 0.05:
+                    mismatch_details.append(
+                        f"Row {index+1} ({loan_ref_id} EMI {emi_no}): Installment amount is {expected_amount:.2f}, but Credit column has {credit_amount:.2f}."
+                    )
+                    continue
+
+                target_installment.received_date = received_date
+
+                # Update splits JSON if present (only received date)
+                if target_installment.splits:
+                    try:
+                        sp_data = json.loads(target_installment.splits) if isinstance(target_installment.splits, str) else target_installment.splits
                         if isinstance(sp_data, dict):
-                            if not sp_data.get('recdDateA'):
-                                sp_data['recdDateA'] = txn_date_str
-                            if not sp_data.get('recdDate'):
-                                sp_data['recdDate'] = txn_date_str
-                            sch.splits = json.dumps(sp_data)
+                            sp_data['recdDateA'] = received_date
+                            sp_data['recdDate'] = received_date
+                            target_installment.splits = json.dumps(sp_data)
                     except Exception:
                         pass
 
-                # Update payout approval workflow (consistent with app.py)
-                if not getattr(sch, 'payout_approved_by', None):
-                    sch.payout_approval_status = 'PENDING'
-                    sch.payout_approval_target = 'SECONDARY'
-                    sch.payout_requested_role = 'PRIMARY'
-                    sch.payout_requested_by = 'SFTP Sync'
-                    sch.payout_requested_at = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
+                # Mark as filled so subsequent rows in this run will not re-sync it
+                already_filled_installments.add(loan_key_id)
+                if loan_key_ref:
+                    already_filled_installments.add(loan_key_ref)
 
                 updated_count += 1
-                sch_emi_no = 1
-                for s_i, s_obj in enumerate(loan.repayment_schedule):
-                    if s_obj.id == sch.id:
-                        sch_emi_no = s_i + 1
-                        break
-
                 updated_items.append({
-                    'id': f"{loan.id}-{sch.id}",
+                    'id': f"{loan.id}-{target_installment.id}",
                     'loanId': loan.loan_ref_id or f"JL-{loan.id}",
                     'dbLoanId': loan.id,
                     'clientName': loan.client_account_name or 'Client',
-                    'emiNo': sch_emi_no,
-                    'emiDate': sch.date or '',
-                    'receivedDate': txn_date_str,
-                    'amount': float(sch.amount or 0),
+                    'emiNo': emi_no,
+                    'emiDate': target_installment.date or '',
+                    'receivedDate': received_date,
+                    'amount': float(target_installment.amount or 0),
                     'primaryAccount': loan.primary_account_name or '',
                     'status': 'Collected'
                 })
+                updated_details.append(f"Loan #{loan.id} - {loan.loan_ref_id} - {loan.client_account_name} - EMI {emi_no} ({received_date})")
 
-                updated_details.append(
-                    f"Loan #{loan.id} ({loan.client_account_name}) Inst #{sch.id} [Date: {sch.date}, Chq: {sch.cheque_no or 'N/A'}, Amt: {sch.amount}]: received_date updated from '{current_recd or 'None'}' to '{txn_date_str}'"
-                )
-            else:
-                skipped_details.append(
-                    f"Loan #{loan.id} ({loan.client_account_name}) Inst #{sch.id}: received_date already set to '{txn_date_str}'"
-                )
-        else:
-            if credit_val >= 1000:
-                mismatch_details.append(
-                    f"DayBook entry unmatched: Date={txn_date_str}, Amount={credit_val}, InstNo='{raw_inst}', Particulars='{particulars_str[:60]}'"
-                )
+            except Exception as e_row:
+                skipped_details.append(f"Row {index+1} error: {e_row}")
+                continue
 
-    # Commit changes
-    try:
         db.session.commit()
-    except Exception as e_comm:
+        message = f'Successfully updated {updated_count} installments from Day Book.' if updated_count > 0 else "No updates"
+        return {
+            'success': True,
+            'message': message,
+            'updated_count': updated_count,
+            'updated_items': updated_items,
+            'updated_details': updated_details,
+            'skipped_details': skipped_details,
+            'mismatch_details': mismatch_details
+        }
+    except Exception as e:
         db.session.rollback()
-        return {"success": False, "error": f"Database commit failed: {str(e_comm)}"}
+        return {'success': False, 'error': str(e)}
     finally:
         if ctx:
-            try:
-                ctx.pop()
-            except Exception:
-                pass
+            try: ctx.pop()
+            except Exception: pass
 
-    return {
-        "success": True,
-        "updated_count": updated_count,
-        "updated_items": updated_items,
-        "updated_details": updated_details,
-        "skipped_details": skipped_details,
-        "mismatch_details": mismatch_details
-    }
+
+process_day_book_for_joint_loans = process_day_book_file_internal
 
 
 def run_sftp_sync(process_day_book_func=None, target_folder=None):
@@ -544,17 +762,42 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
     config = load_sftp_config(hide_password=False)
 
     try:
-        downloaded = download_sftp_daybooks(target_folder, config)
+        download_err = None
+        try:
+            downloaded = download_sftp_daybooks(target_folder, config)
+        except Exception as e_dl:
+            download_err = str(e_dl)
+            downloaded = []
+
+        # If remote download returned no files or threw an error, check local target_folder as fallback
+        if not downloaded and os.path.exists(target_folder):
+            local_files = [
+                f for f in os.listdir(target_folder)
+                if not f.startswith('.') and not f.startswith('~$') and f.lower().endswith(('.xlsx', '.xls', '.csv'))
+            ]
+            def local_sort_key(f):
+                m = re.search(r'(\d{4})[-_]?(\d{2})[-_]?(\d{2})', f)
+                d_num = int(m.group(1) + m.group(2) + m.group(3)) if m else 0
+                try:
+                    m_t = os.path.getmtime(os.path.join(target_folder, f))
+                except Exception:
+                    m_t = 0
+                return (d_num, m_t)
+
+            local_files.sort(key=local_sort_key, reverse=True)
+            for lf in local_files[:5]:
+                downloaded.append((os.path.join(target_folder, lf), lf))
 
         if not downloaded:
+            err_msg = download_err or "Connected to SFTP, but no Excel (.xlsx/.xls) DayBook files were found."
             sync_result = {
-                "success": True,
-                "message": "Connected to SFTP, but no Excel (.xlsx/.xls) DayBook files were found.",
+                "success": False if download_err else True,
+                "message": err_msg,
                 "total_files": 0,
                 "updated_count": 0,
                 "updated_items": [],
                 "updated_details": [],
-                "skipped_details": ["No Excel files found on SFTP server"],
+                "skipped_details": [err_msg],
                 "mismatch_details": []
             }
         else:
@@ -567,9 +810,13 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
             for local_path, fname in downloaded:
                 acc_name = 'Unknown'
                 if '_DayBook' in fname:
-                    acc_name = fname.split('_DayBook')[0]
+                    cand = fname.split('_DayBook')[0].strip()
+                    if cand and not cand.isdigit() and not re.match(r'^\d{4}', cand):
+                        acc_name = cand
                 elif '_' in fname:
-                    acc_name = fname.split('_')[0]
+                    cand = fname.split('_')[0].strip()
+                    if cand and not cand.isdigit() and not re.match(r'^\d{4}', cand):
+                        acc_name = cand
 
                 res = process_day_book_func(local_path, account_name=acc_name)
 
@@ -583,7 +830,11 @@ def run_sftp_sync(process_day_book_func=None, target_folder=None):
                 else:
                     all_skipped_details.append(f"[{fname}] Processing failed: {res.get('error', 'Unknown error')}")
 
-            msg = f"SFTP Sync Completed: Downloaded {len(downloaded)} file(s), updated {total_updated} installment(s)."
+            if download_err:
+                msg = f"Processed {len(downloaded)} DayBook file(s) (SFTP notice: {download_err}), updated {total_updated} installment(s)."
+            else:
+                msg = f"SFTP Sync Completed: Processed {len(downloaded)} file(s), updated {total_updated} installment(s)."
+
             sync_result = {
                 "success": True,
                 "message": msg,
@@ -659,6 +910,14 @@ def start_sftp_scheduler(app, process_day_book_func=None, target_folder=None, on
                 now = datetime.datetime.now()
                 current_time = now.strftime("%H:%M")
                 today_date = now.strftime("%Y-%m-%d")
+
+                # Normalize scheduled_time to HH:MM format (e.g. '9:00' -> '09:00')
+                parts = scheduled_time.split(":")
+                if len(parts) == 2:
+                    try:
+                        scheduled_time = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+                    except Exception:
+                        pass
 
                 if current_time == scheduled_time and _last_run_date != today_date:
                     print(f"[SFTP Scheduler] Daily sync triggered at {now.strftime('%d-%m-%Y %H:%M:%S')}")

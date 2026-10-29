@@ -15,6 +15,7 @@ import {
 	exportJointLoansListToExcel,
 	exportOutstandingReportPerPrimaryAccount,
 } from '../utils/jointLoanExport';
+import SyncedLoansModal from './dashboard/SyncedLoansModal';
 
 // Status badge styling helper for: Active, Overdue, Date Overdue, Closed, Pending
 export const getStatusBadge = (status) => {
@@ -608,6 +609,7 @@ function ModernAccountSelect({ value, onChange, options = [], placeholder = 'Sel
 					</div>
 				</div>
 			)}
+
 		</div>
 	);
 }
@@ -13307,6 +13309,43 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			return null;
 		}
 	});
+	const [showSyncedLoansModal, setShowSyncedLoansModal] = useState(false);
+	const [lastSyncResult, setLastSyncResult] = useState(null);
+	const [dailySyncTime, setDailySyncTime] = useState('09:00');
+	const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
+
+	// Extract synchronized loan installments for popup modal
+	const syncedInstallments = useMemo(() => {
+		const items = [];
+		(loans || []).forEach((loan) => {
+			const schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+			schedule.forEach((sch, idx) => {
+				let recd = (sch.received_date || sch.receivedDate || '').trim();
+				if (!recd && sch.splits) {
+					try {
+						const sp = typeof sch.splits === 'string' ? JSON.parse(sch.splits) : sch.splits;
+						recd = (sp?.recdDateA || sp?.recdDate || '').trim();
+					} catch (e) {}
+				}
+				if (recd && recd !== '-' && recd !== '—' && recd !== 'None' && recd !== 'null' && recd.toLowerCase() !== 'dd-mm-yyyy') {
+					items.push({
+						id: `${loan.id}-${sch.id || idx}`,
+						loanId: loan.loan_ref_id || loan.id,
+						dbLoanId: loan.id,
+						clientName: loan.client_account_name || loan.primaryBorrower?.name || 'Client',
+						emiNo: sch.sNo || sch.installmentNumber || idx + 1,
+						emiDate: sch.date || '',
+						receivedDate: recd,
+						paymentDate: sch.payment_date || '',
+						amount: Number(sch.amount) || 0,
+						primaryAccount: loan.primary_account_name || loan.primaryAccountName || '',
+						loan,
+					});
+				}
+			});
+		});
+		return items;
+	}, [loans]);
 
 	const fetchingLoanIdRef = useRef(null);
 
@@ -13523,6 +13562,15 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						localStorage.setItem('joint_loan_last_sync_time', status.last_sync_time);
 					} catch (e) {}
 				}
+				if (isMounted && status?.sftp_result) {
+					setLastSyncResult(status.sftp_result);
+				}
+				if (isMounted && status?.daily_sync_time) {
+					setDailySyncTime(status.daily_sync_time);
+				}
+				if (isMounted && status?.auto_sync_enabled !== undefined) {
+					setAutoSyncEnabled(status.auto_sync_enabled);
+				}
 			} catch (err) {
 				console.warn('Sync status load warning:', err);
 			}
@@ -13667,9 +13715,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				localStorage.setItem('joint_loan_last_sync_time', syncedTime);
 			} catch (e) {}
 
+			setLastSyncResult(syncRes);
 			setIsSyncing(false);
 			setSyncFeedback('DB Synced');
 			setTimeout(() => setSyncFeedback(null), 2500);
+			setShowSyncedLoansModal(true);
 		} catch (err) {
 			console.warn('Sync failed:', err);
 			setIsSyncing(false);
@@ -17022,6 +17072,28 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 					</div>
 				</div>
 			)}
+
+			{/* DayBook Synced Loans & Collections Popup Modal */}
+			<SyncedLoansModal
+				isOpen={showSyncedLoansModal}
+				onClose={() => setShowSyncedLoansModal(false)}
+				syncedItems={syncedInstallments}
+				lastSyncTime={lastSyncTime}
+				syncResult={lastSyncResult}
+				dailySyncTime={dailySyncTime}
+				autoSyncEnabled={autoSyncEnabled}
+				onOpenLoan={(item) => {
+					setShowSyncedLoansModal(false);
+					const targetLoan = loans.find(
+						(l) => String(l.id) === String(item.dbLoanId) || l.loan_ref_id === item.loanId
+					);
+					if (targetLoan) {
+						setSelectedLoan(targetLoan);
+					}
+				}}
+				onTriggerSync={handleDbSync}
+				isSyncing={isSyncing}
+			/>
 		</div>
 	);
 }
