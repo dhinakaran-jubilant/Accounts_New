@@ -3353,7 +3353,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 											{/* 3. Role */}
 											<td className="py-3 px-4">
 												<span
-													className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ring-1 ${roleBadge.color}`}
+													className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ring-1 ${roleBadge.color}`}
 												>
 													<span className={`w-1.5 h-1.5 rounded-full ${roleBadge.dot}`} />
 													<span>{roleBadge.label}</span>
@@ -3363,12 +3363,12 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 											{/* 4. Status */}
 											<td className="py-3 px-4 whitespace-nowrap">
 												{(user.status || 'active').toLowerCase() === 'inactive' ? (
-													<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold text-slate-600 bg-slate-100 ring-1 ring-slate-300">
+													<span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold text-slate-600 bg-slate-100 ring-1 ring-slate-300">
 														<span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
 														<span>Inactive</span>
 													</span>
 												) : (
-													<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200">
+													<span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200">
 														<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
 														<span>Active</span>
 													</span>
