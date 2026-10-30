@@ -19,6 +19,7 @@ export const navSections = [
 			{ id: 'joint-loan', label: 'Joint Loan', path: '#joint-loan', icon: 'handshake' },
 			{ id: 'short-loan', label: 'Short Loan', path: '#short-loan', icon: 'payments' },
 			{ id: 'matchup', label: 'Matchup', path: '#matchup', icon: 'compare_arrows' },
+			{ id: 'sync', label: 'Sync', path: '#sync', icon: 'cloud_sync' },
 			{ id: 'requests', label: 'Requests', path: '#requests', icon: 'pending_actions' },
 			{ id: 'users', label: 'Users', path: '#users', icon: 'group' },
 			{ id: 'settings', label: 'Settings', path: '#settings', icon: 'settings' },
@@ -118,7 +119,14 @@ export default function Sidebar({
 
 	// Resolve allowed menus for the current user
 	const effectiveAllowedMenus = useMemo(() => {
+		const isSuperOrAdmin = ['admin', 'super admin'].includes((currentUser?.role || '').toLowerCase());
+		if (isSuperOrAdmin) {
+			return ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings'];
+		}
 		if (Array.isArray(propAllowedMenus) && propAllowedMenus.length > 0) {
+			if (propAllowedMenus.includes('joint-loan') && !propAllowedMenus.includes('sync')) {
+				return [...propAllowedMenus, 'sync'];
+			}
 			return propAllowedMenus;
 		}
 		if (currentUser) {
@@ -131,12 +139,12 @@ export default function Sidebar({
 				}
 			}
 			if (Array.isArray(menus) && menus.length > 0) {
+				if (menus.includes('joint-loan') && !menus.includes('sync')) {
+					return [...menus, 'sync'];
+				}
 				return menus;
 			}
-			if (['admin', 'super admin'].includes((currentUser.role || '').toLowerCase())) {
-				return ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings'];
-			}
-			return ['dashboard', 'joint-loan'];
+			return ['dashboard', 'joint-loan', 'sync'];
 		}
 		return null;
 	}, [currentUser, propAllowedMenus]);

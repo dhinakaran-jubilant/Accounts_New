@@ -26,6 +26,7 @@ import Settings from './components/Settings';
 import Users from './components/Users';
 import Matchup from './components/Matchup';
 import Requests from './components/Requests';
+import Sync from './components/Sync';
 import {
 	calculateJointLoanMetrics,
 	filterLoansByAccount,
@@ -43,7 +44,10 @@ import api from './services/api';
 export default function Dashboard({ currentUser, onLogout }) {
 	// Resolve allowed menus for current logged-in user
 	const allowedMenus = useMemo(() => {
-		if (!currentUser) return ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings'];
+		const isSuperOrAdmin = ['admin', 'super admin'].includes((currentUser?.role || '').toLowerCase());
+		if (!currentUser || isSuperOrAdmin) {
+			return ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings'];
+		}
 		let menus = currentUser.allowed_menus;
 		if (typeof menus === 'string') {
 			try {
@@ -53,12 +57,13 @@ export default function Dashboard({ currentUser, onLogout }) {
 			}
 		}
 		if (Array.isArray(menus) && menus.length > 0) {
+			// Ensure sync is visible to joint-loan users
+			if (menus.includes('joint-loan') && !menus.includes('sync')) {
+				return [...menus, 'sync'];
+			}
 			return menus;
 		}
-		if (['admin', 'super admin'].includes((currentUser.role || '').toLowerCase())) {
-			return ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings'];
-		}
-		return ['dashboard', 'joint-loan'];
+		return ['dashboard', 'joint-loan', 'sync'];
 	}, [currentUser]);
 
 	// Helper to extract clean route id from path (e.g. '/joint-loan' or '/joint-loan/JLSS000040' -> 'joint-loan')
@@ -68,6 +73,9 @@ export default function Dashboard({ currentUser, onLogout }) {
 		const first = clean.split('/')[0];
 		if (first === 'joint-loan' || first === 'joint-loans') {
 			return 'joint-loan';
+		}
+		if (first === 'sync' || first === 'synced' || first === 'daybook-sync') {
+			return 'sync';
 		}
 		return first;
 	};
@@ -839,6 +847,12 @@ export default function Dashboard({ currentUser, onLogout }) {
 						<Users searchQuery={searchQuery} />
 					) : activeNav === 'matchup' ? (
 						<Matchup searchQuery={searchQuery} />
+					) : activeNav === 'sync' ? (
+						<Sync
+							searchQuery={searchQuery}
+							currentUser={currentUser}
+							onNavigateToJointLoan={(loan) => handleNavigateToLoanDetails(loan)}
+						/>
 					) : activeNav === 'requests' ? (
 						<Requests
 							searchQuery={searchQuery}

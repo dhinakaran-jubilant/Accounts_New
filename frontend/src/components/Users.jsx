@@ -17,6 +17,7 @@ export const AVAILABLE_MENUS = [
 	{ id: 'joint-loan', label: 'Joint Loan', icon: 'handshake' },
 	{ id: 'short-loan', label: 'Short Loan', icon: 'payments' },
 	{ id: 'matchup', label: 'Matchup', icon: 'compare_arrows' },
+	{ id: 'sync', label: 'Sync', icon: 'cloud_sync' },
 	{ id: 'requests', label: 'Requests', icon: 'pending_actions' },
 	{ id: 'users', label: 'Users', icon: 'group' },
 	{ id: 'settings', label: 'Settings', icon: 'settings' },
@@ -1810,7 +1811,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 		password: '',
 		email: '',
 		mobile: '',
-		allowed_menus: ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings'],
+		allowed_menus: ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings'],
 		permissions: { primary: [], secondary: [] },
 		changePassword: false,
 	});
@@ -1993,7 +1994,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 			role: 'user',
 			status: 'active',
 			password: '',
-			allowed_menus: ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings'],
+			allowed_menus: ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings'],
 			permissions: {
 				primary: [],
 				secondary: [],
@@ -2109,7 +2110,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 					? AVAILABLE_MENUS.map((m) => m.id)
 					: formData.allowed_menus && formData.allowed_menus.length > 0
 						? formData.allowed_menus
-						: ['dashboard', 'joint-loan'],
+						: ['dashboard', 'joint-loan', 'sync'],
 			permissions:
 				['admin', 'super admin'].includes((formData.role || '').toLowerCase())
 					? {

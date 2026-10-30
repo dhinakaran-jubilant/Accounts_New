@@ -96,7 +96,7 @@ with app.app_context():
                 email='dhinakaran.s@jubilantenterprises.in',
                 mobile=None,
                 permissions=json.dumps({"primary": [], "secondary": [], "isAdmin": True}),
-                allowed_menus=json.dumps(['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings']),
+                allowed_menus=json.dumps(['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings']),
                 security_question=None,
                 security_answer=None
             )
@@ -2317,7 +2317,7 @@ def get_synced_loans():
                     except Exception:
                         pass
 
-                if recd and recd not in ('-', '—', 'None', 'null'):
+                if recd and recd.lower() not in ('-', '—', 'none', 'null', 'dd-mm-yyyy', ''):
                     synced_items.append({
                         'id': f"{loan.id}-{sch.id}",
                         'loanId': loan.loan_ref_id or f"JL-{loan.id}",
@@ -2499,9 +2499,16 @@ def serialize_user(u):
             allowed_menus = []
     if not allowed_menus:
         if (getattr(u, 'role', '') or '').strip().lower() in ('admin', 'super admin'):
-            allowed_menus = ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'requests', 'users', 'settings']
+            allowed_menus = ['dashboard', 'joint-loan', 'short-loan', 'matchup', 'sync', 'requests', 'users', 'settings']
         else:
-            allowed_menus = ['dashboard', 'joint-loan']
+            allowed_menus = ['dashboard', 'joint-loan', 'sync']
+    else:
+        # Ensure 'sync' is always accessible to admins and users with joint-loan access
+        if (getattr(u, 'role', '') or '').strip().lower() in ('admin', 'super admin'):
+            if 'sync' not in allowed_menus:
+                allowed_menus.append('sync')
+        elif 'joint-loan' in allowed_menus and 'sync' not in allowed_menus:
+            allowed_menus.append('sync')
 
     permissions = {}
     if u.permissions:
