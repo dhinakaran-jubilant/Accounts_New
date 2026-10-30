@@ -1749,7 +1749,8 @@ export const getAcronym = (nameOrAcronym, accountObjects = []) => {
 	}
 
 	// 3. Fallback: extract initials from multi-word names (e.g. "S. Sudhakar" -> "SS", "Surge Capital Solutions" -> "SCS")
-	const words = raw.replace(/[._-]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+	const stripped = raw.replace(/\b(private\s+limited|pvt\s+ltd|pvt\s+limited|private\s+ltd|limited|ltd|llp|inc|corp)\b/gi, '').trim();
+	const words = (stripped || raw).replace(/[._-]+/g, ' ').trim().split(/\s+/).filter(Boolean);
 	if (words.length > 1) {
 		const derived = words.map((w) => w[0]).join('').toUpperCase();
 		if (derived.length >= 2 && derived.length <= 6) {
@@ -1769,27 +1770,49 @@ export const isAccountMatch = (loanAccountValue, targetAccountValue, accountObje
 	if (!lClean || !tClean) return false;
 	if (lClean === tClean) return true;
 
+	// Substring match for longer identifiers (>= 4 chars)
+	if (lClean.length >= 4 && tClean.length >= 4 && (lClean.includes(tClean) || tClean.includes(lClean))) {
+		return true;
+	}
+
 	const lAcr = clean(getAcronym(loanAccountValue, accountObjects));
 	const tAcr = clean(getAcronym(targetAccountValue, accountObjects));
 	if (lAcr && tAcr && lAcr === tAcr) return true;
 	if (lAcr && lAcr === tClean) return true;
 	if (tAcr && tAcr === lClean) return true;
 
-	if (Array.isArray(accountObjects) && accountObjects.length > 0) {
-		const tObj = accountObjects.find(
-			(o) => clean(o.acronym) === tClean || clean(o.name) === tClean
-		);
-		if (tObj) {
-			if (clean(tObj.acronym) === lClean || clean(tObj.name) === lClean) return true;
-			if (lAcr && clean(tObj.acronym) === lAcr) return true;
-		}
+	const accountsToCheck = (Array.isArray(accountObjects) && accountObjects.length > 0)
+		? accountObjects
+		: (Array.isArray(cachedGlobalAccountObjects) ? cachedGlobalAccountObjects : []);
 
-		const lObj = accountObjects.find(
-			(o) => clean(o.acronym) === lClean || clean(o.name) === lClean
-		);
+	if (accountsToCheck.length > 0) {
+		const findObj = (cleanVal) => accountsToCheck.find((o) => {
+			const oAcr = clean(o.acronym);
+			const oName = clean(o.name);
+			if (oAcr === cleanVal || oName === cleanVal) return true;
+			if (cleanVal.length >= 4 && oName.length >= 4 && (oName.includes(cleanVal) || cleanVal.includes(oName))) return true;
+			return false;
+		});
+
+		const tObj = findObj(tClean);
+		const lObj = findObj(lClean);
+
+		if (tObj && lObj && (tObj === lObj || clean(tObj.acronym) === clean(lObj.acronym))) {
+			return true;
+		}
+		if (tObj) {
+			const oAcr = clean(tObj.acronym);
+			const oName = clean(tObj.name);
+			if (oAcr === lClean || oName === lClean) return true;
+			if (lAcr && oAcr === lAcr) return true;
+			if (lClean.length >= 4 && oName.length >= 4 && (oName.includes(lClean) || lClean.includes(oName))) return true;
+		}
 		if (lObj) {
-			if (clean(lObj.acronym) === tClean || clean(lObj.name) === tClean) return true;
-			if (tAcr && clean(lObj.acronym) === tAcr) return true;
+			const oAcr = clean(lObj.acronym);
+			const oName = clean(lObj.name);
+			if (oAcr === tClean || oName === tClean) return true;
+			if (tAcr && oAcr === tAcr) return true;
+			if (tClean.length >= 4 && oName.length >= 4 && (oName.includes(tClean) || tClean.includes(oName))) return true;
 		}
 	}
 	return false;
@@ -1834,9 +1857,9 @@ export const checkLoanMatchesUserPrimary = (loan, userPrimaryList, accountObject
 	);
 };
 
-// Check if loan matches any of the user's secondary accounts
-export const checkLoanMatchesUserSecondary = (loan, userSecondaryList, accountObjects = []) => {
-	if (!loan || !Array.isArray(userSecondaryList) || userSecondaryList.length === 0) return false;
+// Check if loan has any of the specified accounts participating as a secondary co-lender
+export const checkLoanMatchesLoanSecondary = (loan, userAccountList, accountObjects = []) => {
+	if (!loan || !Array.isArray(userAccountList) || userAccountList.length === 0) return false;
 
 	const loanSecondaryValues = [];
 	if (Array.isArray(loan.secondaryAccounts)) {
@@ -1866,9 +1889,17 @@ export const checkLoanMatchesUserSecondary = (loan, userSecondaryList, accountOb
 	if (loan.secAccountName) loanSecondaryValues.push(loan.secAccountName);
 	if (loan.coBorrower?.name) loanSecondaryValues.push(loan.coBorrower.name);
 
-	return userSecondaryList.some((target) =>
+	return userAccountList.some((target) =>
 		loanSecondaryValues.some((ls) => isAccountMatch(ls, target, accountObjects))
 	);
+};
+
+// Check if loan matches any of the user's secondary accounts
+// Rule: An assigned secondary account gives view access to loans where that account is PRIMARY.
+// It does NOT grant access to loans where that account is secondary.
+export const checkLoanMatchesUserSecondary = (loan, userSecondaryList, accountObjects = []) => {
+	if (!loan || !Array.isArray(userSecondaryList) || userSecondaryList.length === 0) return false;
+	return checkLoanMatchesUserPrimary(loan, userSecondaryList, accountObjects);
 };
 
 // Check if loan matches user's permission configuration and role toggle ('all' | 'primary' | 'secondary')
@@ -1895,8 +1926,8 @@ export const doesLoanMatchUserPermissions = (
 		if (roleFilter === 'secondary') {
 			if (hasSpecificSecondary || hasSpecificPrimary) {
 				return (
-					(hasSpecificSecondary && checkLoanMatchesUserSecondary(loan, userPerms.secondary, accountObjects)) ||
-					(hasSpecificPrimary && checkLoanMatchesUserSecondary(loan, userPerms.primary, accountObjects))
+					(hasSpecificPrimary && checkLoanMatchesLoanSecondary(loan, userPerms.primary, accountObjects)) ||
+					(hasSpecificSecondary && checkLoanMatchesUserPrimary(loan, userPerms.secondary, accountObjects))
 				);
 			}
 			const hasSec =
@@ -1917,15 +1948,24 @@ export const doesLoanMatchUserPermissions = (
 
 	if (!hasPrimary && !hasSecondary) return false;
 
+	// 1. Primary match: user's assigned primary accounts acting as Primary lender (Full Access)
 	const matchesPrimary = hasPrimary
 		? checkLoanMatchesUserPrimary(loan, userPerms.primary, accountObjects)
 		: false;
 
-	// For secondary match: check user's assigned secondary accounts, as well as user's primary accounts
-	// (since a user managing an account is also the stakeholder when that account participates as secondary)
-	const matchesSecondary =
-		(hasSecondary && checkLoanMatchesUserSecondary(loan, userPerms.secondary, accountObjects)) ||
-		(hasPrimary && checkLoanMatchesUserSecondary(loan, userPerms.primary, accountObjects));
+	// 2. Secondary match (View Access):
+	// - User's assigned Primary accounts acting as secondary co-lenders
+	// - User's assigned Secondary accounts acting as Primary lender
+	// (Note: accounts assigned as secondary do NOT match when they act as secondary)
+	const matchesPrimaryAsSecondary = hasPrimary
+		? checkLoanMatchesLoanSecondary(loan, userPerms.primary, accountObjects)
+		: false;
+
+	const matchesSecondaryAsPrimary = hasSecondary
+		? checkLoanMatchesUserPrimary(loan, userPerms.secondary, accountObjects)
+		: false;
+
+	const matchesSecondary = matchesPrimaryAsSecondary || matchesSecondaryAsPrimary;
 
 	if (roleFilter === 'primary') {
 		return matchesPrimary;
@@ -2119,15 +2159,7 @@ export const canUserAccessLoan = (loan, user, userPerms, accountObjects = [], al
 	const isAdmin = userPerms?.isAdmin || ['admin', 'super admin'].includes((user.role || '').toLowerCase());
 	if (isAdmin) return true;
 
-	// In secondary verification stage:
-	const isPendingSecondary = loan.approval_status === 'PENDING_SECONDARY' || loan.approval_status === 'PENDING' || !loan.approval_status;
-	if (isPendingSecondary) {
-		return checkUserHasPrimaryAccessForLoanSecondary(user, loan, accountObjects);
-	}
-
-	// In admin approval stage or rejected:
-	// Only admin can access
-	return false;
+	return doesLoanMatchUserPermissions(loan, userPerms, accountObjects, 'all');
 };
 
 // Human-friendly date formatting for labels
@@ -16001,7 +16033,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 											{/* 4. Client Name */}
 											<td className="py-3 px-4 max-w-[200px]">
 												<div
-													className="font-extrabold text-[13.5px] text-slate-900 group-hover:text-primary transition-colors uppercase truncate"
+													className="font-bold text-[13px] text-slate-900 group-hover:text-primary transition-colors uppercase truncate"
 													title={loan.primaryBorrower.name}
 												>
 													{loan.primaryBorrower.name}
@@ -16022,7 +16054,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 
 											{/* 6. Amount */}
 											<td className="py-3 px-4 whitespace-nowrap">
-												<div className="font-extrabold text-[13.5px] text-slate-900">
+												<div className="font-bold text-[13px] text-slate-900">
 													{formatCurrency(loan.amount)}
 												</div>
 											</td>

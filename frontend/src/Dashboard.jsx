@@ -228,6 +228,13 @@ export default function Dashboard({ currentUser, onLogout }) {
 		return Array.from(new Set([...secondaryAccountKeys, ...primaryAccountKeys]));
 	}, [secondaryAccountKeys, primaryAccountKeys]);
 
+	// If user only has secondary permissions, default to secondary view
+	useEffect(() => {
+		if (!isAdmin && primaryAccountKeys.length === 0 && secondaryAccountKeys.length > 0) {
+			setAccountRoleFilter('secondary');
+		}
+	}, [isAdmin, primaryAccountKeys, secondaryAccountKeys]);
+
 	// Handle switching between Primary and Secondary role views
 	const handleRoleFilterChange = (role) => {
 		if (role === accountRoleFilter) return;
@@ -520,11 +527,19 @@ export default function Dashboard({ currentUser, onLogout }) {
 					if (normKey && !seenKeys.has(normKey)) {
 						seenKeys.add(normKey);
 						// Count loans where this account acts in the selected role
-						const count = jointLoans.filter((l) =>
-							isSecondary
-								? doesLoanMatchSecondaryAccount(l, a.name, rawAccounts)
-								: doesLoanMatchPrimaryAccount(l, a.name, rawAccounts)
-						).length;
+						const count = jointLoans.filter((l) => {
+							if (isSecondary) {
+								const isFromSecKeys = secondaryAccountKeys.some((sk) => {
+									const csk = cleanAccountKey(sk);
+									return csk === normKey || getAccountAliases(sk, rawAccounts).some((al) => cleanAccountKey(al) === normKey);
+								});
+								if (isFromSecKeys) {
+									return doesLoanMatchPrimaryAccount(l, a.name, rawAccounts);
+								}
+								return doesLoanMatchSecondaryAccount(l, a.name, rawAccounts);
+							}
+							return doesLoanMatchPrimaryAccount(l, a.name, rawAccounts);
+						}).length;
 
 						userAccounts.push({
 							key: a.name,
@@ -548,11 +563,19 @@ export default function Dashboard({ currentUser, onLogout }) {
 				const normKey = cleanAccountKey(canonName);
 				if (normKey && !seenKeys.has(normKey)) {
 					seenKeys.add(normKey);
-					const count = jointLoans.filter((l) =>
-						isSecondary
-							? doesLoanMatchSecondaryAccount(l, canonName, rawAccounts)
-							: doesLoanMatchPrimaryAccount(l, canonName, rawAccounts)
-					).length;
+					const count = jointLoans.filter((l) => {
+						if (isSecondary) {
+							const isFromSecKeys = secondaryAccountKeys.some((sk) => {
+								const csk = cleanAccountKey(sk);
+								return csk === normKey || getAccountAliases(sk, rawAccounts).some((al) => cleanAccountKey(al) === normKey);
+							});
+							if (isFromSecKeys) {
+								return doesLoanMatchPrimaryAccount(l, canonName, rawAccounts);
+							}
+							return doesLoanMatchSecondaryAccount(l, canonName, rawAccounts);
+						}
+						return doesLoanMatchPrimaryAccount(l, canonName, rawAccounts);
+					}).length;
 
 					userAccounts.push({
 						key: canonName,
@@ -689,11 +712,11 @@ export default function Dashboard({ currentUser, onLogout }) {
 
 		// Non-admin user:
 		if (isSecondary) {
-			if (effectiveSecondaryAccountKeys.length === 0) {
+			if (secondaryAccountKeys.length === 0 && primaryAccountKeys.length === 0) {
 				return [];
 			}
 			const userSecLoans = jointLoans.filter((loan) =>
-				doesLoanMatchUserSecondary(loan, effectiveSecondaryAccountKeys, rawAccounts)
+				doesLoanMatchUserSecondary(loan, secondaryAccountKeys, rawAccounts, primaryAccountKeys)
 			);
 			if (selectedAccountFilter !== 'ALL') {
 				const isAllowed = effectiveSecondaryAccountKeys.some((k) => {
@@ -707,9 +730,17 @@ export default function Dashboard({ currentUser, onLogout }) {
 					);
 				});
 				if (isAllowed) {
-					return userSecLoans.filter((loan) =>
-						doesLoanMatchSecondaryAccount(loan, selectedAccountFilter, rawAccounts)
-					);
+					return userSecLoans.filter((loan) => {
+						const isFromSecKeys = secondaryAccountKeys.some((sk) => {
+							const csk = cleanAccountKey(sk);
+							const selClean = cleanAccountKey(selectedAccountFilter);
+							return csk === selClean || getAccountAliases(selectedAccountFilter, rawAccounts).some((al) => cleanAccountKey(al) === csk);
+						});
+						if (isFromSecKeys) {
+							return doesLoanMatchPrimaryAccount(loan, selectedAccountFilter, rawAccounts);
+						}
+						return doesLoanMatchSecondaryAccount(loan, selectedAccountFilter, rawAccounts);
+					});
 				}
 			}
 			return userSecLoans;

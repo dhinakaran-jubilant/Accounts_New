@@ -247,11 +247,28 @@ export function doesLoanMatchSecondaryAccount(loan, accountKey = 'ALL', rawAccou
 	return false;
 }
 
-// Helper to determine if a loan matches any secondary account in userSecondaryKeys
-export function doesLoanMatchUserSecondary(loan, userSecondaryKeys = [], rawAccounts = []) {
+// Helper to determine if a loan matches user's secondary perspective
+// User gets view access to:
+// 1. Loans where an assigned primary account participates as secondary
+// 2. Loans where an assigned secondary account is primary
+// (Note: does NOT match loans where an assigned secondary account is secondary)
+export function doesLoanMatchUserSecondary(loan, userSecondaryKeys = [], rawAccounts = [], userPrimaryKeys = []) {
 	if (!loan) return false;
-	if (!Array.isArray(userSecondaryKeys) || userSecondaryKeys.length === 0) return false;
-	return userSecondaryKeys.some((k) => doesLoanMatchSecondaryAccount(loan, k, rawAccounts));
+	const hasSec = Array.isArray(userSecondaryKeys) && userSecondaryKeys.length > 0;
+	const hasPri = Array.isArray(userPrimaryKeys) && userPrimaryKeys.length > 0;
+	if (!hasSec && !hasPri) return false;
+
+	// 1. Assigned primary account acting as secondary in this loan
+	if (hasPri && userPrimaryKeys.some((k) => doesLoanMatchSecondaryAccount(loan, k, rawAccounts))) {
+		return true;
+	}
+
+	// 2. Assigned secondary account acting as primary in this loan
+	if (hasSec && userSecondaryKeys.some((k) => doesLoanMatchPrimaryAccount(loan, k, rawAccounts))) {
+		return true;
+	}
+
+	return false;
 }
 
 // Extract secondary share and principal amount for a loan

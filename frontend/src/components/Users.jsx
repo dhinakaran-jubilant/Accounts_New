@@ -10,6 +10,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../services/api';
 import { TableLoader } from './common/LottieLoader';
+import { doesLoanMatchPrimaryAccount, doesLoanMatchSecondaryAccount, formatIndianCurrency } from '../utils/jointLoanUtils';
 
 // Available System Menus for granular assignment
 export const AVAILABLE_MENUS = [
@@ -1133,7 +1134,7 @@ const MENU_METADATA = {
 };
 
 // User Details View Page matching JointLoanDetailsPage in JointLoan.jsx
-function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) {
+function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [], loans = [] }) {
 	const [activeTab, setActiveTab] = useState('joint-loan'); // 'joint-loan' | 'menus'
 	const [copiedField, setCopiedField] = useState(null);
 	const roleBadge = getUserRoleBadge(user.role);
@@ -1245,6 +1246,32 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) 
 			return aName.localeCompare(bName);
 		});
 	}, [jlAccounts, user.role, primaryAccs, secondaryAccs]);
+
+	const primaryLoansMap = useMemo(() => {
+		if (!Array.isArray(loans) || loans.length === 0) return {};
+		const map = {};
+		assignedJlAccounts.forEach((acc) => {
+			const matched = loans.filter((l) =>
+				doesLoanMatchPrimaryAccount(l, acc.acronym, accountNames) ||
+				doesLoanMatchPrimaryAccount(l, acc.name, accountNames)
+			);
+			map[acc.acronym] = matched;
+		});
+		return map;
+	}, [loans, assignedJlAccounts, accountNames]);
+
+	const secondaryLoansMap = useMemo(() => {
+		if (!Array.isArray(loans) || loans.length === 0) return {};
+		const map = {};
+		assignedJlAccounts.forEach((acc) => {
+			const matched = loans.filter((l) =>
+				doesLoanMatchSecondaryAccount(l, acc.acronym, accountNames) ||
+				doesLoanMatchSecondaryAccount(l, acc.name, accountNames)
+			);
+			map[acc.acronym] = matched;
+		});
+		return map;
+	}, [loans, assignedJlAccounts, accountNames]);
 
 
 	return (
@@ -1603,7 +1630,6 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) 
 													<th className="py-3 px-4 w-12 text-center">#</th>
 													<th className="py-3 px-4">Account Name &amp; Code</th>
 													<th className="py-3 px-4">Permission Level</th>
-													<th className="py-3 px-4">Permitted Actions</th>
 													<th className="py-3 px-4 text-center">Account Type</th>
 												</tr>
 											</thead>
@@ -1643,10 +1669,16 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) 
 																			<span>Primary (Create &amp; Edit)</span>
 																		</span>
 																	) : isSec ? (
-																		<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-extrabold bg-blue-50 text-blue-700 ring-1 ring-blue-200">
-																			<span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-																			<span>Secondary (View Only)</span>
-																		</span>
+																		<div className="space-y-1">
+																			<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-extrabold bg-blue-50 text-blue-700 ring-1 ring-blue-200">
+																				<span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+																				<span>Secondary (View Only)</span>
+																			</span>
+																			<div className="flex items-center gap-1.5 text-[11px] text-blue-700 font-semibold">
+																				<span className="material-symbols-outlined text-[13px]">visibility</span>
+																				<span>Can view {primaryLoansMap[acc.acronym]?.length || 0} {primaryLoansMap[acc.acronym]?.length === 1 ? 'loan' : 'loans'} having {acc.acronym} as Primary</span>
+																			</div>
+																		</div>
 																	) : (
 																		<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 text-slate-500 ring-1 ring-slate-200">
 																			<span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
@@ -1654,23 +1686,8 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) 
 																		</span>
 																	)}
 																</td>
-																<td className="py-3 px-4 text-slate-600">
-																	{isPri ? (
-																		<span className="text-emerald-800 font-medium">
-																			Can create new loans, edit loan schedules, and modify terms
-																		</span>
-																	) : isSec ? (
-																		<span className="text-blue-800 font-medium">
-																			Can view loan cards, repayment tracking, and account splits
-																		</span>
-																	) : (
-																		<span className="text-slate-400 italic">
-																			Restricted from creating, editing, or viewing loans
-																		</span>
-																	)}
-																</td>
 																<td className="py-3 px-4 text-center">
-																	<span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+																	<span className="text-[11px] font-bold text-slate-500 bg-slate-100 p-2 rounded-md">
 																		Joint Loan Report
 																	</span>
 																</td>
@@ -1688,6 +1705,114 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [] }) 
 										</table>
 									</div>
 								</div>
+
+								{/* Primary Loans Accessible for Secondary Assigned Accounts */}
+								{secondaryAccs.length > 0 && !['admin', 'super admin'].includes((user.role || '').toLowerCase()) && (
+									<div className="border border-blue-200/80 rounded-2xl overflow-hidden shadow-2xs bg-white mt-5">
+										<div className="px-5 py-3.5 bg-gradient-to-r from-blue-50/80 to-slate-50 border-b border-blue-200/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+											<div className="flex items-center gap-2.5">
+												<div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+													<span className="material-symbols-outlined text-[20px]">visibility</span>
+												</div>
+												<div>
+													<div className="flex items-center gap-2">
+														<span className="font-extrabold text-[13.5px] text-slate-800">
+															Primary Loans Viewable by This User
+														</span>
+														<span className="text-[10.5px] font-extrabold text-blue-700 bg-blue-50 ring-1 ring-blue-200 px-2 py-0.5 rounded-full">
+															Secondary (View Only) Access
+														</span>
+													</div>
+													<p className="text-[11.5px] text-slate-500 mt-0.5">
+														Because this user has Secondary access to assigned account(s), they can view joint loans where those accounts are Primary Lender:
+													</p>
+												</div>
+											</div>
+										</div>
+
+										<div className="p-4 space-y-4">
+											{assignedJlAccounts
+												.filter((acc) => !isAccountPrimary(acc.acronym) && isAccountSecondary(acc.acronym))
+												.map((acc) => {
+													const matchedPrimaryLoans = primaryLoansMap[acc.acronym] || [];
+													return (
+														<div key={acc.acronym} className="border border-slate-200/80 rounded-xl overflow-hidden">
+															<div className="px-4 py-2.5 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between">
+																<div className="flex items-center gap-2">
+																	<span className={`inline-block font-extrabold text-[11px] px-2 py-0.5 rounded-md uppercase tracking-wider ring-1 ${getEntityTagColor(acc.acronym, acc.color)}`}>
+																		{acc.acronym}
+																	</span>
+																	<span className="font-bold text-[13px] text-slate-800">{acc.name}</span>
+																	<span className="text-[11.5px] text-slate-500 font-medium">as Primary Lender</span>
+																</div>
+																<span className="text-[11px] font-bold text-slate-600 bg-white px-2.5 py-0.5 rounded-full border border-slate-200">
+																	{matchedPrimaryLoans.length} {matchedPrimaryLoans.length === 1 ? 'Loan' : 'Loans'}
+																</span>
+															</div>
+
+															{matchedPrimaryLoans.length > 0 ? (
+																<div className="overflow-x-auto">
+																	<table className="w-full text-left border-collapse text-[12px]">
+																		<thead>
+																			<tr className="border-b border-slate-200/60 bg-slate-50/40 text-slate-500 font-semibold text-[11px] uppercase tracking-wider">
+																				<th className="py-2.5 px-4 w-12 text-center">#</th>
+																				<th className="py-2.5 px-4">Loan ID</th>
+																				<th className="py-2.5 px-4">Client Name</th>
+																				<th className="py-2.5 px-4">Loan Amount</th>
+																				<th className="py-2.5 px-4">Loan Date</th>
+																				<th className="py-2.5 px-4 text-center">Status</th>
+																				<th className="py-2.5 px-4 text-center">User Access</th>
+																			</tr>
+																		</thead>
+																		<tbody className="divide-y divide-slate-100">
+																			{matchedPrimaryLoans.map((l, lIdx) => (
+																				<tr key={l.id || l.loan_ref_id || lIdx} className="hover:bg-slate-50/60 transition-colors">
+																					<td className="py-2.5 px-4 text-center text-slate-400 font-semibold">{lIdx + 1}</td>
+																					<td className="py-2.5 px-4 font-bold text-primary">
+																						{l.loan_ref_id || l.id}
+																					</td>
+																					<td className="py-2.5 px-4 font-semibold text-slate-800">
+																						{l.client_account_name || l.clientName || 'Borrower'}
+																					</td>
+																					<td className="py-2.5 px-4 font-bold text-slate-900">
+																						₹{formatIndianCurrency(l.loan_amount || l.amount || 0)}
+																					</td>
+																					<td className="py-2.5 px-4 text-slate-600">
+																						{l.loan_date || '-'}
+																					</td>
+																					<td className="py-2.5 px-4 text-center">
+																						<span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-bold ${
+																							(l.status || '').toLowerCase() === 'active'
+																								? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+																								: (l.status || '').toLowerCase().includes('overdue')
+																								? 'bg-rose-50 text-rose-700 ring-1 ring-rose-200'
+																								: 'bg-slate-100 text-slate-700 ring-1 ring-slate-200'
+																						}`}>
+																							{l.status || 'Active'}
+																						</span>
+																					</td>
+																					<td className="py-2.5 px-4 text-center">
+																						<span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+																							<span className="material-symbols-outlined text-[13px]">visibility</span>
+																							<span>View Only</span>
+																						</span>
+																					</td>
+																				</tr>
+																			))}
+																		</tbody>
+																	</table>
+																</div>
+															) : (
+																<div className="py-6 px-4 text-center text-slate-400 italic text-[12px]">
+																	No loans in the database currently have {acc.name} ({acc.acronym}) as Primary.
+																</div>
+															)}
+														</div>
+													);
+												})}
+										</div>
+									</div>
+								)}
 							</div>
 						)}
 					</div>
@@ -1939,14 +2064,16 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 	// Pagination
 	const [currentPage, setCurrentPage] = useState(1);
 	const [pageSize, setPageSize] = useState(10);
+	const [loans, setLoans] = useState([]);
 
 	// Load data from backend
 	const loadData = async () => {
 		setIsLoading(true);
 		try {
-			const [usersRes, accsRes] = await Promise.allSettled([
+			const [usersRes, accsRes, loansRes] = await Promise.allSettled([
 				api.getUsers(),
 				api.getAccountNames(),
+				api.getJointLoans(),
 			]);
 
 			if (usersRes.status === 'fulfilled' && Array.isArray(usersRes.value)) {
@@ -1954,6 +2081,9 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 			}
 			if (accsRes.status === 'fulfilled' && Array.isArray(accsRes.value)) {
 				setAccountNames(accsRes.value);
+			}
+			if (loansRes.status === 'fulfilled' && Array.isArray(loansRes.value)) {
+				setLoans(loansRes.value);
 			}
 		} catch (err) {
 			console.warn('Backend users unavailable:', err);
@@ -2334,6 +2464,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 					onEdit={(u) => handleOpenEdit(u)}
 					onDelete={(u) => setUserToDelete(u)}
 					accountNames={accountNames}
+					loans={loans}
 				/>
 				{renderDeleteModal()}
 				{renderCreateModal()}
@@ -2758,7 +2889,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 											<span>Joint Loan Account Permissions</span>
 										</label>
 										<p className="text-[11px] text-slate-400 mt-0.5">
-											Choose any one option per account: <span className="font-semibold text-emerald-600">Primary</span> (Create &amp; Edit) or <span className="font-semibold text-blue-600">Secondary</span> (View Only).
+											Choose any one option per account: <span className="font-semibold text-emerald-600">Primary</span> (Create &amp; Edit) or <span className="font-semibold text-blue-600">Secondary</span> (View Only - user can view loans where this account is Primary or Secondary).
 										</p>
 									</div>
 
@@ -2876,7 +3007,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 																? 'bg-blue-600 text-white shadow-2xs ring-1 ring-blue-700'
 																: 'text-slate-600 hover:text-blue-700 hover:bg-white/60'
 																}`}
-															title="Secondary: User can only see joint loan details where this account is Secondary"
+															title="Secondary: View Only. User can see joint loans where this account is Primary or Secondary"
 														>
 															<span className="material-symbols-outlined text-[15px]">
 																{isSec ? 'radio_button_checked' : 'radio_button_unchecked'}
