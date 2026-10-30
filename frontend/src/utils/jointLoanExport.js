@@ -633,6 +633,33 @@ export const isDateFilled = (d) => {
 };
 
 /**
+ * Check if a date string is in the future (target date > today)
+ */
+export const isFutureDate = (dateStr) => {
+	if (!dateStr || dateStr === '-' || dateStr === '—') return false;
+	const str = String(dateStr).trim();
+	let d = null;
+	const dmy = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+	if (dmy) {
+		d = new Date(parseInt(dmy[3], 10), parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10));
+	} else {
+		const ymd = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+		if (ymd) {
+			d = new Date(parseInt(ymd[1], 10), parseInt(ymd[2], 10) - 1, parseInt(ymd[3], 10));
+		} else {
+			const parsed = new Date(str);
+			if (!isNaN(parsed.getTime())) d = parsed;
+		}
+	}
+	if (!d || isNaN(d.getTime())) return false;
+
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+	return target.getTime() > today.getTime();
+};
+
+/**
  * Build a styled worksheet for the Outstanding Report
  */
 function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null) {
@@ -762,6 +789,12 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 			// Rule: only include pending payment entries where received date not filled OR payout date not filled/approved
 			// If BOTH received date is filled and payout date is filled & approved, payment is fully complete -> skip
 			if (hasRecdDate && hasPayoutDate) {
+				return;
+			}
+
+			// Rule: in outstanding report remove future emi's outstanding
+			// Future EMIs whose due date has not arrived and have not been received yet are not outstanding dues -> skip
+			if (!hasRecdDate && isFutureDate(item.date || item.emiDate)) {
 				return;
 			}
 
@@ -1219,6 +1252,12 @@ function buildSecondaryOutstandingWorksheet(
 
 			// If both recd and payout are complete, it's not outstanding
 			if (hasRecdDate && hasPayoutDate) {
+				return;
+			}
+
+			// Rule: in outstanding report remove future emi's outstanding
+			// Future EMIs whose due date has not arrived and have not been received yet are not outstanding dues -> skip
+			if (!hasRecdDate && isFutureDate(item.date || item.emiDate)) {
 				return;
 			}
 

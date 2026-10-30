@@ -1232,11 +1232,13 @@ export const isEmiOverdue = (inst) => {
 
 // Check if a loan has any installment awaiting payout date approval
 // Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date.
-export const isLoanPayoutPending = (loan) => {
+export const isLoanPayoutPending = (loan, customSchedule) => {
 	if (!loan || loan.is_deleted) return false;
-	const sch = Array.isArray(loan.repaymentSchedule)
-		? loan.repaymentSchedule
-		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+	const sch = Array.isArray(customSchedule) && customSchedule.length > 0
+		? customSchedule
+		: (Array.isArray(loan.repaymentSchedule)
+			? loan.repaymentSchedule
+			: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []));
 
 	if (Array.isArray(sch)) {
 		for (const item of sch) {
@@ -1250,7 +1252,7 @@ export const isLoanPayoutPending = (loan) => {
 					const subStatus = (sub.status || '').toLowerCase();
 					const subRecd = sub.receivedDate || sub.received_date || sub.recdDate;
 					const hasSubRecd = Boolean(subRecd && String(subRecd).trim() && String(subRecd).trim() !== '-' && String(subRecd).trim() !== '—');
-					const subPayoutDate = sub.dueDate || sub.paymentDate || sub.payment_date;
+					const subPayoutDate = sub.dueDate || sub.due_date || sub.paymentDate || sub.payment_date || sub.payoutDate || sub.payout_date;
 					const hasSubPayout = Boolean(subPayoutDate && String(subPayoutDate).trim() && String(subPayoutDate).trim() !== '-' && String(subPayoutDate).trim() !== '—');
 					const isSubApproved = hasSubPayout && (subStatus === 'settled' || ((subPStatus === 'APPROVED' || sub.payout_approved_by || sub.payoutApprovedBy) && subPStatus !== 'PENDING' && subPStatus !== 'REJECTED'));
 
@@ -1304,11 +1306,13 @@ export const isLoanPayoutPending = (loan) => {
 };
 
 // Check if all installments in a loan have their payout date filled and approved
-export const areAllPayoutsApproved = (loan) => {
+export const areAllPayoutsApproved = (loan, customSchedule) => {
 	if (!loan || loan.is_deleted) return false;
-	const sch = Array.isArray(loan.repaymentSchedule)
-		? loan.repaymentSchedule
-		: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []);
+	const sch = Array.isArray(customSchedule) && customSchedule.length > 0
+		? customSchedule
+		: (Array.isArray(loan.repaymentSchedule)
+			? loan.repaymentSchedule
+			: (Array.isArray(loan.repayment_schedule) ? loan.repayment_schedule : []));
 	if (!sch || sch.length === 0) return true;
 
 	for (const item of sch) {
@@ -1318,11 +1322,12 @@ export const areAllPayoutsApproved = (loan) => {
 		if (item.isPartial && Array.isArray(item.subInstallments) && item.subInstallments.length > 0) {
 			const allSubsApproved = item.subInstallments.every((sub) => {
 				if (!sub || sub.subType === 'balance') return false;
+				const dueDate = sub.dueDate || sub.due_date || sub.paymentDate || sub.payment_date || sub.payoutDate || sub.payout_date;
 				const hasDueDate = Boolean(
-					sub.dueDate &&
-					String(sub.dueDate).trim() &&
-					String(sub.dueDate).trim() !== '-' &&
-					String(sub.dueDate).trim() !== '—'
+					dueDate &&
+					String(dueDate).trim() &&
+					String(dueDate).trim() !== '-' &&
+					String(dueDate).trim() !== '—'
 				);
 				const pStatus = (sub?.payout_approval_status || sub?.payoutApprovalStatus || '').toUpperCase();
 				return hasDueDate && (pStatus === 'APPROVED' || sub?.status === 'Settled');
@@ -1360,7 +1365,7 @@ export const areAllPayoutsApproved = (loan) => {
 		}
 
 		// 3. Regular installment
-		const payoutDate = item.dueDate || item.paymentDate || item.payment_date;
+		const payoutDate = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
 		const hasPayoutDate = Boolean(
 			payoutDate &&
 			String(payoutDate).trim() &&
@@ -1377,9 +1382,9 @@ export const areAllPayoutsApproved = (loan) => {
 };
 
 // Compute loan status based on EMI schedule and approval status:
-// - Closed: all EMIs are completed and total balance is 0
+// - Closed: all EMIs are completed and total balance is 0, AND all secondary payouts are filled and approved
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
-// - Pending: if any payout date approval is pending, or if pending initial approval
+// - Pending: if any payout date approval is pending, or if payout date is not filled, or pending initial approval
 // - Active: all emi's recd/payout date approved by sec manager and no emi date is crossed today date
 export const getComputedLoanStatus = (loan, customSchedule) => {
 	if (!loan) return 'Active';
@@ -1417,24 +1422,30 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 		return loan.status || 'Active';
 	}
 
-	// Rule: in repayment schedule, all emi are completed and total balance is 0, that loan status is Closed
+	const hasPayoutPending = isLoanPayoutPending(loan, schedule);
+	const allPayoutsCompleted = areAllPayoutsApproved(loan, schedule);
+
+	// Rule: in repayment schedule, all emi are completed and total balance is 0.
+	// But if payout date is not filled or secondary payout is not approved, loan status is Pending (NOT Closed).
 	const allEmisPaid = schedule.length > 0 && schedule.every((inst) => isEmiPaid(inst));
 	const totalBalance = getScheduleTotalBalance(schedule);
 
 	if (allEmisPaid && totalBalance === 0) {
+		if (hasPayoutPending || !allPayoutsCompleted) {
+			return 'Pending';
+		}
 		return 'Closed';
+	}
+
+	// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
+	if (hasPayoutPending) {
+		return 'Pending';
 	}
 
 	// Rule: overdue means if any emi date is crossed today date and emi has unpaid balance
 	const hasOverdue = schedule.some((inst) => isEmiOverdue(inst));
 	if (hasOverdue) {
 		return 'Overdue';
-	}
-
-	// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
-	const hasPayoutPending = isLoanPayoutPending(loan);
-	if (hasPayoutPending) {
-		return 'Pending';
 	}
 
 	// Rule: active status means all emi's recd/payout date approved by sec manager and no emi date is crossed today date
@@ -1480,7 +1491,7 @@ export const isNewLoanPendingApproval = (loan) => {
 // Check if a loan is pending approval (either secondary manager or admin approval, or payout approval)
 export const isLoanPendingApproval = (loan) => {
 	if (!loan || loan.is_deleted) return false;
-	return isNewLoanPendingApproval(loan) || isLoanPayoutPending(loan);
+	return isNewLoanPendingApproval(loan) || isLoanPayoutPending(loan) || getComputedLoanStatus(loan) === 'Pending';
 };
 
 // Calculate offset date in DD-MM-YYYY format from base dateStr

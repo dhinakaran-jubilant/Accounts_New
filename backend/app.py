@@ -295,7 +295,7 @@ def serialize_pg_loan_to_joint(l):
             p_status = None
             p_target = None
             p_role = None
-        elif is_p_approved or p_status == 'APPROVED':
+        elif is_p_approved or (has_pay and p_status == 'APPROVED'):
             p_status = 'APPROVED'
             p_target = None
         elif p_status == 'PENDING' or (has_recd and not is_p_approved):
@@ -445,13 +445,20 @@ def serialize_pg_loan_to_joint(l):
         bool(l.requester_name and str(l.requester_name).strip().lower() in ('system admin', 'super admin', 'dhinakaran sekar'))
     )
 
+    all_client_recd = len(repayment_schedule_list) > 0 and all(
+        bool(s_item.get('received_date') and str(s_item.get('received_date')).strip() not in ('', '-', '—', 'None'))
+        for s_item in repayment_schedule_list
+    )
+    if all_client_recd and not all_settled:
+        has_payout_pending = True
+
     if l.approval_status == 'REJECTED':
         badge_status = 'Rejected'
     elif not is_auto_or_approved and l.approval_status in ['PENDING_SECONDARY', 'PENDING'] and not l.verified_by:
         badge_status = 'Pending Secondary'
     elif not is_auto_or_approved and l.approval_status in ['PENDING_ADMIN', 'VERIFIED']:
         badge_status = 'Pending Admin'
-    elif (all_settled or l.approval_status == 'CLOSED') and not has_payout_pending:
+    elif all_settled and not has_payout_pending:
         badge_status = 'Closed'
     elif has_payout_pending:
         badge_status = 'Pending'
@@ -463,8 +470,10 @@ def serialize_pg_loan_to_joint(l):
         badge_status = 'Pending'
 
     effective_approval_status = 'APPROVED' if (is_auto_or_approved or badge_status in ['Active', 'Overdue'] or l.approval_status == 'APPROVED') else getattr(l, 'approval_status', 'PENDING')
-    if l.approval_status == 'CLOSED':
+    if badge_status == 'Closed':
         effective_approval_status = 'CLOSED'
+    elif badge_status == 'Pending':
+        effective_approval_status = 'PENDING'
     elif l.approval_status == 'REJECTED':
         effective_approval_status = 'REJECTED'
 
