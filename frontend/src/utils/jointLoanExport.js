@@ -1261,10 +1261,10 @@ function buildSecondaryOutstandingWorksheet(
 				return;
 			}
 
-			// Determine payout approval status
+			// Determine payout approval status (for Secondary Sheet)
 			// Rule:
-			// 1. If payout date is filled with pending from sec manager for approval -> 'Approval pending'
-			// 2. If recd date only filled, payout date not filled -> 'Pending'
+			// 1. If recd date is filled and payout date is filled but not approved -> 'Need to approve'
+			// 2. If recd date is filled and payout date is not filled -> 'Need to receive'
 			// 3. If recd date not filled -> 'Not received from client'
 			const isPayoutPending = hasPayoutDateFilled && !isPayoutApproved;
 
@@ -1273,12 +1273,12 @@ function buildSecondaryOutstandingWorksheet(
 			let recdAmount = 0;
 			let notRecdAmount = 0;
 
-			if (isPayoutPending) {
-				status = 'Approval pending';
+			if (hasRecdDate && isPayoutPending) {
+				status = 'Need to approve';
 				recdAmount = emiAmount;
 				notRecdAmount = 0;
 			} else if (hasRecdDate) {
-				status = 'Pending';
+				status = 'Need to receive';
 				recdAmount = emiAmount;
 				notRecdAmount = 0;
 			} else {
@@ -1352,10 +1352,10 @@ function buildSecondaryOutstandingWorksheet(
 					if (meta.status === 'Not received from client' || meta.status === 'Overdue') {
 						fontColor = 'BE123C';
 						isBold = true;
-					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial') {
+					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial' || meta.status === 'Need to approve' || meta.status === 'Need to Approve' || meta.status === 'need to approve') {
 						fontColor = 'B45309';
 						isBold = true;
-					} else if (meta.status === 'Pending' || meta.status === 'Need to receive' || meta.status === 'Need to send' || meta.status === 'Need to Send') {
+					} else if (meta.status === 'Pending' || meta.status === 'Need to receive' || meta.status === 'Need to Receive' || meta.status === 'need to receive' || meta.status === 'Need to send' || meta.status === 'Need to Send') {
 						fontColor = 'D97706';
 						isBold = true;
 					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
