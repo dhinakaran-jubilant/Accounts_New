@@ -12,8 +12,10 @@ import LottieLoader from './common/LottieLoader';
 import {
 	checkUserHasPrimaryAccessForLoanPrimary,
 	checkUserHasPrimaryAccessForLoanSecondary,
+	checkUserHasPrimaryAccessForAccount,
 	getUsersWithPrimaryAccessForLoanPrimary,
 	getUsersWithPrimaryAccessForLoanSecondary,
+	getUsersWithPrimaryAccessForAccount,
 	getLoanSecondaryAccounts,
 	getPrimaryTagColor,
 	isAccountMatch,
@@ -491,8 +493,7 @@ export const isUserPendingLoan = (loan, user, accountObjects = [], meta = null) 
 	const status = (loan.approval_status || loan.approvalStatus || 'PENDING').toUpperCase();
 	const isPendingSecondary =
 		status === 'PENDING_SECONDARY' ||
-		(status === 'PENDING' && !loan.verified_by) ||
-		(!loan.approval_status && loan.status === 'Pending');
+		(status === 'PENDING' && !loan.verified_by && !['active', 'closed', 'settled', 'overdue', 'date overdue'].includes(loanStatus));
 	const isPendingAdmin = status === 'PENDING_ADMIN' || status === 'VERIFIED';
 
 	const isAdmin = ['admin', 'super admin'].includes((user.role || '').toLowerCase()) || ['admin', 'jc0033'].includes((user.employee_code || '').toLowerCase());
@@ -626,6 +627,11 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = [], updated
 							(subEditorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
 						).toUpperCase();
 
+						const specificSecAcc = sub.secondaryAccountName || sub.accountName || sub.accountTag || (Array.isArray(sub.secAccounts) && sub.secAccounts.length === 1 ? sub.secAccounts[0].accountName : null);
+						const isCurUserSec = specificSecAcc
+							? checkUserHasPrimaryAccessForAccount(user, specificSecAcc, accountObjects)
+							: isUserSec;
+
 						if (isAdmin) {
 							hasPendingInstallment = true;
 							break;
@@ -633,10 +639,7 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = [], updated
 						if (targetRole === 'PRIMARY' && isUserPri) {
 							hasPendingInstallment = true;
 							break;
-						} else if (targetRole === 'SECONDARY' && isUserSec) {
-							hasPendingInstallment = true;
-							break;
-						} else if (!targetRole && (isUserPri || isUserSec)) {
+						} else if (targetRole === 'SECONDARY' && isCurUserSec) {
 							hasPendingInstallment = true;
 							break;
 						}
@@ -690,6 +693,11 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = [], updated
 					(editorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
 				).toUpperCase();
 
+				const specificSecAcc = inst.secondaryAccountName || inst.accountName || inst.accountTag || (Array.isArray(inst.secAccounts) && inst.secAccounts.length === 1 ? inst.secAccounts[0].accountName : null);
+				const isCurUserSec = specificSecAcc
+					? checkUserHasPrimaryAccessForAccount(user, specificSecAcc, accountObjects)
+					: isUserSec;
+
 				if (isAdmin) {
 					hasPendingInstallment = true;
 					break;
@@ -697,10 +705,7 @@ export const isUserPayoutPendingLoan = (loan, user, accountObjects = [], updated
 				if (targetRole === 'PRIMARY' && isUserPri) {
 					hasPendingInstallment = true;
 					break;
-				} else if (targetRole === 'SECONDARY' && isUserSec) {
-					hasPendingInstallment = true;
-					break;
-				} else if (!targetRole && (isUserPri || isUserSec)) {
+				} else if (targetRole === 'SECONDARY' && isCurUserSec) {
 					hasPendingInstallment = true;
 					break;
 				}
@@ -838,13 +843,24 @@ export const getLoanPendingPayoutItems = (
 						(subEditorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
 					).toUpperCase();
 
-					const subTargetUsers = subTargetRole === 'PRIMARY' ? priUsers : secUsers;
+					const specificSecAcc = sub.secondaryAccountName || sub.accountName || sub.accountTag || (Array.isArray(sub.secAccounts) && sub.secAccounts.length === 1 ? sub.secAccounts[0].accountName : null);
+					let subSecUsers = secUsers;
+					let isCurUserSec = isUserSec;
+					if (specificSecAcc) {
+						subSecUsers = allUsers.filter((u) => {
+							if (['admin', 'super admin'].includes((u.role || '').toLowerCase())) return false;
+							return checkUserHasPrimaryAccessForAccount(u, specificSecAcc, accountObjects);
+						});
+						isCurUserSec = checkUserHasPrimaryAccessForAccount(currentUser, specificSecAcc, accountObjects);
+					}
+
+					const subTargetUsers = subTargetRole === 'PRIMARY' ? priUsers : subSecUsers;
 					const subTargetUserNames = subTargetUsers.map((u) => u.name || u.employee_code).filter(Boolean);
 
 					const canSubApprove =
 						isAdmin ||
 						(subTargetRole === 'PRIMARY' && isUserPri) ||
-						(subTargetRole === 'SECONDARY' && isUserSec);
+						(subTargetRole === 'SECONDARY' && isCurUserSec);
 
 					const isCurrentUserEditor = isMatchUser(currentUser, subUpdatedBy);
 
@@ -948,14 +964,24 @@ export const getLoanPendingPayoutItems = (
 					(editorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')
 				).toUpperCase();
 
-				const targetUsers = targetRole === 'PRIMARY' ? priUsers : secUsers;
+				const specificSecAcc = inst.secondaryAccountName || inst.accountName || inst.accountTag || (Array.isArray(inst.secAccounts) && inst.secAccounts.length === 1 ? inst.secAccounts[0].accountName : null);
+				let instSecUsers = secUsers;
+				let isCurUserSec = isUserSec;
+				if (specificSecAcc) {
+					instSecUsers = allUsers.filter((u) => {
+						if (['admin', 'super admin'].includes((u.role || '').toLowerCase())) return false;
+						return checkUserHasPrimaryAccessForAccount(u, specificSecAcc, accountObjects);
+					});
+					isCurUserSec = checkUserHasPrimaryAccessForAccount(currentUser, specificSecAcc, accountObjects);
+				}
+
+				const targetUsers = targetRole === 'PRIMARY' ? priUsers : instSecUsers;
 				const targetUserNames = targetUsers.map((u) => u.name || u.employee_code).filter(Boolean);
 
 				const canCurrentUserApprove =
 					isAdmin ||
 					(targetRole === 'PRIMARY' && isUserPri) ||
-					(targetRole === 'SECONDARY' && isUserSec) ||
-					(!targetRole && (isUserPri || isUserSec));
+					(targetRole === 'SECONDARY' && isCurUserSec);
 
 				const isCurrentUserEditor = isMatchUser(currentUser, updatedBy);
 
@@ -1901,8 +1927,7 @@ export default function Requests({
 			const isPendingSecondary =
 				!isPayoutPendingLoan &&
 				(status === 'PENDING_SECONDARY' ||
-					(status === 'PENDING' && !loan.verified_by) ||
-					(!loan.approval_status && loan.status === 'Pending'));
+					(status === 'PENDING' && !loan.verified_by && !['active', 'closed', 'settled', 'overdue', 'date overdue'].includes(loanStatus)));
 			const isPendingAdmin = !isPayoutPendingLoan && (status === 'PENDING_ADMIN' || status === 'VERIFIED');
 			const isApproved = status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed';
 			const isRejected = status === 'REJECTED' || loan.status === 'Rejected';

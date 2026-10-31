@@ -2124,6 +2124,34 @@ export const getUsersWithPrimaryAccessForLoanSecondary = (loan, allUsers = [], a
 	});
 };
 
+// Check if a specific user has primary access for a specific account name or acronym
+export const checkUserHasPrimaryAccessForAccount = (user, accountName, accountObjects = []) => {
+	if (!user || !accountName) return false;
+	if (['admin', 'super admin'].includes((user.role || '').toLowerCase()) || ['admin', 'jc0033'].includes((user.employee_code || '').toLowerCase())) return false;
+
+	let userPrimaryList = [];
+	if (user.permissions) {
+		if (typeof user.permissions === 'object' && !Array.isArray(user.permissions)) {
+			userPrimaryList = Array.isArray(user.permissions.primary) ? user.permissions.primary : [];
+		} else if (Array.isArray(user.permissions)) {
+			userPrimaryList = user.permissions;
+		}
+	}
+
+	if (userPrimaryList.length === 0) return false;
+
+	return userPrimaryList.some((target) => isAccountMatch(accountName, target, accountObjects));
+};
+
+// Get all users who have primary access for a specific account name or acronym
+export const getUsersWithPrimaryAccessForAccount = (accountName, allUsers = [], accountObjects = []) => {
+	if (!accountName || !Array.isArray(allUsers) || allUsers.length === 0) return [];
+	return allUsers.filter((u) => {
+		if (['admin', 'super admin'].includes((u.role || '').toLowerCase())) return false;
+		return checkUserHasPrimaryAccessForAccount(u, accountName, accountObjects);
+	});
+};
+
 // Check if an individual account has approval access enabled (is_need_approval !== false)
 export const checkAccountHasApprovalAccess = (accountNameOrTag, accountObjects = []) => {
 	if (!accountNameOrTag) return true;
@@ -5993,16 +6021,14 @@ export function JointLoanDetailsPage({
 	const isUserSecManager = useMemo(() => {
 		if (userPerms?.isAdmin) return false;
 		const accList = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
-		return Boolean(isSecondaryLoan || checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, accList));
-	}, [activeUser, loan, accountObjectsList, availableAccountObjects, userPerms?.isAdmin, isSecondaryLoan]);
+		return Boolean(checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, accList));
+	}, [activeUser, loan, accountObjectsList, availableAccountObjects, userPerms?.isAdmin]);
 
 	const isUserPriManager = useMemo(() => {
 		if (userPerms?.isAdmin) return false;
-		if (isSecondaryLoan) return false;
 		const accList = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
-		if (checkUserHasPrimaryAccessForLoanPrimary(activeUser, loan, accList)) return true;
-		return !isUserSecManager;
-	}, [userPerms?.isAdmin, isSecondaryLoan, activeUser, loan, accountObjectsList, availableAccountObjects, isUserSecManager]);
+		return Boolean(checkUserHasPrimaryAccessForLoanPrimary(activeUser, loan, accList));
+	}, [activeUser, loan, accountObjectsList, availableAccountObjects, userPerms?.isAdmin]);
 
 	// Payout date approval access is per installment:
 	// If primary manager edit payout date -> approve/reject access to secondary manager.
@@ -6011,18 +6037,26 @@ export function JointLoanDetailsPage({
 	const getCanApprovePayoutForInst = useCallback((inst) => {
 		if (!inst) return false;
 		if (userPerms?.isAdmin || isSystemAdmin) return true;
-		const targetRole = inst.payout_approval_target || inst.payoutApprovalTarget;
-		if (targetRole === 'PRIMARY') return isUserPriManager;
-		if (targetRole === 'SECONDARY') return isUserSecManager;
-		const editorRole =
+		const targetRole = (inst.payout_approval_target || inst.payoutApprovalTarget || '').toUpperCase();
+		const editorRole = (
 			inst.payout_editor_role ||
 			inst.payoutEditorRole ||
 			inst.payout_requested_role ||
-			inst.payoutRequestedRole;
-		if (editorRole === 'SECONDARY') return isUserPriManager;
-		if (editorRole === 'PRIMARY') return isUserSecManager;
+			inst.payoutRequestedRole ||
+			''
+		).toUpperCase();
+		const effectiveTargetRole = targetRole || (editorRole === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY');
+		if (effectiveTargetRole === 'PRIMARY') return isUserPriManager;
+		if (effectiveTargetRole === 'SECONDARY') {
+			const specificSecAcc = inst.secondaryAccountName || inst.accountName || inst.accountTag || (Array.isArray(inst.secAccounts) && inst.secAccounts.length === 1 ? inst.secAccounts[0].accountName : null);
+			if (specificSecAcc) {
+				const accList = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
+				return checkUserHasPrimaryAccessForAccount(activeUser, specificSecAcc, accList);
+			}
+			return isUserSecManager;
+		}
 		return isUserSecManager;
-	}, [userPerms?.isAdmin, isSystemAdmin, isUserPriManager, isUserSecManager]);
+	}, [userPerms?.isAdmin, isSystemAdmin, isUserPriManager, isUserSecManager, accountObjectsList, availableAccountObjects, activeUser]);
 
 	const hasAccess = useMemo(() => {
 		return canUserAccessLoan(loan, activeUser, userPerms, availableAccountObjects, usersList);
@@ -6336,7 +6370,8 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 
 		try {
-			const isPrimaryApprover = isSystemAdmin ? true : (targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan));
+			const targetRole = (inst?.payout_approval_target || inst?.payoutApprovalTarget || (inst?.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')).toUpperCase();
+			const isPrimaryApprover = isSystemAdmin ? false : (targetRole === 'PRIMARY' || isUserPriManager);
 			const approverRole = isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
 			const approverName = activeUser?.name || (isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager'));
 			const approverCode = activeUser?.employee_code || '';
@@ -6430,7 +6465,8 @@ export function JointLoanDetailsPage({
 		const loanIdentifier = loan?.db_id || loan?.id;
 
 		try {
-			const isPrimaryApprover = isSystemAdmin ? true : (targetRole === 'PRIMARY' || (!targetRole && !isSecondaryLoan));
+			const targetRole = (payoutModalData.row?.payout_approval_target || payoutModalData.row?.payoutApprovalTarget || (payoutModalData.row?.payout_requested_role === 'SECONDARY' ? 'PRIMARY' : 'SECONDARY')).toUpperCase();
+			const isPrimaryApprover = isSystemAdmin ? false : (targetRole === 'PRIMARY' || isUserPriManager);
 			const approverRole = isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager');
 			const approverName = activeUser?.name || (isSystemAdmin ? 'System Admin' : (isPrimaryApprover ? 'Primary Manager' : 'Secondary Manager'));
 			const approverCode = activeUser?.employee_code || '';
@@ -7909,7 +7945,9 @@ export function JointLoanDetailsPage({
 	};
 
 	const handleScheduleDateChange = (sNo, field, val) => {
-		const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+		const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
+		const isPriEditor = !userPerms?.isAdmin && isUserPriManager;
+		if (!userPerms?.isAdmin && !isSystemAdmin && !isSecEditor && !isPriEditor) return;
 		if (isSecEditor && field !== 'dueDate') return;
 		setScheduleOverrides((prev) => {
 			const currentInst = allScheduleItems.find((item) => String(item.sNo) === String(sNo)) || {};
@@ -7998,7 +8036,7 @@ export function JointLoanDetailsPage({
 							instOverrides.payoutApprovedAt = nowStr;
 							instOverrides.payout_notes = 'Auto-approved by System Admin';
 						} else {
-							const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+							const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
 							const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
 							const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
 							const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
@@ -8074,7 +8112,7 @@ export function JointLoanDetailsPage({
 						// Every time any manager edits payout date:
 						// - If secondary manager edits -> approval request sent to primary manager (target: 'PRIMARY')
 						// - If primary manager edits -> approval request sent to secondary manager (target: 'SECONDARY')
-						const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+						const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
 						const targetRole = isSecEditor ? 'PRIMARY' : 'SECONDARY';
 						const editorRole = isSecEditor ? 'SECONDARY' : 'PRIMARY';
 						const editorName = activeUser?.name || activeUser?.employee_code || (isSecEditor ? 'Secondary Manager' : 'Primary Manager');
@@ -8133,7 +8171,7 @@ export function JointLoanDetailsPage({
 				const isRecd = field === 'receivedDate';
 				const fieldLabel = isRecd ? 'Received Date' : 'Payout Date';
 				const nowStr = getFormattedNow();
-				const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+				const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
 				const displayOld = baselineVal || 'None';
 				const displayNew = finalVal || 'None';
 
@@ -8289,7 +8327,7 @@ export function JointLoanDetailsPage({
 	};
 
 	const handleClearRowDates = (sNo) => {
-		const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+		const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
 		if (isSecEditor) return;
 
 		const sNoStr = String(sNo);
@@ -11219,7 +11257,8 @@ export function JointLoanDetailsPage({
 										!isDateBefore(inst.receivedDate, inst.date)
 									);
 									const isPastEmiDate = isPastOrTodayDate(inst.date);
-									const isSecEditor = !userPerms?.isAdmin && Boolean(isSecondaryLoan || isUserSecManager);
+									const isSecEditor = !userPerms?.isAdmin && isUserSecManager;
+									const isPriEditor = !userPerms?.isAdmin && isUserPriManager;
 									const isFirstSubPayoutApproved = Boolean(
 										inst.isPartial &&
 										inst.subInstallments?.[0] &&
@@ -11232,9 +11271,9 @@ export function JointLoanDetailsPage({
 									);
 									const isMainRowPayoutApproved = Boolean(isPayoutApproved || isFirstSubPayoutApproved);
 									// Once payout date approved, recd date and payout date are NOT editable even for system admin
-									const canEditRecdDate = isFinallyApproved && !isSecEditor && !isMainRowPayoutApproved && (isPastEmiDate || isRecdDateFilled);
-									const canEditDueDate = isFinallyApproved && !isMainRowPayoutApproved && isRecdDateValid;
-									const canCreatePartial = isFinallyApproved && !isSecEditor && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && !isMainRowPayoutApproved;
+									const canEditRecdDate = isFinallyApproved && (isSystemAdmin || isPriEditor) && !isMainRowPayoutApproved && (isPastEmiDate || isRecdDateFilled);
+									const canEditDueDate = isFinallyApproved && (isSystemAdmin || isPriEditor || isSecEditor) && !isMainRowPayoutApproved && isRecdDateValid;
+									const canCreatePartial = isFinallyApproved && (isSystemAdmin || isPriEditor) && !inst.isPartial && isPastEmiDate && !isRecdDateFilled && !isPayoutDateFilled && !isMainRowPayoutApproved;
 									const isAnySubApproved = Boolean(
 										inst.isPartial &&
 										inst.subInstallments?.some(
@@ -11674,8 +11713,8 @@ export function JointLoanDetailsPage({
 													const canApproveSubPayout = getCanApprovePayoutForInst(sub);
 
 													// For partial payments, once payout date approved, recd and payout date are not editable even for system admin
-													const canEditSubRecdDate = isFinallyApproved && !isSecEditor && !isSubPayoutApproved && (isPastEmiDate || isSubRecdDateFilled);
-													const canEditSubDueDate = isFinallyApproved && !isSubPayoutApproved && isSubRecdDateValid;
+													const canEditSubRecdDate = isFinallyApproved && (isSystemAdmin || isPriEditor) && !isSubPayoutApproved && (isPastEmiDate || isSubRecdDateFilled);
+													const canEditSubDueDate = isFinallyApproved && (isSystemAdmin || isPriEditor || isSecEditor) && !isSubPayoutApproved && isSubRecdDateValid;
 
 													// Determine minDate for recd date:
 													// For sub-installment A: inst.date

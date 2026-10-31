@@ -47,14 +47,14 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 			{/* Metric 1: Total Principal / Secondary Capital */}
 			<div
 				onClick={() => onFilterByStatus && onFilterByStatus('ALL')}
-				className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 ring-1 ring-slate-200/80 cursor-pointer group"
+				className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 ring-1 ring-orange-200 cursor-pointer group"
 				title={isSecondary ? "Total Secondary Capital Invested Across Facilities" : "Total Joint Loan Principal Disbursed"}
 			>
 				<div className="flex items-start justify-between">
 					<span className="font-bold text-[12px] uppercase tracking-wider text-slate-500">
 						{isSecondary ? 'Secondary Capital' : 'Total Principal'}
 					</span>
-					<div className="w-9 h-9 rounded-xl bg-orange-50 text-primary flex items-center justify-center group-hover:scale-110 transition-transform">
+					<div className="w-9 h-9 rounded-xl bg-orange-100 text-primary flex items-center justify-center group-hover:scale-110 transition-transform">
 						<span className="material-symbols-outlined text-[20px]">account_balance</span>
 					</div>
 				</div>
@@ -78,14 +78,14 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 
 			{/* Metric 2: Total Collected / Payouts Received */}
 			<div
-				className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 ring-1 ring-slate-200/80 group"
+				className="relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 ring-1 ring-emerald-200 group"
 				title={isSecondary ? "Secondary Payouts Received from Primary Accounts" : "Total Repayments Collected from Borrowers to Date"}
 			>
 				<div className="flex items-start justify-between">
 					<span className="font-bold text-[12px] uppercase tracking-wider text-slate-500">
 						{isSecondary ? 'Payouts Received' : 'Total Collected'}
 					</span>
-					<div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+					<div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center group-hover:scale-110 transition-transform">
 						<span className="material-symbols-outlined text-[20px]">payments</span>
 					</div>
 				</div>
@@ -146,7 +146,7 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 					title="Primary accounts received repayments from client, but have not yet settled secondary partners' share"
 				>
 					<div className="flex items-start justify-between">
-						<span className="font-bold text-[12px] uppercase tracking-wider text-amber-900">
+						<span className="font-bold text-[12px] uppercase tracking-wider text-slate-500">
 							Settlement Pending
 						</span>
 						<div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center group-hover:scale-110 transition-transform">
@@ -178,16 +178,16 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 					onClick={() => onNavigateToRequests && onNavigateToRequests()}
 					className={`relative overflow-hidden bg-white rounded-2xl p-5 shadow-sm hover:shadow-md transition-all duration-300 ring-1 cursor-pointer group hover:border-amber-400 ${
 						pendingApprovalAmount > 0 || pendingCount > 0
-							? 'ring-amber-300/80 bg-amber-50/15'
-							: 'ring-slate-200/80'
+							? 'ring-[#a5caff] bg-amber-50/15'
+							: 'ring-[#a5caff]'
 					}`}
 					title="Click to open Requests: Payout date filled, waiting for partner/admin approval"
 				>
 					<div className="flex items-start justify-between">
-						<span className="font-bold text-[12px] uppercase tracking-wider text-amber-900 flex items-center gap-1">
+						<span className="font-bold text-[12px] uppercase tracking-wider text-slate-500 flex items-center gap-1">
 							Pending Approval
 						</span>
-						<div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+						<div className="w-9 h-9 rounded-xl bg-[#a5caff] text-[#2b7cee] flex items-center justify-center group-hover:scale-110 transition-transform">
 							<span className="material-symbols-outlined text-[20px]">assignment_turned_in</span>
 						</div>
 					</div>
@@ -199,7 +199,7 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 							{formatCompactCurrency(pendingApprovalAmount)}
 						</div>
 						<div className="flex items-center gap-1.5 mt-2.5">
-							<span className="inline-flex items-center text-[10.5px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full ring-1 ring-amber-300">
+							<span className="inline-flex items-center text-[10.5px] font-bold text-[#2b7cee] bg-[#73adff]/15 px-2 py-0.5 rounded-full ring-1 ring-[#73adff]">
 								{pendingApprovalCount} {pendingApprovalCount === 1 ? 'EMI' : 'EMIs'}
 							</span>
 							<span className="font-medium text-[11px] text-slate-600 truncate">

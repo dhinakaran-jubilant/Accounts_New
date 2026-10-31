@@ -12,6 +12,7 @@ import { isUserPendingLoan, hasValidPayoutDate } from './Requests';
 import {
 	checkUserHasPrimaryAccessForLoanPrimary,
 	checkUserHasPrimaryAccessForLoanSecondary,
+	checkUserHasPrimaryAccessForAccount,
 } from './JointLoan';
 
 export default function Header({
@@ -251,10 +252,15 @@ export default function Header({
 
 					// PENDING: Needs action from user only if payout date is filled
 					if (pStatus === 'PENDING' && hasValidPayoutDate(inst)) {
+						const specificSecAcc = inst.secondaryAccountName || inst.accountName || inst.accountTag || (Array.isArray(inst.secAccounts) && inst.secAccounts.length === 1 ? inst.secAccounts[0].accountName : null);
+						const isCurUserSec = specificSecAcc
+							? checkUserHasPrimaryAccessForAccount(user, specificSecAcc, rawAccounts)
+							: isUserSec;
+
 						const needsAction =
 							(targetRole === 'PRIMARY' && isUserPri) ||
-							(targetRole === 'SECONDARY' && isUserSec) ||
-							(isAdmin && !isUserPri && !isUserSec);
+							(targetRole === 'SECONDARY' && isCurUserSec) ||
+							(isAdmin && !isUserPri && !isCurUserSec);
 
 						const pKey = `${loan.db_id || loan.id}_${sNo}`;
 						if (needsAction && !seenPendingKeys.has(pKey)) {

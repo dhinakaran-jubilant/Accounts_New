@@ -701,37 +701,65 @@ def check_joint_loan_id():
     
     return jsonify({"exists": False}), 200
 
-def find_users_with_primary_access_for_loan(loan):
-    """Find active users who have primary access for any of this loan's secondary accounts."""
+def expand_account_tokens(acc_name):
+    """Expand account name or acronym to include full names, acronyms, and normalized variants."""
+    tokens = set()
+    if not acc_name:
+        return tokens
+    s = str(acc_name).strip()
+    tokens.add(s.lower())
+    tokens.add(s.lower().replace(" ", "").replace("_", "").replace("-", ""))
+    acr = get_acronym(s)
+    if acr:
+        tokens.add(acr.lower())
+        tokens.add(acr.lower().replace(" ", "").replace("_", "").replace("-", ""))
+    try:
+        acc_obj = AccountName.query.filter(
+            (db.func.lower(AccountName.name) == s.lower()) |
+            (db.func.lower(AccountName.acronym) == s.lower())
+        ).first()
+        if acc_obj:
+            if acc_obj.name:
+                tokens.add(acc_obj.name.lower())
+                tokens.add(acc_obj.name.lower().replace(" ", "").replace("_", "").replace("-", ""))
+            if acc_obj.acronym:
+                tokens.add(acc_obj.acronym.lower())
+                tokens.add(acc_obj.acronym.lower().replace(" ", "").replace("_", "").replace("-", ""))
+    except Exception:
+        pass
+    return tokens
+
+def find_users_with_primary_access_for_loan(loan, specific_sec_account=None):
+    """Find active users who have primary access for any (or specific) secondary account of this loan."""
     if not loan:
         return []
     
     sec_names = []
-    if hasattr(loan, 'remaining_accounts') and loan.remaining_accounts:
+    if specific_sec_account:
+        sec_names = [str(specific_sec_account).strip()]
+    elif hasattr(loan, 'remaining_accounts') and loan.remaining_accounts:
         sec_names = [r.account_name for r in loan.remaining_accounts if r.account_name]
     
+    if not sec_names and hasattr(loan, 'id') and loan.id:
+        rems = RemainingAccount.query.filter_by(loan_id=loan.id).all()
+        sec_names = [r.account_name for r in rems if r.account_name]
+        
+    if not sec_names and isinstance(loan, dict):
+        sec_accs = loan.get('secondaryAccounts') or loan.get('remaining_accounts') or []
+        for sa in sec_accs:
+            if isinstance(sa, dict):
+                name = sa.get('accountName') or sa.get('name') or sa.get('account_name')
+                if name:
+                    sec_names.append(name)
+            elif isinstance(sa, str):
+                sec_names.append(sa)
+
     if not sec_names:
         return []
     
     target_tokens = set()
     for name in sec_names:
-        s = str(name).strip()
-        target_tokens.add(s.lower())
-        acr = get_acronym(s)
-        if acr:
-            target_tokens.add(acr.lower())
-        try:
-            acc_obj = AccountName.query.filter(
-                (db.func.lower(AccountName.name) == s.lower()) |
-                (db.func.lower(AccountName.acronym) == s.lower())
-            ).first()
-            if acc_obj:
-                if acc_obj.name:
-                    target_tokens.add(acc_obj.name.lower())
-                if acc_obj.acronym:
-                    target_tokens.add(acc_obj.acronym.lower())
-        except Exception:
-            pass
+        target_tokens |= expand_account_tokens(name)
     
     matched_users = []
     for u in User.query.filter_by(status='active').all():
@@ -753,13 +781,7 @@ def find_users_with_primary_access_for_loan(loan):
             
             user_tokens = set()
             for p in pri_list:
-                if not p:
-                    continue
-                p_str = str(p).strip()
-                user_tokens.add(p_str.lower())
-                p_acr = get_acronym(p_str)
-                if p_acr:
-                    user_tokens.add(p_acr.lower())
+                user_tokens |= expand_account_tokens(p)
             
             if user_tokens & target_tokens:
                 matched_users.append(u)
@@ -770,26 +792,12 @@ def find_users_with_primary_access_for_loan(loan):
 
 def find_users_with_primary_access_for_loan_primary(loan):
     """Find active users who have primary access for this loan's primary account."""
-    if not loan or not loan.primary_account_name:
+    if not loan:
         return []
-    pri_name = str(loan.primary_account_name).strip()
-    target_tokens = set()
-    target_tokens.add(pri_name.lower())
-    acr = get_acronym(pri_name)
-    if acr:
-        target_tokens.add(acr.lower())
-    try:
-        acc_obj = AccountName.query.filter(
-            (db.func.lower(AccountName.name) == pri_name.lower()) |
-            (db.func.lower(AccountName.acronym) == pri_name.lower())
-        ).first()
-        if acc_obj:
-            if acc_obj.name:
-                target_tokens.add(acc_obj.name.lower())
-            if acc_obj.acronym:
-                target_tokens.add(acc_obj.acronym.lower())
-    except Exception:
-        pass
+    pri_name = getattr(loan, 'primary_account_name', None) or (loan.get('primary_account_name') if isinstance(loan, dict) else None)
+    if not pri_name:
+        return []
+    target_tokens = expand_account_tokens(pri_name)
 
     matched_users = []
     for u in User.query.filter_by(status='active').all():
@@ -808,13 +816,7 @@ def find_users_with_primary_access_for_loan_primary(loan):
                 continue
             user_tokens = set()
             for p in pri_list:
-                if not p:
-                    continue
-                p_str = str(p).strip()
-                user_tokens.add(p_str.lower())
-                p_acr = get_acronym(p_str)
-                if p_acr:
-                    user_tokens.add(p_acr.lower())
+                user_tokens |= expand_account_tokens(p)
             if user_tokens & target_tokens:
                 matched_users.append(u)
         except Exception:
@@ -898,7 +900,7 @@ def check_loan_secondary_requires_approval(loan):
     except Exception:
         return True
 
-def send_payout_approval_notifications(loan, s_no, payout_date, requester_name='Staff', target_role='SECONDARY'):
+def send_payout_approval_notifications(loan, s_no, payout_date, requester_name='Staff', target_role='SECONDARY', specific_sec_name=None):
     if not loan:
         return
     try:
@@ -909,8 +911,8 @@ def send_payout_approval_notifications(loan, s_no, payout_date, requester_name='
             title_str = f"EMI #{s_no} Payout Approval Required: {loan.loan_ref_id or loan.id}"
             msg_str = f"Secondary Manager ({requester_name}) updated payout date to {payout_date} for EMI #{s_no} ({client}). Please review and approve settlement."
         else:
-            matched_users = find_users_with_primary_access_for_loan(loan)
-            sec_names = [r.account_name for r in loan.remaining_accounts] if hasattr(loan, 'remaining_accounts') else []
+            matched_users = find_users_with_primary_access_for_loan(loan, specific_sec_account=specific_sec_name)
+            sec_names = [specific_sec_name] if specific_sec_name else ([r.account_name for r in loan.remaining_accounts] if hasattr(loan, 'remaining_accounts') else [])
             sec_str = ", ".join(sec_names) if sec_names else "Secondary Partner"
             title_str = f"EMI #{s_no} Payout Approval Required: {loan.loan_ref_id or loan.id}"
             msg_str = f"Primary Manager ({requester_name}) updated payout date to {payout_date} for EMI #{s_no} ({client}). Please verify remittance to {sec_str} and approve settlement."
@@ -1823,7 +1825,7 @@ def save_schedule_override(loan_id):
                                     req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                     sch.payout_requested_by = req_by
                                     sch.payout_requested_at = payload.get('payout_requested_at') or now_str
-                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
+                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target, specific_sec_name=payload.get('secondaryAccountName') or payload.get('account_name') or payload.get('accountName'))
                                 else:
                                     curr_splits['payoutApprovalStatusA'] = None
                                     sch.payout_approval_status = None
@@ -1886,7 +1888,7 @@ def save_schedule_override(loan_id):
                                     req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                     sch.payout_requested_by = req_by
                                     sch.payout_requested_at = payload.get('payout_requested_at') or now_str
-                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
+                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target, specific_sec_name=payload.get('secondaryAccountName') or payload.get('account_name') or payload.get('accountName'))
                                 else:
                                     curr_splits['payoutApprovalStatusB'] = None
                                     sch.payout_approval_status = None
@@ -1949,7 +1951,7 @@ def save_schedule_override(loan_id):
                                     req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                     sch.payout_requested_by = req_by
                                     sch.payout_requested_at = payload.get('payout_requested_at') or now_str
-                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
+                                    send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target, specific_sec_name=payload.get('secondaryAccountName') or payload.get('account_name') or payload.get('accountName'))
                                 else:
                                     curr_splits['payoutApprovalStatusC'] = None
                                     sch.payout_approval_status = None
@@ -2040,7 +2042,7 @@ def save_schedule_override(loan_id):
                                 req_by = payload.get('payout_requested_by') or payload.get('userName') or payload.get('user_name') or payload.get('employee_code') or 'Staff'
                                 sch.payout_requested_by = req_by
                                 sch.payout_requested_at = payload.get('payout_requested_at') or now_str
-                                send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target)
+                                send_payout_approval_notifications(loan, target_idx + 1, value, req_by, target_role=payout_target, specific_sec_name=payload.get('secondaryAccountName') or payload.get('account_name') or payload.get('accountName'))
                             else:
                                 sch.payout_approval_status = None
                                 sch.payout_approval_target = None
