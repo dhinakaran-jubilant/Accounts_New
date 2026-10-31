@@ -6,11 +6,12 @@ Date: 2026-10-29 13:38
 Description: DayBook & SFTP Synchronization dashboard component providing synced collection results, modern interactive date filters, account breakdowns, and Excel exports.
 */
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import api from '../services/api';
 import { formatIndianCurrency } from '../utils/jointLoanUtils';
 import { TableLoader } from './common/LottieLoader';
 import _XLSX from 'xlsx-js-style';
+import { ModernAccountDropdown, ModernDateRangeCalendar } from './JointLoan';
 
 const XLSX = _XLSX.default || _XLSX;
 
@@ -66,10 +67,8 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 	// Filtering states
 	const [searchTerm, setSearchTerm] = useState('');
 	const [selectedAccount, setSelectedAccount] = useState('ALL');
-	const [datePreset, setDatePreset] = useState('all');
+	const [dateRange, setDateRange] = useState({ startDate: '', endDate: '' });
 	const [dateType, setDateType] = useState('received'); // 'received' | 'due'
-	const [fromDate, setFromDate] = useState('');
-	const [toDate, setToDate] = useState('');
 	const [activeTab, setActiveTab] = useState('all'); // 'all' | 'today' | 'latest'
 
 	// Pagination & Sorting
@@ -150,56 +149,75 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 		loadData(true);
 	}, []);
 
-	// Handle Date Presets
-	const handlePresetChange = (preset) => {
-		setDatePreset(preset);
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
+	// Dynamic account filter options populated from accounts table and synced items
+	const accountFilterOptions = useMemo(() => {
+		if (Array.isArray(accounts) && accounts.length > 0) {
+			let dbOptions = accounts
+				.filter((acc) => acc && (acc.name || acc.acronym))
+				.map((acc) => {
+					const name = (acc.name || acc.acronym).trim();
+					const acr = (acc.acronym || '').trim();
+					const count = syncedItems.filter((item) => {
+						const itemAcc = (item.primaryAccount || '').toLowerCase();
+						return (
+							itemAcc === name.toLowerCase() ||
+							itemAcc === acr.toLowerCase() ||
+							itemAcc.includes(name.toLowerCase()) ||
+							(acr && itemAcc.includes(acr.toLowerCase()))
+						);
+					}).length;
 
-		if (preset === 'all') {
-			setFromDate('');
-			setToDate('');
-		} else if (preset === 'today') {
-			const str = toInputDate(today);
-			setFromDate(str);
-			setToDate(str);
-		} else if (preset === 'yesterday') {
-			const yest = new Date(today);
-			yest.setDate(yest.getDate() - 1);
-			const str = toInputDate(yest);
-			setFromDate(str);
-			setToDate(str);
-		} else if (preset === 'week') {
-			const day = today.getDay();
-			const diff = today.getDate() - day + (day === 0 ? -6 : 1); // Monday
-			const monday = new Date(today);
-			monday.setDate(diff);
-			const sunday = new Date(monday);
-			sunday.setDate(monday.getDate() + 6);
-			setFromDate(toInputDate(monday));
-			setToDate(toInputDate(sunday));
-		} else if (preset === 'month') {
-			const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-			const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-			setFromDate(toInputDate(firstDay));
-			setToDate(toInputDate(lastDay));
-		} else if (preset === 'last30') {
-			const past30 = new Date(today);
-			past30.setDate(past30.getDate() - 30);
-			setFromDate(toInputDate(past30));
-			setToDate(toInputDate(today));
+					return {
+						id: name,
+						label: name,
+						acronym: acr,
+						color: acc.color || 'blue',
+						count,
+					};
+				});
+
+			dbOptions.sort((a, b) => {
+				if (b.count !== a.count) return b.count - a.count;
+				return a.label.localeCompare(b.label);
+			});
+
+			return [
+				{ id: 'ALL', label: 'All Accounts', count: syncedItems.length },
+				...dbOptions,
+			];
 		}
-		setCurrentPage(1);
-	};
+
+		// Fallback: extract from syncedItems
+		const nameMap = new Map();
+		syncedItems.forEach((item) => {
+			const name = item.primaryAccount;
+			if (name) nameMap.set(name, (nameMap.get(name) || 0) + 1);
+		});
+
+		const opts = Array.from(nameMap.entries())
+			.sort((a, b) => b[1] - a[1])
+			.map(([name, count]) => ({ id: name, label: name, count }));
+
+		return [
+			{ id: 'ALL', label: 'All Accounts', count: syncedItems.length },
+			...opts,
+		];
+	}, [accounts, syncedItems]);
+
+	// Reference date for date range calendar popover
+	const calendarReferenceDate = useMemo(() => {
+		if (syncedItems.length > 0) {
+			return syncedItems[0].receivedDate || syncedItems[0].emiDate || '';
+		}
+		return '';
+	}, [syncedItems]);
 
 	// Reset all filters to default
 	const handleResetFilters = () => {
 		setSearchTerm('');
 		setSelectedAccount('ALL');
-		setDatePreset('all');
+		setDateRange({ startDate: '', endDate: '' });
 		setDateType('received');
-		setFromDate('');
-		setToDate('');
 		setActiveTab('all');
 		setCurrentPage(1);
 	};
@@ -259,16 +277,22 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 	// Filtered list based on Search, Account, and Modern Date Range
 	const filteredItems = useMemo(() => {
 		const q = (searchTerm || globalSearch).toLowerCase().trim();
-		const fromD = fromDate ? new Date(fromDate + 'T00:00:00') : null;
-		const toD = toDate ? new Date(toDate + 'T23:59:59') : null;
 
 		return tabFilteredItems.filter((item) => {
 			// Account filter
 			if (selectedAccount !== 'ALL') {
+				const target = selectedAccount.toLowerCase();
 				const itemAcc = (item.primaryAccount || '').toLowerCase();
-				if (!itemAcc.includes(selectedAccount.toLowerCase())) {
-					return false;
-				}
+				const accObj = accounts.find(
+					(a) => (a.name || '').toLowerCase() === target || (a.acronym || '').toLowerCase() === target
+				);
+				const targetAcr = (accObj?.acronym || '').toLowerCase();
+				const matches =
+					itemAcc === target ||
+					(targetAcr && itemAcc === targetAcr) ||
+					itemAcc.includes(target) ||
+					(targetAcr && itemAcc.includes(targetAcr));
+				if (!matches) return false;
 			}
 
 			// Text search
@@ -279,6 +303,7 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 				const recdDate = (item.receivedDate || '').toLowerCase();
 				const emiNo = `emi ${item.emiNo || ''}`.toLowerCase();
 				const acc = (item.primaryAccount || '').toLowerCase();
+				const amtStr = String(item.amount || '');
 
 				const matches =
 					client.includes(q) ||
@@ -286,24 +311,32 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 					emiDate.includes(q) ||
 					recdDate.includes(q) ||
 					emiNo.includes(q) ||
-					acc.includes(q);
+					acc.includes(q) ||
+					amtStr.includes(q);
 
 				if (!matches) return false;
 			}
 
 			// Date Range Filter
-			if (fromD || toD) {
+			if (dateRange.startDate || dateRange.endDate) {
 				const targetDateStr = dateType === 'received' ? item.receivedDate : item.emiDate;
 				const parsed = parseDateRobustly(targetDateStr);
 				if (!parsed) return false;
 				const t = parsed.getTime();
-				if (fromD && t < fromD.getTime()) return false;
-				if (toD && t > toD.getTime()) return false;
+
+				if (dateRange.startDate) {
+					const fromD = parseDateRobustly(dateRange.startDate);
+					if (fromD && t < fromD.getTime()) return false;
+				}
+				if (dateRange.endDate) {
+					const toD = parseDateRobustly(dateRange.endDate);
+					if (toD && t > toD.getTime()) return false;
+				}
 			}
 
 			return true;
 		});
-	}, [tabFilteredItems, searchTerm, globalSearch, selectedAccount, fromDate, toDate, dateType]);
+	}, [tabFilteredItems, searchTerm, globalSearch, selectedAccount, accounts, dateRange, dateType]);
 
 	// Sorting
 	const sortedItems = useMemo(() => {
@@ -332,24 +365,42 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 	}, [filteredItems, sortField, sortDirection]);
 
 	// Pagination
-	const totalPages = Math.ceil(sortedItems.length / pageSize) || 1;
+	const totalItems = sortedItems.length;
+	const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+	const startIndex = (currentPage - 1) * pageSize;
+	const endIndex = Math.min(startIndex + pageSize, totalItems);
+
 	const paginatedItems = useMemo(() => {
-		const start = (currentPage - 1) * pageSize;
-		return sortedItems.slice(start, start + pageSize);
-	}, [sortedItems, currentPage, pageSize]);
+		return sortedItems.slice(startIndex, endIndex);
+	}, [sortedItems, startIndex, endIndex]);
 
-	// Metric summaries
-	const totalVolume = useMemo(() => {
-		return filteredItems.reduce((acc, i) => acc + (Number(i.amount) || 0), 0);
-	}, [filteredItems]);
+	// Reset page when filters change
+	useEffect(() => {
+		setCurrentPage(1);
+	}, [searchTerm, selectedAccount, dateRange, dateType, activeTab]);
 
-	const uniqueBorrowers = useMemo(() => {
-		return new Set(filteredItems.map((i) => i.loanId).filter(Boolean)).size;
-	}, [filteredItems]);
+	// Keep current page valid
+	useEffect(() => {
+		if (currentPage > totalPages) {
+			setCurrentPage(Math.max(1, totalPages));
+		}
+	}, [currentPage, totalPages]);
 
-	const avgAmount = useMemo(() => {
-		return filteredItems.length > 0 ? Math.round(totalVolume / filteredItems.length) : 0;
-	}, [filteredItems, totalVolume]);
+	// Page number list with ellipsis for pagination
+	const getPageNumbers = () => {
+		if (totalPages <= 5) {
+			return Array.from({ length: totalPages }, (_, i) => i + 1);
+		}
+		const pages = [];
+		if (currentPage <= 3) {
+			pages.push(1, 2, 3, 4, '...', totalPages);
+		} else if (currentPage >= totalPages - 2) {
+			pages.push(1, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+		} else {
+			pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
+		}
+		return pages;
+	};
 
 	// Handle column sorting toggle
 	const handleSort = (field) => {
@@ -402,18 +453,20 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 	};
 
 	return (
-		<div className="flex flex-col w-full gap-6 font-sans">
-			{/* Top Header & SFTP Service Controls Strip */}
-			<div className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/80">
-				<div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-					<div className="flex items-start gap-4">
-						<div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shadow-xs shrink-0">
-							<span className="material-symbols-outlined">cloud_sync</span>
+		<div className="flex flex-col w-full gap-space-lg font-sans">
+			{/* Top Header & Page Title */}
+			<div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+				<div>
+					<div className="flex items-center gap-3">
+						<div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shadow-xs">
+							<span className="material-symbols-outlined text-[24px]">cloud_sync</span>
 						</div>
 						<div>
 							<div className="flex flex-wrap items-center gap-3">
-								<h1 className="text-2xl font-black text-slate-900 tracking-tight">DayBook &amp; SFTP Sync</h1>
-								<span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+								<h1 className="text-[24px] font-extrabold text-slate-900 tracking-tight leading-tight">
+									DayBook &amp; SFTP Sync
+								</h1>
+								<span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
 									<span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
 									{syncedItems.length} EMIs Synced
 								</span>
@@ -428,442 +481,465 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 									</span>
 								)}
 							</div>
-							<p className="text-[12px] text-slate-500 mt-1 font-medium">
+							<p className="text-[12px] text-slate-500 mt-0.5">
 								Real-time automated bank collection ingestion, loan installment tracking, and DayBook reconciliation.
 							</p>
 						</div>
 					</div>
-
-					{/* Action Buttons */}
-					<div className="flex flex-wrap items-center gap-2.5">
-						<button
-							type="button"
-							onClick={handleTriggerSync}
-							disabled={isSyncing}
-							className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl font-bold text-sm text-white shadow-md transition-all cursor-pointer ${isSyncing
-									? 'bg-primary/70 cursor-not-allowed'
-									: 'bg-primary hover:bg-orange-600 shadow-orange-500/25 active:scale-95'
-								}`}
-						>
-							<span className={`material-symbols-outlined text-[19px] ${isSyncing ? 'animate-spin' : ''}`}>
-								sync
-							</span>
-							<span className="text-[12px]">{isSyncing ? 'Syncing DayBook...' : 'Sync Now'}</span>
-						</button>
-
-						<button
-							type="button"
-							onClick={handleExportToExcel}
-							disabled={filteredItems.length === 0}
-							className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-sm transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-							title="Export filtered records to Excel"
-						>
-							<span className="material-symbols-outlined text-emerald-600 text-[19px]">file_download</span>
-							<span className="hidden sm:inline text-[12px]">Export Excel</span>
-						</button>
-					</div>
 				</div>
 
-				{/* Feedback Alert Toast */}
-				{syncFeedback && (
-					<div
-						className={`mt-4 p-3.5 rounded-xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in duration-200 ${syncFeedback.type === 'success'
-								? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-								: syncFeedback.type === 'error'
-									? 'bg-rose-50 text-rose-800 border border-rose-200'
-									: 'bg-blue-50 text-blue-800 border border-blue-200'
+				{/* Action Buttons */}
+				<div className="flex items-center gap-space-sm flex-wrap">
+					<button
+						type="button"
+						onClick={handleTriggerSync}
+						disabled={isSyncing}
+						className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl font-bold text-sm text-white shadow-md transition-all cursor-pointer ${isSyncing
+								? 'bg-primary/70 cursor-not-allowed'
+								: 'bg-primary hover:bg-orange-600 shadow-orange-500/25 active:scale-95'
 							}`}
 					>
-						<span className="material-symbols-outlined text-[18px]">
-							{syncFeedback.type === 'success'
-								? 'check_circle'
-								: syncFeedback.type === 'error'
-									? 'error'
-									: 'info'}
+						<span className={`material-symbols-outlined text-[19px] ${isSyncing ? 'animate-spin' : ''}`}>
+							sync
 						</span>
-						<span>{syncFeedback.text}</span>
-					</div>
-				)}
+						<span className="text-[12px]">{isSyncing ? 'Syncing DayBook...' : 'Sync Now'}</span>
+					</button>
 
-				{/* Sync Details Indicator Strip */}
-				<div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-4 border-t border-slate-100 text-xs">
-					<div className="flex items-center gap-2">
-						<span className="material-symbols-outlined text-slate-400 text-[18px]">schedule</span>
-						<div>
-							<div className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider">Last Sync</div>
-							<div className="font-bold text-slate-700">{syncStatus.last_sync_time || 'Not Synced Yet'}</div>
-						</div>
-					</div>
-
-					<div className="flex items-center gap-2">
-						<span className="material-symbols-outlined text-slate-400 text-[18px]">alarm</span>
-						<div>
-							<div className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider">Scheduled Time</div>
-							<div className="font-bold text-slate-700">
-								{syncStatus.daily_sync_time ? `${syncStatus.daily_sync_time} Daily` : '09:00 AM Daily'}
-							</div>
-						</div>
-					</div>
-
-					<div className="flex items-center gap-2">
-						<span className="material-symbols-outlined text-slate-400 text-[18px]">toggle_on</span>
-						<div>
-							<div className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider">Auto Ingestion</div>
-							<div className="font-bold text-emerald-600">
-								{syncStatus.auto_sync_enabled ? 'Active / Enabled' : 'Disabled'}
-							</div>
-						</div>
-					</div>
-
-					<div className="flex items-center gap-2">
-						<span className="material-symbols-outlined text-slate-400 text-[18px]">rule</span>
-						<div>
-							<div className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider">Safety Policy</div>
-							<div className="font-bold text-slate-600">Skips Filled Dates</div>
-						</div>
-					</div>
+					<button
+						type="button"
+						onClick={handleExportToExcel}
+						disabled={filteredItems.length === 0}
+						className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-sm transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+						title="Export filtered records to Excel"
+					>
+						<span className="material-symbols-outlined text-emerald-600 text-[19px]">file_download</span>
+						<span className="hidden sm:inline text-[12px]">Export Excel</span>
+					</button>
 				</div>
 			</div>
 
-			{/* Modern Filter Suite Card */}
-			<div className="bg-white rounded-3xl p-4 shadow-xs border border-slate-200/80 flex flex-col gap-5">
-				{/* Preset Chips & View Tabs */}
-				<div className="flex flex-col md:flex-row md:items-center justify-between">
-					{/* Tab selection */}
-					<div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl w-fit">
-						<button
-							type="button"
-							onClick={() => setActiveTab('all')}
-							className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'all'
-									? 'bg-white text-slate-900 shadow-xs'
-									: 'text-slate-600 hover:text-slate-900'
-								}`}
-						>
-							All Collections ({syncedItems.length})
-						</button>
-						<button
-							type="button"
-							onClick={() => setActiveTab('today')}
-							className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'today'
-									? 'bg-white text-slate-900 shadow-xs'
-									: 'text-slate-600 hover:text-slate-900'
-								}`}
-						>
-							Today's Receipts
-						</button>
-						<button
-							type="button"
-							onClick={() => setActiveTab('latest')}
-							className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeTab === 'latest'
-									? 'bg-white text-slate-900 shadow-xs'
-									: 'text-slate-600 hover:text-slate-900'
-								}`}
-						>
-							Latest Sync Batch
-						</button>
-					</div>
+			{/* Feedback Alert Toast */}
+			{syncFeedback && (
+				<div
+					className={`mt-4 p-3.5 rounded-xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in duration-200 ${syncFeedback.type === 'success'
+							? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+							: syncFeedback.type === 'error'
+								? 'bg-rose-50 text-rose-800 border border-rose-200'
+								: 'bg-blue-50 text-blue-800 border border-blue-200'
+						}`}
+				>
+					<span className="material-symbols-outlined text-[18px]">
+						{syncFeedback.type === 'success'
+							? 'check_circle'
+							: syncFeedback.type === 'error'
+								? 'error'
+								: 'info'}
+					</span>
+					<span>{syncFeedback.text}</span>
+				</div>
+			)}
 
-					{/* Date Range Preset Chips */}
-					<div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-2xl">
-						{[
-							{ id: 'all', label: 'All Time' },
-							{ id: 'today', label: 'Today' },
-							{ id: 'yesterday', label: 'Yesterday' },
-							{ id: 'week', label: 'This Week' },
-							{ id: 'month', label: 'This Month' },
-						].map((p) => {
-							const isActive = datePreset === p.id;
-							return (
-								<button
-									key={p.id}
-									type="button"
-									onClick={() => handlePresetChange(p.id)}
-									className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${isActive
-											? 'bg-primary text-white shadow-xs'
-											: 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'
-										}`}
+			{/* Main Card: Controls, Filters & Table Navigation (JointLoan.jsx style) */}
+			<div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm ring-1 ring-slate-200/80 flex flex-col gap-5">
+				{/* Top Controls: Filter Dropdowns on Left, Search Input on Right */}
+				<div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+					{/* Filters on Left */}
+					<div className="flex items-center flex-wrap gap-2.5">
+						{/* Collection View Tabs (Role toggle style) */}
+						<div className="inline-flex items-center p-1 bg-surface-container-low rounded-xl border border-slate-200/80 shadow-2xs">
+							<button
+								type="button"
+								onClick={() => setActiveTab('all')}
+								className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${
+									activeTab === 'all'
+										? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/80'
+										: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
+								}`}
+							>
+								<span>All</span>
+								<span
+									className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+										activeTab === 'all'
+											? 'bg-slate-100 text-slate-800 ring-1 ring-slate-200'
+											: 'bg-slate-200/70 text-slate-600'
+									}`}
 								>
-									{p.label}
-								</button>
-							);
-						})}
+									{syncedItems.length}
+								</span>
+							</button>
+
+							<button
+								type="button"
+								onClick={() => setActiveTab('today')}
+								className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${
+									activeTab === 'today'
+										? 'bg-white text-emerald-700 shadow-xs ring-1 ring-emerald-200/70'
+										: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
+								}`}
+							>
+								<span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+								<span>Today</span>
+							</button>
+
+							<button
+								type="button"
+								onClick={() => setActiveTab('latest')}
+								className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-bold text-[12px] transition-all cursor-pointer ${
+									activeTab === 'latest'
+										? 'bg-white text-blue-700 shadow-xs ring-1 ring-blue-200/70'
+										: 'text-slate-600 hover:text-slate-900 hover:bg-surface-container/50'
+								}`}
+							>
+								<span className="w-2 h-2 rounded-full bg-blue-500"></span>
+								<span>Latest Batch</span>
+							</button>
+						</div>
+
+						{/* Account Name Filter */}
+						<ModernAccountDropdown
+							value={selectedAccount}
+							onChange={setSelectedAccount}
+							options={accountFilterOptions}
+						/>
+
+						{/* Date Range Filter */}
+						<ModernDateRangeCalendar
+							startDate={dateRange.startDate}
+							endDate={dateRange.endDate}
+							onChange={setDateRange}
+							referenceDate={calendarReferenceDate}
+						/>
+
+						{/* Date Type Toggle: Received Date vs Due Date */}
+						<div className="inline-flex items-center p-0.5 bg-slate-100 rounded-xl border border-slate-200/80 shadow-2xs">
+							<button
+								type="button"
+								onClick={() => setDateType('received')}
+								className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+									dateType === 'received'
+										? 'bg-white text-emerald-700 shadow-2xs ring-1 ring-slate-200/70'
+										: 'text-slate-500 hover:text-slate-800'
+								}`}
+								title="Filter date range by DayBook Received Date"
+							>
+								Recd Date
+							</button>
+							<button
+								type="button"
+								onClick={() => setDateType('due')}
+								className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+									dateType === 'due'
+										? 'bg-white text-blue-700 shadow-2xs ring-1 ring-slate-200/70'
+										: 'text-slate-500 hover:text-slate-800'
+								}`}
+								title="Filter date range by Scheduled Due Date"
+							>
+								Due Date
+							</button>
+						</div>
+
+						{/* Active filter indicator & Reset All */}
+						{(selectedAccount !== 'ALL' || dateRange.startDate || dateRange.endDate || searchTerm || activeTab !== 'all') && (
+							<button
+								type="button"
+								onClick={handleResetFilters}
+								className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold transition-all cursor-pointer shadow-2xs"
+								title="Reset all filters"
+							>
+								<span className="material-symbols-outlined text-[15px]">filter_list_off</span>
+								<span>Reset All</span>
+							</button>
+						)}
+					</div>
+
+					{/* Search Input on Right */}
+					<div className="relative min-w-[200px] sm:w-64">
+						<span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-[18px] text-slate-400">
+							search
+						</span>
+						<input
+							type="text"
+							value={searchTerm}
+							onChange={(e) => setSearchTerm(e.target.value)}
+							placeholder="Search borrower, ID, amount..."
+							className="w-full h-9 pl-8 pr-3 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:bg-white placeholder:text-slate-400 font-medium"
+						/>
+						{searchTerm && (
+							<button
+								type="button"
+								onClick={() => setSearchTerm('')}
+								className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+							>
+								<span className="material-symbols-outlined text-[16px]">close</span>
+							</button>
+						)}
 					</div>
 				</div>
 
-				{/* Active Filter Summary Bar */}
-				{(fromDate || toDate || selectedAccount !== 'ALL' || searchTerm) && (
-					<div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100 text-xs font-semibold text-slate-500">
-						<div className="flex items-center gap-2 flex-wrap">
-							<span className="text-slate-400">Active Filters:</span>
-							{fromDate && toDate && (
-								<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-primary/10 text-primary font-bold">
-									<span className="material-symbols-outlined text-[14px]">calendar_today</span>
-									{dateType === 'received' ? 'Recd' : 'Due'}: {fromDate} → {toDate}
-								</span>
+				{/* Table Container */}
+				<div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-2xs">
+					<table className="w-full text-left border-collapse">
+						<thead>
+							<tr className="bg-slate-50/90 text-[11px] font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200">
+								<th className="py-3 px-4 text-center w-14">#</th>
+								<th
+									className="py-3 px-4 whitespace-nowrap cursor-pointer hover:text-slate-800 transition-colors select-none"
+									onClick={() => handleSort('loanId')}
+								>
+									<div className="flex items-center gap-1">
+										<span>Loan ID</span>
+										{sortField === 'loanId' && (
+											<span className="material-symbols-outlined text-[14px]">
+												{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+											</span>
+										)}
+									</div>
+								</th>
+								<th
+									className="py-3 px-4 whitespace-nowrap cursor-pointer hover:text-slate-800 transition-colors select-none"
+									onClick={() => handleSort('clientName')}
+								>
+									<div className="flex items-center gap-1">
+										<span>Client Name</span>
+										{sortField === 'clientName' && (
+											<span className="material-symbols-outlined text-[14px]">
+												{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+											</span>
+										)}
+									</div>
+								</th>
+								<th className="py-3 px-4 whitespace-nowrap">Primary</th>
+								<th className="py-3 px-4 text-center whitespace-nowrap">EMI #</th>
+								<th
+									className="py-3 px-4 whitespace-nowrap cursor-pointer hover:text-slate-800 transition-colors select-none"
+									onClick={() => handleSort('emiDate')}
+								>
+									<div className="flex items-center gap-1">
+										<span>Due Date</span>
+										{sortField === 'emiDate' && (
+											<span className="material-symbols-outlined text-[14px]">
+												{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+											</span>
+										)}
+									</div>
+								</th>
+								<th
+									className="py-3 px-4 whitespace-nowrap cursor-pointer hover:text-slate-800 transition-colors select-none"
+									onClick={() => handleSort('receivedDate')}
+								>
+									<div className="flex items-center gap-1 text-emerald-700">
+										<span>Received Date</span>
+										{sortField === 'receivedDate' && (
+											<span className="material-symbols-outlined" style={{fontSize: "14px"}}>
+												{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+											</span>
+										)}
+									</div>
+								</th>
+								<th
+									className="py-3 px-4 text-right whitespace-nowrap cursor-pointer hover:text-slate-800 transition-colors select-none"
+									onClick={() => handleSort('amount')}
+								>
+									<div className="flex items-center justify-end gap-1">
+										<span>Amount</span>
+										{sortField === 'amount' && (
+											<span className="material-symbols-outlined text-[14px]">
+												{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+											</span>
+										)}
+									</div>
+								</th>
+							</tr>
+						</thead>
+						<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
+							{isLoading ? (
+								<tr>
+									<td colSpan="8" className="py-16 text-center">
+										<TableLoader message="Loading DayBook synchronized records..." />
+									</td>
+								</tr>
+							) : filteredItems.length === 0 ? (
+								<tr>
+									<td colSpan="8" className="py-16 text-center">
+										<div className="max-w-sm mx-auto">
+											<div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+												<span className="material-symbols-outlined text-[28px]">search_off</span>
+											</div>
+											<h3 className="text-sm font-bold text-slate-800">
+												No synced collections found
+											</h3>
+											<p className="text-xs text-slate-500 mt-1">
+												{selectedAccount !== 'ALL' || dateRange.startDate || dateRange.endDate || searchTerm || activeTab !== 'all'
+													? 'No collections match your current filter and search criteria.'
+													: 'No DayBook collections have been synced yet. Click "Sync Now" to ingest the latest DayBook.'}
+											</p>
+											{(selectedAccount !== 'ALL' || dateRange.startDate || dateRange.endDate || searchTerm || activeTab !== 'all') && (
+												<button
+													type="button"
+													onClick={handleResetFilters}
+													className="mt-3 text-xs font-bold text-primary hover:underline cursor-pointer"
+												>
+													Clear filters
+												</button>
+											)}
+										</div>
+									</td>
+								</tr>
+							) : (
+								paginatedItems.map((item, idx) => {
+									const absoluteIdx = startIndex + idx + 1;
+									return (
+										<tr key={item.id || idx} className="hover:bg-slate-50 transition-colors">
+											<td className="py-3 px-4 text-center text-xs font-bold text-slate-500">
+												{absoluteIdx}
+											</td>
+											<td className="py-3 px-4 whitespace-nowrap">
+												<button
+													type="button"
+													onClick={() => {
+														if (onNavigateToJointLoan) {
+															const target = allLoans.find(
+																(l) => String(l.id) === String(item.dbLoanId) || l.loan_ref_id === item.loanId
+															);
+															onNavigateToJointLoan(target || { id: item.dbLoanId, loan_ref_id: item.loanId });
+														}
+													}}
+													className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-orange-50 text-primary hover:bg-orange-100 hover:text-orange-700 font-mono font-bold text-[11px] transition-colors cursor-pointer border border-orange-200/60"
+													title="Open Loan Details"
+												>
+													<span>{item.loanId}</span>
+													<span className="material-symbols-outlined" style={{fontSize: "14px"}}>arrow_outward</span>
+												</button>
+											</td>
+											<td className="py-3 px-4 max-w-[220px]">
+												<div
+													className="font-bold text-[13px] text-slate-900 uppercase truncate"
+													title={item.clientName}
+												>
+													{item.clientName}
+												</div>
+											</td>
+											<td className="py-3 px-4 whitespace-nowrap">
+												<span className="font-mono text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 uppercase">
+													{item.primaryAccount || '—'}
+												</span>
+											</td>
+											<td className="py-3 px-4 text-center whitespace-nowrap">
+												<span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200/70">
+													EMI {item.emiNo}
+												</span>
+											</td>
+											<td className="py-3 px-4 whitespace-nowrap text-xs font-semibold text-slate-600">
+												{item.emiDate || '—'}
+											</td>
+											<td className="py-3 px-4 whitespace-nowrap">
+												<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
+													<span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+													<span>{item.receivedDate}</span>
+												</span>
+											</td>
+											<td className="py-3 px-4 text-right font-bold text-slate-900 whitespace-nowrap text-xs sm:text-[13px]">
+												₹ {formatIndianCurrency(item.amount)}
+											</td>
+										</tr>
+									);
+								})
 							)}
-							{selectedAccount !== 'ALL' && (
-								<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100 text-slate-700 font-bold">
-									<span className="material-symbols-outlined text-[14px]">account_balance</span>
-									{selectedAccount}
-								</span>
-							)}
-							{searchTerm && (
-								<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100 text-slate-700 font-bold">
-									"{searchTerm}"
-								</span>
-							)}
-							<span className="text-slate-400">({filteredItems.length} records matching)</span>
-						</div>
+						</tbody>
+					</table>
 
-						<button
-							type="button"
-							onClick={handleResetFilters}
-							className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline cursor-pointer flex items-center gap-1"
-						>
-							<span className="material-symbols-outlined text-[14px]">close</span>
-							Reset All Filters
-						</button>
-					</div>
-				)}
-			</div>
-
-			{/* Synced Results Modern Table Card */}
-			<div className="bg-white rounded-3xl shadow-xs border border-slate-200/80 overflow-hidden flex flex-col">
-				{isLoading ? (
-					<div className="py-24 flex flex-col items-center justify-center gap-3">
-						<TableLoader message="Loading DayBook synchronized records..." />
-					</div>
-				) : filteredItems.length === 0 ? (
-					<div className="py-20 px-6 text-center max-w-md mx-auto flex flex-col items-center">
-						<div className="w-16 h-16 rounded-3xl bg-slate-100 text-slate-400 flex items-center justify-center mb-4">
-							<span className="material-symbols-outlined text-[36px]">filter_alt_off</span>
-						</div>
-						<h3 className="text-lg font-black text-slate-800 tracking-tight">No Synced Collections Found</h3>
-						<p className="text-sm text-slate-500 mt-1.5">
-							{fromDate || toDate || selectedAccount !== 'ALL' || searchTerm
-								? 'No loan installments match the selected date range or search query.'
-								: 'No DayBook receipt vouchers have been synced yet. Click "Sync Now" to ingest the latest DayBook.'}
-						</p>
-						<button
-							type="button"
-							onClick={handleResetFilters}
-							className="mt-5 px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:bg-orange-600 transition-all cursor-pointer shadow-xs"
-						>
-							Clear All Filters
-						</button>
-					</div>
-				) : (
-					<>
-						<div className="overflow-x-auto">
-							<table className="w-full text-left border-collapse min-w-[900px]">
-								<thead>
-									<tr className="bg-slate-50/80 border-b border-slate-200/80 text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">
-										<th className="py-3.5 px-4 w-12 text-center">#</th>
-										<th
-											className="py-3.5 px-4 cursor-pointer hover:text-slate-800 transition-colors"
-											onClick={() => handleSort('loanId')}
-										>
-											<div className="flex items-center gap-1">
-												<span>Loan ID</span>
-												{sortField === 'loanId' && (
-													<span className="material-symbols-outlined text-[14px]">
-														{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
-													</span>
-												)}
-											</div>
-										</th>
-										<th
-											className="py-3.5 px-4 cursor-pointer hover:text-slate-800 transition-colors"
-											onClick={() => handleSort('clientName')}
-										>
-											<div className="flex items-center gap-1">
-												<span>Client Name</span>
-												{sortField === 'clientName' && (
-													<span className="material-symbols-outlined text-[14px]">
-														{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
-													</span>
-												)}
-											</div>
-										</th>
-										<th className="py-3.5 px-4">Account</th>
-										<th className="py-3.5 px-4 text-center">EMI #</th>
-										<th
-											className="py-3.5 px-4 cursor-pointer hover:text-slate-800 transition-colors"
-											onClick={() => handleSort('emiDate')}
-										>
-											<div className="flex items-center gap-1">
-												<span>Due Date</span>
-												{sortField === 'emiDate' && (
-													<span className="material-symbols-outlined text-[14px]">
-														{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
-													</span>
-												)}
-											</div>
-										</th>
-										<th
-											className="py-3.5 px-4 cursor-pointer hover:text-slate-800 transition-colors"
-											onClick={() => handleSort('receivedDate')}
-										>
-											<div className="flex items-center gap-1 text-emerald-700">
-												<span>Received Date</span>
-												{sortField === 'receivedDate' && (
-													<span className="material-symbols-outlined" style={{fontSize: "14px"}}>
-														{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
-													</span>
-												)}
-											</div>
-										</th>
-										<th
-											className="py-3.5 px-4 text-right cursor-pointer hover:text-slate-800 transition-colors"
-											onClick={() => handleSort('amount')}
-										>
-											<div className="flex items-center justify-end gap-1">
-												<span>Amount</span>
-												{sortField === 'amount' && (
-													<span className="material-symbols-outlined text-[14px]">
-														{sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'}
-													</span>
-												)}
-											</div>
-										</th>
-									</tr>
-								</thead>
-								<tbody className="divide-y divide-slate-100 text-sm font-medium text-slate-700">
-									{paginatedItems.map((item, idx) => {
-										const absoluteIdx = (currentPage - 1) * pageSize + idx + 1;
-										const clientInitial = (item.clientName || 'C').charAt(0).toUpperCase();
-
-										return (
-											<tr key={item.id || idx} className="hover:bg-slate-50/80 transition-colors">
-												<td className="py-3.5 px-4 text-center text-xs font-bold text-slate-400">
-													{absoluteIdx}
-												</td>
-
-												{/* Loan ID (Clickable) */}
-												<td className="py-3.5 px-4">
-													<button
-														type="button"
-														onClick={() => {
-															if (onNavigateToJointLoan) {
-																const target = allLoans.find(
-																	(l) => String(l.id) === String(item.dbLoanId) || l.loan_ref_id === item.loanId
-																);
-																onNavigateToJointLoan(target || { id: item.dbLoanId, loan_ref_id: item.loanId });
-															}
-														}}
-														className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-orange-50 text-primary hover:bg-orange-100 hover:text-orange-700 font-extrabold text-[12px] transition-colors cursor-pointer ring-1 ring-orange-200/60"
-														title="Open Loan Details"
-													>
-														<span>{item.loanId}</span>
-														<span className="material-symbols-outlined" style={{ fontSize: "14px" }}>arrow_outward</span>
-													</button>
-												</td>
-
-												{/* Client Name */}
-												<td className="py-3.5 px-4">
-													<div className="flex items-center gap-2.5">
-														<div className="truncate max-w-[220px] font-bold text-slate-900" title={item.clientName}>
-															{item.clientName}
-														</div>
-													</div>
-												</td>
-
-												{/* Primary Account */}
-												<td className="py-3.5 px-4">
-													<span className="inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 ring-1 ring-slate-200">
-														{item.primaryAccount || '—'}
-													</span>
-												</td>
-
-												{/* EMI # */}
-												<td className="py-3.5 px-4 text-center">
-													<span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-extrabold bg-blue-50 text-blue-700 ring-1 ring-blue-200/70">
-														EMI {item.emiNo}
-													</span>
-												</td>
-
-												{/* Due Date */}
-												<td className="py-3.5 px-4 text-xs font-bold text-slate-500 whitespace-nowrap">
-													{item.emiDate || '—'}
-												</td>
-
-												{/* DayBook Received Date */}
-												<td className="py-3.5 px-4 whitespace-nowrap">
-													<span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-extrabold bg-emerald-50 text-emerald-800 ring-1 ring-emerald-300">
-														<span>{item.receivedDate}</span>
-													</span>
-												</td>
-
-												{/* Amount */}
-												<td className="py-3.5 px-4 text-right font-black text-slate-900 whitespace-nowrap">
-													₹ {formatIndianCurrency(item.amount)}
-												</td>
-											</tr>
-										);
-									})}
-								</tbody>
-							</table>
-						</div>
-
-						{/* Table Footer with Pagination Controls */}
-						<div className="p-4 px-6 bg-slate-50/60 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs font-semibold text-slate-600">
-							<div className="flex items-center gap-2">
-								<span>Showing</span>
+					{/* Pagination Footer */}
+					<div className="border-t border-slate-100 px-4 py-3 sm:px-5 sm:py-3.5 bg-slate-50/50 rounded-b-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600 select-none">
+						<div className="flex items-center gap-2 text-slate-500 font-medium text-center sm:text-left">
+							<span>
+								Showing{' '}
 								<span className="font-bold text-slate-900">
-									{(currentPage - 1) * pageSize + 1} -{' '}
-									{Math.min(currentPage * pageSize, sortedItems.length)}
+									{sortedItems.length === 0 ? 0 : startIndex + 1}
+								</span>{' '}
+								to <span className="font-bold text-slate-900">{endIndex}</span> of{' '}
+								<span className="font-bold text-slate-900">{sortedItems.length}</span> collections
+							</span>
+							{sortedItems.length !== syncedItems.length && (
+								<span className="text-[11px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full ring-1 ring-slate-200/70">
+									{syncedItems.length} total
 								</span>
-								<span>of</span>
-								<span className="font-bold text-slate-900">{sortedItems.length}</span>
-								<span>collections</span>
-							</div>
-
-							<div className="flex items-center gap-1.5">
-								<button
-									type="button"
-									onClick={() => setCurrentPage(1)}
-									disabled={currentPage === 1}
-									className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-									title="First Page"
-								>
-									<span className="material-symbols-outlined text-[16px]">first_page</span>
-								</button>
-								<button
-									type="button"
-									onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-									disabled={currentPage === 1}
-									className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-									title="Previous Page"
-								>
-									<span className="material-symbols-outlined text-[16px]">chevron_left</span>
-								</button>
-
-								<span className="px-3 py-1 text-slate-700 font-bold">
-									Page {currentPage} of {totalPages}
-								</span>
-
-								<button
-									type="button"
-									onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-									disabled={currentPage >= totalPages}
-									className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-									title="Next Page"
-								>
-									<span className="material-symbols-outlined text-[16px]">chevron_right</span>
-								</button>
-								<button
-									type="button"
-									onClick={() => setCurrentPage(totalPages)}
-									disabled={currentPage >= totalPages}
-									className="h-9 w-9 flex items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
-									title="Last Page"
-								>
-									<span className="material-symbols-outlined text-[16px]">last_page</span>
-								</button>
-							</div>
+							)}
 						</div>
-					</>
-				)}
+
+						<div className="flex items-center gap-1">
+							<button
+								type="button"
+								onClick={() => setCurrentPage(1)}
+								disabled={currentPage === 1}
+								className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+								title="First page"
+							>
+								<span className="material-symbols-outlined text-[18px]">first_page</span>
+							</button>
+
+							<button
+								type="button"
+								onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+								disabled={currentPage === 1}
+								className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+								title="Previous page"
+							>
+								<span className="material-symbols-outlined text-[18px]">chevron_left</span>
+							</button>
+
+							<div className="flex items-center gap-1 mx-0.5">
+								{getPageNumbers().map((page, pIdx) => {
+									if (page === '...') {
+										return (
+											<span
+												key={`ellipsis-${pIdx}`}
+												className="h-8 w-6 flex items-center justify-center text-slate-400 font-bold text-[12px]"
+											>
+												…
+											</span>
+										);
+									}
+									const isCurrent = page === currentPage;
+									return (
+										<button
+											key={page}
+											type="button"
+											onClick={() => setCurrentPage(page)}
+											aria-current={isCurrent ? 'page' : undefined}
+											className={`h-8 min-w-[32px] px-2 flex items-center justify-center rounded-xl text-[12px] font-bold transition-all active:scale-95 cursor-pointer ${
+												isCurrent
+													? 'bg-primary text-white shadow-xs'
+													: 'text-slate-700 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80'
+											}`}
+										>
+											{page}
+										</button>
+									);
+								})}
+							</div>
+
+							<button
+								type="button"
+								onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+								disabled={currentPage >= totalPages}
+								className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+								title="Next page"
+							>
+								<span className="material-symbols-outlined text-[18px]">chevron_right</span>
+							</button>
+
+							<button
+								type="button"
+								onClick={() => setCurrentPage(totalPages)}
+								disabled={currentPage >= totalPages}
+								className="h-8 w-8 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200/80 disabled:opacity-30 disabled:pointer-events-none transition-all active:scale-95 cursor-pointer"
+								title="Last page"
+							>
+								<span className="material-symbols-outlined text-[18px]">last_page</span>
+							</button>
+						</div>
+					</div>
+				</div>
 			</div>
 
 			{/* SFTP Detailed Log Modal */}

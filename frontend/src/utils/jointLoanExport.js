@@ -798,10 +798,10 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				return;
 			}
 
-			// Determine payout approval status
+			// Determine payout approval status (for Primary Sheet)
 			// Rule:
-			// 1. If payout date is filled with pending from sec manager for approval -> 'Approval pending'
-			// 2. If recd date only filled, payout date not filled -> 'Pending'
+			// 1. If recd date is filled and payout date is filled but not approved -> 'Approval pending'
+			// 2. If recd date is filled and payout date not filled -> 'Need to Send'
 			// 3. If recd date not filled -> 'Not received from client'
 			const isPayoutPending = hasPayoutDateFilled && !isPayoutApproved;
 
@@ -810,12 +810,12 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 			let outstandingAmount = 0;
 			const emiAmount = Number(item.amount ?? item.totalEmi ?? 0);
 
-			if (isPayoutPending) {
+			if (hasRecdDate && isPayoutPending) {
 				status = 'Approval pending';
 				recdAmount = emiAmount;
 				outstandingAmount = 0;
 			} else if (hasRecdDate) {
-				status = 'Pending';
+				status = 'Need to Send';
 				recdAmount = emiAmount;
 				outstandingAmount = 0;
 			} else {
@@ -911,7 +911,7 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial') {
 						fontColor = 'B45309';
 						isBold = true;
-					} else if (meta.status === 'Pending' || meta.status === 'Need to send') {
+					} else if (meta.status === 'Pending' || meta.status === 'Need to send' || meta.status === 'Need to Send') {
 						fontColor = 'D97706';
 						isBold = true;
 					} else if (meta.status === 'Settled' || meta.status === 'Collected') {
@@ -1355,7 +1355,7 @@ function buildSecondaryOutstandingWorksheet(
 					} else if (meta.status === 'Approval pending' || meta.status === 'Approval Pending' || meta.status === 'Partial') {
 						fontColor = 'B45309';
 						isBold = true;
-					} else if (meta.status === 'Pending' || meta.status === 'Need to receive' || meta.status === 'Need to send') {
+					} else if (meta.status === 'Pending' || meta.status === 'Need to receive' || meta.status === 'Need to send' || meta.status === 'Need to Send') {
 						fontColor = 'D97706';
 						isBold = true;
 					} else if (meta.status === 'Settled' || meta.status === 'Collected') {

@@ -3157,7 +3157,7 @@ function ModernStatusDropdown({ value, onChange, options = [] }) {
 
 // ─── ModernAccountDropdown ─────────────────────────────────────────────────
 // Account name filter dropdown with search, live counts, and quick reset
-function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const [searchTerm, setSearchTerm] = useState('');
 	const dropdownRef = useRef(null);
@@ -3321,7 +3321,7 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 
 // ─── ModernDateRangeCalendar ───────────────────────────────────────────────
 // Date range filter with calendar popover, range highlight, and presets
-function ModernDateRangeCalendar({ startDate = '', endDate = '', onChange, referenceDate = null }) {
+export function ModernDateRangeCalendar({ startDate = '', endDate = '', onChange, referenceDate = null }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const dropdownRef = useRef(null);
 
