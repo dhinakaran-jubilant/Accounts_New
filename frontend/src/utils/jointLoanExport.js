@@ -662,7 +662,7 @@ export const isFutureDate = (dateStr) => {
 /**
  * Build a styled worksheet for the Outstanding Report
  */
-function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null) {
+function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null, availableAccounts = []) {
 	const border1px = {
 		top: { style: 'thin', color: { rgb: '000000' } },
 		bottom: { style: 'thin', color: { rgb: '000000' } },
@@ -798,58 +798,119 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				return;
 			}
 
-			// Determine payout approval status (for Primary Sheet)
-			// Rule:
-			// 1. If recd date is filled and payout date is filled but not approved -> 'Approval pending'
-			// 2. If recd date is filled and payout date not filled -> 'Need to Send'
-			// 3. If recd date not filled -> 'Not received from client'
-			const isPayoutPending = hasPayoutDateFilled && !isPayoutApproved;
-
-			let status = '';
-			let recdAmount = 0;
-			let outstandingAmount = 0;
 			const emiAmount = Number(item.amount ?? item.totalEmi ?? 0);
-
-			if (hasRecdDate && isPayoutPending) {
-				status = 'Approval pending';
-				recdAmount = emiAmount;
-				outstandingAmount = 0;
-			} else if (hasRecdDate) {
-				status = 'Need to Send';
-				recdAmount = emiAmount;
-				outstandingAmount = 0;
-			} else {
-				status = 'Not received from client';
-				recdAmount = 0;
-				outstandingAmount = emiAmount;
-			}
-
-			let dueSecAmount = 0;
-			if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
-				dueSecAmount = item.secAccounts.reduce((sum, sa) => sum + (Number(sa.amount) || 0), 0);
-			} else {
-				dueSecAmount = Number(item.secAmount ?? 0);
-			}
-
-			let payableSecName = '-';
-			if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
-				payableSecName = item.secAccounts
-					.map((sa) => sa.accountTag || sa.accountName || sa.initials || '')
-					.filter(Boolean)
-					.join(', ');
-			} else if (item.secAccountTag || item.secAccountName) {
-				payableSecName = item.secAccountTag || item.secAccountName;
-			}
-			if (!payableSecName || !payableSecName.trim()) payableSecName = 'SEC';
-
-			rowIndexSeq += 1;
 			const emiDate = formatDisplayDate(item.date || item.emiDate || '-');
 
-			addRow([
-				rowIndexSeq,
-				loanDate,
-				loanId,
-				clientName,
+			// Resolve payable secondary account(s)
+			// If payable has more than 1 account, create a separate row for each account with its specific due amount
+			let secList = [];
+			if (Array.isArray(item.secAccounts) && item.secAccounts.length > 0) {
+				secList = item.secAccounts.map((sa) => {
+					const tag = sa.accountTag || sa.initials || '';
+					const name = tag || sa.accountName || sa.name || '';
+					const amount = Number(sa.amount) || 0;
+					return {
+						tag: tag || name,
+						name: name || tag || 'SEC',
+						amount,
+						raw: sa,
+					};
+				}).filter((s) => s.tag || s.amount > 0);
+			}
+
+			if (secList.length === 0) {
+				const loanSecs = Array.isArray(loan.secondaryAccounts) && loan.secondaryAccounts.length > 0
+					? loan.secondaryAccounts
+					: (Array.isArray(loan.accountDetails) ? loan.accountDetails.filter((a) => a && !a.isPrimary) : (Array.isArray(loan.remaining_accounts) ? loan.remaining_accounts : []));
+
+			if (loanSecs.length > 0) {
+				secList = loanSecs.map((ls) => {
+					const tag = ls.accountTag || ls.tag || ls.initials || '';
+					const name = tag || ls.accountName || ls.name || 'SEC';
+					const amount = getSecondaryDueAmountForItem(item, loan, tag, ls.accountName || ls.name, availableAccounts);
+					return {
+						tag: tag || name,
+						name,
+						amount,
+						raw: ls,
+					};
+				});
+			}
+			}
+
+			if (secList.length === 0) {
+				const fallbackName = item.secAccountTag || item.secAccountName || 'SEC';
+				const fallbackAmount = Number(item.secAmount ?? 0);
+				secList = [{
+					tag: fallbackName,
+					name: fallbackName,
+					amount: fallbackAmount,
+					raw: null,
+				}];
+			}
+
+			secList.forEach((sec) => {
+				const saRaw = sec.raw;
+				const saPayoutDateRaw = saRaw && (
+					(saRaw.paymentDate && saRaw.paymentDate !== '-' && saRaw.paymentDate !== '—')
+						? saRaw.paymentDate
+						: ((saRaw.payoutDate && saRaw.payoutDate !== '-' && saRaw.payoutDate !== '—')
+							? saRaw.payoutDate
+							: ((saRaw.dueDate && saRaw.dueDate !== '-' && saRaw.dueDate !== '—') ? saRaw.dueDate : ''))
+				);
+				const effectivePayoutDateRaw = saPayoutDateRaw || payoutDateRaw;
+				const saHasPayoutDateFilled = isDateFilled(effectivePayoutDateRaw);
+
+				const saPStatus = String(
+					(saRaw && (saRaw.payout_approval_status || saRaw.payoutApprovalStatus || saRaw.payout_status || saRaw.payoutStatus)) ||
+					pStatus ||
+					''
+				).trim().toUpperCase();
+
+				const saIsPayoutApproved = (saPStatus === 'APPROVED' || item.status === 'Settled' || (saRaw && saRaw.status === 'Settled')) && saPStatus !== 'PENDING' && saPStatus !== 'REJECTED';
+				const saHasPayoutDate = saHasPayoutDateFilled && saIsPayoutApproved;
+
+				// If both recd from client and payout approved for this secondary account -> skip this secondary
+				if (hasRecdDate && saHasPayoutDate) {
+					return;
+				}
+
+				const saIsPayoutPending = saHasPayoutDateFilled && !saIsPayoutApproved;
+
+				let status = '';
+				let recdAmount = 0;
+				let outstandingAmount = 0;
+
+				if (hasRecdDate && saIsPayoutPending) {
+					status = 'Approval pending';
+					recdAmount = emiAmount;
+					outstandingAmount = 0;
+				} else if (hasRecdDate) {
+					status = 'Need to Send';
+					recdAmount = emiAmount;
+					outstandingAmount = 0;
+				} else {
+					status = 'Not received from client';
+					recdAmount = 0;
+					outstandingAmount = emiAmount;
+				}
+
+				let dueSecAmount = sec.amount;
+				if (dueSecAmount <= 0) {
+					dueSecAmount = getSecondaryDueAmountForItem(item, loan, sec.tag, sec.name, availableAccounts);
+				}
+				if (dueSecAmount <= 0 && secList.length === 1) {
+					dueSecAmount = Number(item.secAmount ?? 0);
+				}
+
+				const payableSecName = getAccountAcronym(sec.raw) || sec.tag || sec.name || 'SEC';
+
+				rowIndexSeq += 1;
+				addRow([
+					rowIndexSeq,
+					loanDate,
+					loanId,
+					clientName,
 				emiDate,
 				item.duesLabel,
 				emiAmount,
@@ -858,7 +919,8 @@ function buildOutstandingWorksheet(sheetTitle, loans = [], getScheduleFn = null)
 				dueSecAmount,
 				payableSecName,
 				status,
-			], 'data', { status });
+				], 'data', { status });
+			});
 		});
 	});
 
@@ -1569,7 +1631,7 @@ export function exportOutstandingReportPerPrimaryAccount(
 
 		// Build Primary sheet (using the prepared primary format)
 		const priTitle = name && name !== tag ? `${name} (${tag})` : tag;
-		const { ws: priWs, count: priCount } = buildOutstandingWorksheet(priTitle, primaryLoans, getScheduleFn);
+		const { ws: priWs, count: priCount } = buildOutstandingWorksheet(priTitle, primaryLoans, getScheduleFn, availableAccounts);
 
 		// Build Secondary sheet
 		const secTitle = `${tag} Secondary`;
