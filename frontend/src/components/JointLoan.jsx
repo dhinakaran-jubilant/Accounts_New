@@ -1402,7 +1402,7 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 
 	if (!isLoanCreatedBySuperAdmin) {
 		// 2. Pending secondary approval (initial creation)
-		if (loan.approval_status === 'PENDING_SECONDARY' || (loan.approval_status === 'PENDING' && !loan.verified_by)) {
+		if (loan.approval_status === 'PENDING_SECONDARY') {
 			return 'Pending Secondary';
 		}
 
@@ -1455,36 +1455,49 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 // Check if a loan is newly created and pending initial multi-stage approval (secondary or admin)
 export const isNewLoanPendingApproval = (loan) => {
 	if (!loan || loan.is_deleted) return false;
-	if (isLoanPayoutPending(loan)) {
+
+	// Super Admin loans are auto-approved upon creation; they never require multi-stage approval
+	const isLoanCreatedBySuperAdmin = Boolean(
+		loan.is_super_admin ||
+		(loan.actioned_by && ['admin', 'super admin', 'dhinakaran sekar', 'administrator', 'system admin'].includes(String(loan.actioned_by).trim().toLowerCase())) ||
+		(loan.requester_name && ['system admin', 'super admin', 'dhinakaran sekar'].includes(String(loan.requester_name).trim().toLowerCase()))
+	);
+	if (isLoanCreatedBySuperAdmin) {
 		return false;
 	}
+
+	// Payout pending loans are existing loans in servicing, not new loan submissions
 	const loanStatus = (loan.status || '').toLowerCase();
 	const appStatus = (loan.approval_status || loan.approvalStatus || '').toUpperCase();
 	if (
 		loanStatus === 'pending payout approval' ||
 		loanStatus === 'payout pending' ||
-		appStatus === 'PENDING_PAYOUT'
+		appStatus === 'PENDING_PAYOUT' ||
+		isLoanPayoutPending(loan)
 	) {
 		return false;
 	}
+
+	// Operational facilities that are already active, overdue, closed, or approved are not new loan submissions
 	if (
 		appStatus === 'APPROVED' ||
+		appStatus === 'CLOSED' ||
+		appStatus === 'REJECTED' ||
 		loan.status === 'Active' ||
 		loan.status === 'Closed' ||
-		appStatus === 'REJECTED' ||
+		loan.status === 'Overdue' ||
+		loan.status === 'Date Overdue' ||
+		loan.status === 'Settled' ||
 		loan.status === 'Rejected'
 	) {
 		return false;
 	}
-	const computed = getComputedLoanStatus(loan);
+
+	// A newly created loan pending approval MUST explicitly be in Stage 1 (PENDING_SECONDARY) or Stage 2 (PENDING_ADMIN / VERIFIED)
 	return (
-		computed === 'Pending Secondary' ||
-		computed === 'Pending Admin' ||
 		appStatus === 'PENDING_SECONDARY' ||
 		appStatus === 'PENDING_ADMIN' ||
-		appStatus === 'PENDING' ||
-		appStatus === 'VERIFIED' ||
-		loan.status === 'Pending'
+		appStatus === 'VERIFIED'
 	);
 };
 
@@ -5968,9 +5981,7 @@ export function JointLoanDetailsPage({
 	const isPendingSecondary =
 		!isFinallyApproved &&
 		!hasPayoutPending &&
-		(loan?.approval_status === 'PENDING_SECONDARY' ||
-			(loan?.approval_status === 'PENDING' && !loan?.verified_by) ||
-			(!loan?.approval_status && loan?.status === 'Pending'));
+		loan?.approval_status === 'PENDING_SECONDARY';
 	const isPendingAdmin =
 		!isFinallyApproved &&
 		!hasPayoutPending &&
@@ -13548,7 +13559,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	// Filter loans according to user's assigned primary and secondary accounts and role toggle
 	const userPermittedLoans = useMemo(() => {
 		return loans.filter((loan) => {
-			const isPendingSecondary = loan.approval_status === 'PENDING_SECONDARY' || (!loan.approval_status && loan.status === 'Pending');
+			const isPendingSecondary = loan.approval_status === 'PENDING_SECONDARY';
 			if (accountRoleFilter !== 'primary' && isPendingSecondary && checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, availableAccountObjects)) {
 				return true;
 			}
@@ -14732,7 +14743,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		[userPermittedLoans]
 	);
 	const pendingPayoutCount = useMemo(
-		() => userPermittedLoans.filter((l) => isLoanPayoutPending(l)).length,
+		() => userPermittedLoans.filter((l) => isLoanPendingApproval(l) && !isNewLoanPendingApproval(l)).length,
 		[userPermittedLoans]
 	);
 	const pendingApprovalCount = useMemo(
@@ -15403,7 +15414,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const renderAccessRestrictedModal = () => {
 		if (!accessRestrictedModal.isOpen || !accessRestrictedModal.loan) return null;
 		const targetLoan = accessRestrictedModal.loan;
-		const isPendingSec = targetLoan.approval_status === 'PENDING_SECONDARY' || (!targetLoan.approval_status && targetLoan.status === 'Pending');
+		const isPendingSec = targetLoan.approval_status === 'PENDING_SECONDARY';
 		const isPendingAdm = targetLoan.approval_status === 'PENDING_ADMIN' || targetLoan.approval_status === 'VERIFIED';
 		const secAccounts = getLoanSecondaryAccounts(targetLoan);
 		const assignedSecUsers = getUsersWithPrimaryAccessForLoanSecondary(targetLoan, allUsers, availableAccountObjects);
@@ -15998,7 +16009,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 								paginatedLoans.map((loan, idx) => {
 									const canAccess = canUserAccessLoan(loan, activeUser, userPermissions, availableAccountObjects, allUsers);
 									const hasPayoutPending = isLoanPayoutPending(loan);
-									const isPendingSec = !hasPayoutPending && (loan.approval_status === 'PENDING_SECONDARY' || (!loan.approval_status && loan.status === 'Pending'));
+									const isPendingSec = !hasPayoutPending && loan.approval_status === 'PENDING_SECONDARY';
 									const isPendingAdm = !hasPayoutPending && (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED');
 									const isUserSecMgr = checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, availableAccountObjects);
 
