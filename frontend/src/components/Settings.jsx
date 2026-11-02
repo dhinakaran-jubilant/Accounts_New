@@ -29,6 +29,11 @@ export const getColorToken = (colorName) => {
 	return COLOR_OPTIONS.find((opt) => opt.id === c) || COLOR_OPTIONS[1];
 };
 
+export const formatCurrency = (val) => {
+	if (val === null || val === undefined || isNaN(val)) return '₹0';
+	return '₹' + Number(val).toLocaleString('en-IN');
+};
+
 // Modern Custom Dropdown Component for Accounts Filter in Settings
 function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -247,7 +252,11 @@ function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
 	);
 }
 
-export default function Settings({ searchQuery: initialSearch = '' }) {
+export default function Settings({
+	searchQuery: initialSearch = '',
+	onNavigateToJointLoan,
+	onSwitchToJointLoan,
+}) {
 	const [accounts, setAccounts] = useState([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [searchQuery, setSearchQuery] = useState(initialSearch);
@@ -496,6 +505,213 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 			showToast(err.message || 'Sync failed', 'error');
 		} finally {
 			setIsSyncingTally(false);
+		}
+	};
+
+	// ==========================================
+	// Uncreated Joint Loans Excel Audit State
+	// ==========================================
+	const DEFAULT_AUDIT_PATH =
+		"X:\\ASHWITHA EVANGELIN\\ACCOUNT STATEMENTS\\PAYMENT LIST\\NEW PAYMENT LIST\\Payment details - 2024 & 2025\\JAN - DEC - 2026";
+	const [auditCustomLocation, setAuditCustomLocation] = useState(() => {
+		return localStorage.getItem('loandesk_audit_base_dir') || DEFAULT_AUDIT_PATH;
+	});
+	const [locationInput, setLocationInput] = useState(() => {
+		return localStorage.getItem('loandesk_audit_base_dir') || DEFAULT_AUDIT_PATH;
+	});
+	const [auditData, setAuditData] = useState(null);
+	const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+	const [isAuditRescanning, setIsAuditRescanning] = useState(false);
+	const [auditError, setAuditError] = useState(null);
+	const [auditFolderFilter, setAuditFolderFilter] = useState('ALL');
+	const [auditAccountFilter, setAuditAccountFilter] = useState('ALL');
+	const [auditStatusFilter, setAuditStatusFilter] = useState('NOT_CREATED'); // 'NOT_CREATED' | 'CREATED' | 'ALL'
+	const [auditSearchQuery, setAuditSearchQuery] = useState('');
+	const [auditCurrentPage, setAuditCurrentPage] = useState(1);
+	const [auditPageSize, setAuditPageSize] = useState(10);
+	const [copiedKey, setCopiedKey] = useState(null);
+
+	const fetchUncreatedAudit = async (forceRefresh = false, customBaseDir = null, resetDefault = false) => {
+		if (forceRefresh) {
+			setIsAuditRescanning(true);
+		} else {
+			setIsLoadingAudit(true);
+		}
+		setAuditError(null);
+		try {
+			const activeDir = resetDefault
+				? undefined
+				: customBaseDir !== null
+				? customBaseDir
+				: auditCustomLocation || undefined;
+
+			const res = await api.getUncreatedJointLoansAudit({
+				force_refresh: forceRefresh,
+				base_dir: activeDir,
+				reset_default: resetDefault,
+			});
+			if (res && res.success) {
+				setAuditData(res);
+				if (res.base_dir) {
+					setAuditCustomLocation(res.base_dir);
+					setLocationInput(res.base_dir);
+					if (res.is_custom_dir) {
+						localStorage.setItem('loandesk_audit_base_dir', res.base_dir);
+					} else {
+						localStorage.removeItem('loandesk_audit_base_dir');
+					}
+				}
+				if (forceRefresh) {
+					showToast('Excel payment lists re-scanned successfully!');
+				}
+			} else {
+				setAuditError(res?.error || 'Failed to scan Excel payment lists');
+			}
+		} catch (err) {
+			console.error('Audit scan error:', err);
+			setAuditError(err.message || 'Error connecting to scan service');
+			showToast(err.message || 'Scan failed', 'error');
+		} finally {
+			setIsLoadingAudit(false);
+			setIsAuditRescanning(false);
+		}
+	};
+
+	const handleSaveLocationAndScan = (e) => {
+		e?.preventDefault?.();
+		if (!locationInput || !locationInput.trim()) {
+			showToast('Please enter a valid folder path', 'error');
+			return;
+		}
+		const path = locationInput.trim();
+		setAuditCustomLocation(path);
+		fetchUncreatedAudit(true, path, false);
+	};
+
+	const handleResetLocationToDefault = () => {
+		localStorage.removeItem('loandesk_audit_base_dir');
+		fetchUncreatedAudit(true, null, true);
+	};
+
+	useEffect(() => {
+		if (activeTab === 'uncreated-loans' && !auditData && !isLoadingAudit) {
+			fetchUncreatedAudit(false);
+		}
+	}, [activeTab]);
+
+	useEffect(() => {
+		setAuditCurrentPage(1);
+	}, [auditFolderFilter, auditAccountFilter, auditStatusFilter, auditSearchQuery, auditPageSize]);
+
+	const filteredAuditLoans = useMemo(() => {
+		if (!auditData?.loans) return [];
+		return auditData.loans.filter((loan) => {
+			if (auditStatusFilter === 'NOT_CREATED' && loan.is_created) return false;
+			if (auditStatusFilter === 'CREATED' && !loan.is_created) return false;
+
+			if (auditFolderFilter !== 'ALL' && loan.folder !== auditFolderFilter) return false;
+			if (auditAccountFilter !== 'ALL' && loan.primary_account !== auditAccountFilter) return false;
+
+			if (auditSearchQuery.trim()) {
+				const q = auditSearchQuery.toLowerCase().trim();
+				const qNoJl = q.replace(/^jl[-_\s]*/i, '');
+				const matchClient =
+					(loan.client_name || '').toLowerCase().includes(q) ||
+					(loan.raw_client_name || '').toLowerCase().includes(q);
+				const matchId =
+					(loan.loan_id || '').toLowerCase().includes(q) ||
+					(loan.loan_id || '').toLowerCase().includes(qNoJl) ||
+					(loan.matched_db_loan?.loan_ref_id || '').toLowerCase().includes(q) ||
+					(loan.matched_db_loan?.loan_ref_id || '').toLowerCase().includes(qNoJl);
+				const matchFolder = (loan.folder || '').toLowerCase().includes(q);
+				const matchSec = (loan.secondary_accounts_str || '').toLowerCase().includes(q);
+				const matchDate = (loan.loan_date || '').toLowerCase().includes(q);
+				if (!matchClient && !matchId && !matchFolder && !matchSec && !matchDate) return false;
+			}
+			return true;
+		});
+	}, [auditData, auditStatusFilter, auditFolderFilter, auditAccountFilter, auditSearchQuery]);
+
+	const auditTotalPages = Math.ceil(filteredAuditLoans.length / auditPageSize) || 1;
+	const paginatedAuditLoans = useMemo(() => {
+		const start = (auditCurrentPage - 1) * auditPageSize;
+		return filteredAuditLoans.slice(start, start + auditPageSize);
+	}, [filteredAuditLoans, auditCurrentPage, auditPageSize]);
+
+	const exportAuditToCSV = () => {
+		if (!filteredAuditLoans.length) {
+			showToast('No loans to export', 'error');
+			return;
+		}
+		const headers = [
+			'S.No',
+			'Loan Date',
+			'Loan ID',
+			'Client Name',
+			'Raw Client Name',
+			'Primary Account',
+			'Primary Principal',
+			'Primary Share %',
+			'Secondary Accounts',
+			'Total Principal',
+			'Total Repayment',
+			'Terms',
+			'Folder',
+			'File Name',
+			'Row #',
+			'Status',
+			'Matched DB Loan ID',
+		];
+
+		const rows = filteredAuditLoans.map((l, idx) => [
+			idx + 1,
+			`"${l.loan_date || ''}"`,
+			`"${l.loan_id || ''}"`,
+			`"${(l.client_name || '').replace(/"/g, '""')}"`,
+			`"${(l.raw_client_name || '').replace(/"/g, '""')}"`,
+			`"${l.primary_account || ''}"`,
+			l.primary_principal || 0,
+			`"${l.primary_share_pct || 0}%"`,
+			`"${(l.secondary_accounts || []).map((s) => `${s.account}: ${s.principal} (${s.share_pct}%)`).join('; ')}"`,
+			l.total_principal || 0,
+			l.total_repayment || 0,
+			`"${l.terms || ''}"`,
+			`"${l.folder || ''}"`,
+			`"${l.file || ''}"`,
+			l.row || '',
+			l.is_created ? 'Created' : 'Not Created',
+			`"${l.matched_db_loan?.loan_ref_id || ''}"`,
+		]);
+
+		const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+		const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.setAttribute('download', `uncreated_joint_loans_audit_${new Date().toISOString().slice(0, 10)}.csv`);
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
+		showToast(`Exported ${filteredAuditLoans.length} loans to CSV`);
+	};
+
+	const handleCopyLoanDetails = (loan) => {
+		const secStr = (loan.secondary_accounts || [])
+			.map((s) => `${s.account}: ${formatCurrency(s.principal)} (${s.share_pct}%)`)
+			.join(', ');
+		const text = `Loan ID: ${loan.loan_id || 'N/A'}\nDate: ${loan.loan_date}\nClient: ${loan.client_name}\nPrimary: ${loan.primary_account} (${formatCurrency(loan.primary_principal)}) [${loan.primary_share_pct}%]\nSecondary: ${secStr}\nTotal Principal: ${formatCurrency(loan.total_principal)}\nTotal Repay: ${formatCurrency(loan.total_repayment)}\nTerms: ${loan.terms || 'N/A'}\nSource: ${loan.folder} / ${loan.file} (Row ${loan.row})`;
+		navigator.clipboard.writeText(text);
+		setCopiedKey(loan.unique_key || loan.id);
+		showToast('Loan details copied to clipboard!');
+		setTimeout(() => setCopiedKey(null), 2500);
+	};
+
+	const handleCreateLoanClick = (loan) => {
+		handleCopyLoanDetails(loan);
+		if (onSwitchToJointLoan) {
+			onSwitchToJointLoan();
+		} else {
+			window.location.href = '/joint-loan';
 		}
 	};
 
@@ -765,10 +981,22 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 						</div>
 						<div>
 							<h1 className="text-[24px] font-extrabold text-slate-900 tracking-tight leading-tight">
-								Settings &amp; Entities
+								{activeTab === 'uncreated-loans'
+									? 'Uncreated Joint Loans'
+									: activeTab === 'sftp'
+									? 'SFTP Ingestion Settings'
+									: activeTab === 'tally'
+									? 'Tally Cloud Bridge'
+									: 'Settings & Entities'}
 							</h1>
 							<p className="text-[12px] text-slate-500 mt-0.5">
-								Configure organization co-lending partner accounts, acronyms, and approval workflows
+								{activeTab === 'uncreated-loans'
+									? 'Audit 2026 Excel payment lists (green rows) across month folders to find facilities not yet in system'
+									: activeTab === 'sftp'
+									? 'Configure automated server file synchronization and schedule settings'
+									: activeTab === 'tally'
+									? 'Configure Tally Cloud Render Bridge for automated installment payout reconciliations'
+									: 'Configure organization co-lending partner accounts, acronyms, and approval workflows'}
 							</p>
 						</div>
 					</div>
@@ -778,16 +1006,16 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 					{activeTab === 'accounts' ? (
 						<button
 							onClick={handleOpenCreate}
-							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-primary-container hover:bg-primary text-on-primary font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0"
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-primary-container hover:bg-primary text-on-primary font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 cursor-pointer"
 						>
 							<span className="material-symbols-outlined text-[19px]">add</span>
 							<span>Add Account Name</span>
 						</button>
-					) : (
+					) : activeTab === 'sftp' ? (
 						<button
 							onClick={handleSyncNow}
 							disabled={isSyncingSftp || !sftpConfig.host}
-							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 disabled:opacity-50"
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 disabled:opacity-50 cursor-pointer"
 						>
 							{isSyncingSftp ? (
 								<span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
@@ -796,16 +1024,40 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 							)}
 							<span>Sync SFTP Now</span>
 						</button>
-					)}
+					) : activeTab === 'tally' ? (
+						<button
+							onClick={handleSyncTallyNow}
+							disabled={isSyncingTally || !tallyConfig.render_api_url}
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 disabled:opacity-50 cursor-pointer"
+						>
+							{isSyncingTally ? (
+								<span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+							) : (
+								<span className="material-symbols-outlined text-[18px]">sync</span>
+							)}
+							<span>Sync Tally Now</span>
+						</button>
+					) : activeTab === 'uncreated-loans' ? (
+						<button
+							onClick={() => fetchUncreatedAudit(true)}
+							disabled={isAuditRescanning || isLoadingAudit}
+							className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-primary-container hover:bg-primary text-on-primary font-bold text-[13.5px] shadow-sm hover:shadow active:scale-98 transition-all shrink-0 disabled:opacity-60 cursor-pointer"
+						>
+							<span className={`material-symbols-outlined text-[19px] ${isAuditRescanning ? 'animate-spin' : ''}`}>
+								sync
+							</span>
+							<span>{isAuditRescanning ? 'Scanning Excel Files...' : 'Re-scan Excel Files'}</span>
+						</button>
+					) : null}
 				</div>
 			</div>
 
 			{/* Tab Switcher */}
-			<div className="flex items-center gap-2 border-b border-slate-200">
+			<div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto">
 				<button
 					type="button"
 					onClick={() => setActiveTab('accounts')}
-					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
 						activeTab === 'accounts'
 							? 'border-primary text-primary'
 							: 'border-transparent text-slate-500 hover:text-slate-800'
@@ -818,7 +1070,7 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 				<button
 					type="button"
 					onClick={() => setActiveTab('sftp')}
-					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
 						activeTab === 'sftp'
 							? 'border-primary text-primary'
 							: 'border-transparent text-slate-500 hover:text-slate-800'
@@ -831,7 +1083,7 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 				<button
 					type="button"
 					onClick={() => setActiveTab('tally')}
-					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all ${
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
 						activeTab === 'tally'
 							? 'border-primary text-primary'
 							: 'border-transparent text-slate-500 hover:text-slate-800'
@@ -839,6 +1091,30 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 				>
 					<span className="material-symbols-outlined text-[19px]">account_balance</span>
 					<span>Tally Cloud Sync</span>
+				</button>
+
+				<button
+					type="button"
+					onClick={() => setActiveTab('uncreated-loans')}
+					className={`inline-flex items-center gap-2 px-4 py-2.5 text-[13.5px] font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+						activeTab === 'uncreated-loans'
+							? 'border-primary text-primary'
+							: 'border-transparent text-slate-500 hover:text-slate-800'
+					}`}
+				>
+					<span className="material-symbols-outlined text-[19px]">rule_folder</span>
+					<span>Uncreated Joint Loans</span>
+					{auditData?.summary?.not_created_count > 0 && (
+						<span
+							className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold ${
+								activeTab === 'uncreated-loans'
+									? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200'
+									: 'bg-rose-50 text-rose-600'
+							}`}
+						>
+							{auditData.summary.not_created_count}
+						</span>
+					)}
 				</button>
 			</div>
 
@@ -1991,6 +2267,770 @@ export default function Settings({ searchQuery: initialSearch = '' }) {
 								tally_bridge_api/TALLY_API_DOCUMENTATION.md
 							</code>
 						</div>
+					</div>
+				</div>
+			)}
+
+			{/* ========================================================= */}
+			{/* Tab 4: Uncreated Joint Loans Audit (Green Rows from Excel) */}
+			{/* ========================================================= */}
+			{activeTab === 'uncreated-loans' && (
+				<div className="space-y-6 animate-in fade-in duration-200">
+					{/* KPI Summary Row */}
+					<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+						{/* Total Found */}
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Excel Facilities Found</span>
+								<span className="material-symbols-outlined text-blue-600 text-[20px]">
+									folder_open
+								</span>
+							</div>
+							<div className="mt-2 text-[26px] font-extrabold text-slate-900 tracking-tight">
+								{isLoadingAudit && !auditData ? (
+									<span className="inline-block w-8 h-6 bg-slate-100 rounded animate-pulse" />
+								) : (
+									auditData?.summary?.total_found ?? 0
+								)}
+							</div>
+							<div className="text-[11px] text-slate-400 mt-0.5">
+								{auditData?.folders ? `Across ${auditData.folders.length} Month Folders` : 'JAN - DEC - 2026'}
+							</div>
+						</div>
+
+						{/* Not Created */}
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-rose-200/90 shadow-xs bg-gradient-to-br from-rose-50/20 via-white to-white">
+							<div className="flex items-center justify-between text-rose-700 text-[12px] font-bold">
+								<span>Not Created in System</span>
+								<span className="material-symbols-outlined text-rose-600 text-[20px]">
+									pending_actions
+								</span>
+							</div>
+							<div className="mt-2 flex items-baseline gap-2">
+								<span className="text-[26px] font-extrabold text-rose-700 tracking-tight">
+									{isLoadingAudit && !auditData ? (
+										<span className="inline-block w-8 h-6 bg-rose-100 rounded animate-pulse" />
+									) : (
+										auditData?.summary?.not_created_count ?? 0
+									)}
+								</span>
+								{auditData?.summary?.not_created_amount > 0 && (
+									<span className="text-[12px] font-extrabold text-slate-600">
+										{formatCurrency(auditData.summary.not_created_amount)}
+									</span>
+								)}
+							</div>
+							<div className="text-[11px] text-rose-600/80 font-medium mt-0.5 flex items-center gap-1">
+								<span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />
+								<span>Identified in Excel green rows</span>
+							</div>
+						</div>
+
+						{/* Already Created */}
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-emerald-200/90 shadow-xs bg-gradient-to-br from-emerald-50/20 via-white to-white">
+							<div className="flex items-center justify-between text-emerald-700 text-[12px] font-bold">
+								<span>Already in System</span>
+								<span className="material-symbols-outlined text-emerald-600 text-[20px]">
+									check_circle
+								</span>
+							</div>
+							<div className="mt-2 flex items-baseline gap-2">
+								<span className="text-[26px] font-extrabold text-emerald-700 tracking-tight">
+									{isLoadingAudit && !auditData ? (
+										<span className="inline-block w-8 h-6 bg-emerald-100 rounded animate-pulse" />
+									) : (
+										auditData?.summary?.created_count ?? 0
+									)}
+								</span>
+								{auditData?.summary?.created_amount > 0 && (
+									<span className="text-[12px] font-extrabold text-slate-600">
+										{formatCurrency(auditData.summary.created_amount)}
+									</span>
+								)}
+							</div>
+							<div className="text-[11px] text-emerald-600/80 font-medium mt-0.5 flex items-center gap-1">
+								<span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+								<span>Matched with active facilities</span>
+							</div>
+						</div>
+
+						{/* Scan Timestamp & Location */}
+						<div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+							<div className="flex items-center justify-between text-slate-500 text-[12px] font-semibold">
+								<span>Scan Details</span>
+								<span className="material-symbols-outlined text-purple-600 text-[20px]">
+									history
+								</span>
+							</div>
+							<div className="mt-2 text-[14px] font-bold text-slate-800 truncate">
+								{auditData?.scan_timestamp || (isLoadingAudit ? 'Scanning...' : 'Not scanned')}
+							</div>
+							<div
+								className="text-[11px] text-slate-500 mt-1 truncate font-mono"
+								title={auditData?.base_dir || "X:\\ASHWITHA EVANGELIN\\...\\JAN - DEC - 2026"}
+							>
+								{auditData?.base_dir ? (
+									<span className="flex items-center gap-1">
+										<span className={`w-1.5 h-1.5 rounded-full shrink-0 ${auditData.is_custom_dir ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+										<span className="truncate">{auditData.base_dir}</span>
+									</span>
+								) : (
+									'Folder: 2026 Payment Lists'
+								)}
+							</div>
+						</div>
+					</div>
+
+					{/* Editable Location / Source Directory Bar */}
+					<form
+						onSubmit={handleSaveLocationAndScan}
+						className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3.5"
+					>
+						<div className="flex items-center gap-3 shrink-0">
+							<div className="w-10 h-10 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+								<span className="material-symbols-outlined text-[22px]">drive_file_move</span>
+							</div>
+							<div>
+								<div className="flex items-center gap-2">
+									<h4 className="text-[13px] font-extrabold text-slate-900 tracking-tight">
+										Excel Source Folder Location
+									</h4>
+									{auditData?.is_custom_dir ? (
+										<span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 ring-1 ring-amber-300">
+											Custom Path
+										</span>
+									) : (
+										<span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-slate-100 text-slate-600">
+											Default Path
+										</span>
+									)}
+								</div>
+								<p className="text-[11px] text-slate-400 mt-0.5">
+									Directory scanned for month folders containing payment list Excel workbooks
+								</p>
+							</div>
+						</div>
+
+						{/* Editable Input & Action Buttons */}
+						<div className="flex-1 max-w-2xl flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+							<div className="relative flex-1">
+								<span className="material-symbols-outlined text-[17px] text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+									folder_open
+								</span>
+								<input
+									type="text"
+									value={locationInput}
+									onChange={(e) => setLocationInput(e.target.value)}
+									placeholder="X:\ASHWITHA EVANGELIN\...\JAN - DEC - 2026"
+									className="w-full h-10 pl-9 pr-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono text-slate-800 placeholder:text-slate-400 focus:bg-white focus:border-primary focus:outline-none transition-all shadow-2xs font-semibold"
+								/>
+							</div>
+
+							<div className="flex items-center gap-1.5 shrink-0">
+								<button
+									type="submit"
+									disabled={isAuditRescanning || isLoadingAudit || !locationInput.trim()}
+									title="Save path and re-scan files"
+									className="h-10 px-4 rounded-xl bg-primary hover:bg-primary/90 text-white text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50 active:scale-98"
+								>
+									{isAuditRescanning ? (
+										<span className="material-symbols-outlined text-[16px] animate-spin">
+											progress_activity
+										</span>
+									) : (
+										<span className="material-symbols-outlined text-[16px]">sync</span>
+									)}
+									<span>Update &amp; Scan</span>
+								</button>
+
+								{(auditData?.is_custom_dir || (auditData?.default_dir && locationInput.trim() !== auditData.default_dir)) && (
+									<button
+										type="button"
+										onClick={handleResetLocationToDefault}
+										disabled={isAuditRescanning || isLoadingAudit}
+										title="Reset folder path to default system path"
+										className="h-10 px-3 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+									>
+										Reset
+									</button>
+								)}
+							</div>
+						</div>
+					</form>
+
+					{/* Main Card: Filters Toolbar & Table */}
+					<div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm ring-1 ring-slate-200/80 flex flex-col gap-5">
+						{/* Filter Toolbar */}
+						<div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+							{/* Filter Dropdowns on Left */}
+							<div className="flex items-center flex-wrap gap-2.5">
+								{/* Status Pills */}
+								<div className="inline-flex p-0.5 bg-slate-100 rounded-xl text-xs font-semibold">
+									<button
+										type="button"
+										onClick={() => setAuditStatusFilter('NOT_CREATED')}
+										className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+											auditStatusFilter === 'NOT_CREATED'
+												? 'bg-rose-600 text-white shadow-xs font-bold'
+												: 'text-slate-600 hover:text-slate-900'
+										}`}
+									>
+										<span>Not Created</span>
+										{auditData?.summary?.not_created_count !== undefined && (
+											<span
+												className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+													auditStatusFilter === 'NOT_CREATED'
+														? 'bg-white/20 text-white'
+														: 'bg-rose-100 text-rose-700'
+												}`}
+											>
+												{auditData.summary.not_created_count}
+											</span>
+										)}
+									</button>
+
+									<button
+										type="button"
+										onClick={() => setAuditStatusFilter('CREATED')}
+										className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+											auditStatusFilter === 'CREATED'
+												? 'bg-emerald-600 text-white shadow-xs font-bold'
+												: 'text-slate-600 hover:text-slate-900'
+										}`}
+									>
+										<span>Already Created</span>
+										{auditData?.summary?.created_count !== undefined && (
+											<span
+												className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+													auditStatusFilter === 'CREATED'
+														? 'bg-white/20 text-white'
+														: 'bg-emerald-100 text-emerald-700'
+												}`}
+											>
+												{auditData.summary.created_count}
+											</span>
+										)}
+									</button>
+
+									<button
+										type="button"
+										onClick={() => setAuditStatusFilter('ALL')}
+										className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+											auditStatusFilter === 'ALL'
+												? 'bg-slate-800 text-white shadow-xs font-bold'
+												: 'text-slate-600 hover:text-slate-900'
+										}`}
+									>
+										<span>All Found</span>
+										{auditData?.summary?.total_found !== undefined && (
+											<span
+												className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+													auditStatusFilter === 'ALL'
+														? 'bg-white/20 text-white'
+														: 'bg-slate-200 text-slate-700'
+												}`}
+											>
+												{auditData.summary.total_found}
+											</span>
+										)}
+									</button>
+								</div>
+
+								{/* Folder / Month Filter */}
+								<div className="relative">
+									<select
+										value={auditFolderFilter}
+										onChange={(e) => setAuditFolderFilter(e.target.value)}
+										className="h-9 pl-3 pr-8 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 hover:bg-slate-100/80 focus:bg-white focus:border-primary focus:outline-none transition-all cursor-pointer appearance-none"
+									>
+										<option value="ALL">All Folders / Months</option>
+										{(auditData?.folders || []).map((folder) => (
+											<option key={folder} value={folder}>
+												{folder}
+											</option>
+										))}
+									</select>
+									<span className="material-symbols-outlined text-[16px] text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+										expand_more
+									</span>
+								</div>
+
+								{/* Primary Account Filter */}
+								<div className="relative">
+									<select
+										value={auditAccountFilter}
+										onChange={(e) => setAuditAccountFilter(e.target.value)}
+										className="h-9 pl-3 pr-8 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 hover:bg-slate-100/80 focus:border-primary focus:outline-none transition-all cursor-pointer appearance-none"
+									>
+										<option value="ALL">All Primary Accounts</option>
+										{(auditData?.primary_accounts || []).map((acc) => (
+											<option key={acc} value={acc}>
+												{acc} (Primary)
+											</option>
+										))}
+									</select>
+									<span className="material-symbols-outlined text-[16px] text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+										expand_more
+									</span>
+								</div>
+
+								{/* Reset Filters button if any filter is active */}
+								{(auditFolderFilter !== 'ALL' ||
+									auditAccountFilter !== 'ALL' ||
+									auditStatusFilter !== 'NOT_CREATED' ||
+									auditSearchQuery) && (
+									<button
+										type="button"
+										onClick={() => {
+											setAuditFolderFilter('ALL');
+											setAuditAccountFilter('ALL');
+											setAuditStatusFilter('NOT_CREATED');
+											setAuditSearchQuery('');
+										}}
+										className="text-[11.5px] text-slate-500 hover:text-primary font-bold flex items-center gap-1 cursor-pointer transition-colors"
+									>
+										<span className="material-symbols-outlined text-[15px]">restart_alt</span>
+										<span>Reset</span>
+									</button>
+								)}
+							</div>
+
+							{/* Search & Export on Right */}
+							<div className="flex items-center gap-2 w-full lg:w-auto">
+								<div className="relative flex-1 sm:w-64">
+									<span className="material-symbols-outlined text-[18px] text-slate-400 absolute left-3 top-1/2 -translate-y-1/2">
+										search
+									</span>
+									<input
+										type="text"
+										value={auditSearchQuery}
+										onChange={(e) => setAuditSearchQuery(e.target.value)}
+										placeholder="Search borrower, loan ID..."
+										className="w-full h-9 pl-9 pr-8 rounded-xl border border-slate-200 bg-slate-50 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:bg-white focus:border-primary focus:outline-none transition-all"
+									/>
+									{auditSearchQuery && (
+										<button
+											type="button"
+											onClick={() => setAuditSearchQuery('')}
+											className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+										>
+											<span className="material-symbols-outlined text-[15px]">close</span>
+										</button>
+									)}
+								</div>
+
+								<button
+									type="button"
+									onClick={exportAuditToCSV}
+									disabled={!filteredAuditLoans.length}
+									title="Export current list to CSV"
+									className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all shadow-2xs disabled:opacity-50 cursor-pointer shrink-0"
+								>
+									<span className="material-symbols-outlined text-[17px] text-slate-500">
+										download
+									</span>
+									<span className="hidden sm:inline">Export</span>
+								</button>
+							</div>
+						</div>
+
+						{/* Audit Loading State */}
+						{isLoadingAudit && !auditData && (
+							<div className="py-16 text-center">
+								<div className="inline-block p-4 rounded-3xl bg-primary/10 text-primary mb-3">
+									<span className="material-symbols-outlined text-[36px] animate-spin">
+										progress_activity
+									</span>
+								</div>
+								<h3 className="text-[16px] font-bold text-slate-800">
+									Scanning 2026 Excel Payment Lists...
+								</h3>
+								<p className="text-[12px] text-slate-400 max-w-md mx-auto mt-1">
+									Examining green background rows across month folders in Payment details - 2024 &amp; 2025\JAN - DEC - 2026. This takes about 10-15 seconds.
+								</p>
+							</div>
+						)}
+
+						{/* Error State */}
+						{auditError && (
+							<div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-3">
+								<span className="material-symbols-outlined text-[20px] text-rose-600 mt-0.5">
+									error
+								</span>
+								<div className="flex-1">
+									<div className="font-bold text-[13px]">Scan Error Encountered</div>
+									<div className="text-[12px] text-rose-600 mt-0.5">{auditError}</div>
+									<div className="mt-2.5 flex items-center gap-2">
+										<button
+											type="button"
+											onClick={() => fetchUncreatedAudit(true)}
+											className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-2xs transition-all inline-flex items-center gap-1.5 cursor-pointer"
+										>
+											<span className="material-symbols-outlined text-[14px]">refresh</span>
+											<span>Retry Scan</span>
+										</button>
+										<button
+											type="button"
+											onClick={handleResetLocationToDefault}
+											className="px-3 py-1.5 rounded-lg border border-rose-300 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all inline-flex items-center gap-1.5 cursor-pointer"
+										>
+											<span className="material-symbols-outlined text-[14px]">settings_backup_restore</span>
+											<span>Reset to Default Location</span>
+										</button>
+									</div>
+								</div>
+							</div>
+						)}
+
+						{/* Table Content */}
+						{(!isLoadingAudit || auditData) && !auditError && (
+							<>
+								{filteredAuditLoans.length === 0 ? (
+									<div className="py-16 text-center">
+										<div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+											<span className="material-symbols-outlined text-[28px]">search_off</span>
+										</div>
+										<h4 className="text-[15px] font-bold text-slate-800">
+											No Joint Loans Found
+										</h4>
+										<p className="text-[12px] text-slate-400 mt-1 max-w-sm mx-auto">
+											No loans match the current status, folder, account, or search criteria.
+										</p>
+										<button
+											type="button"
+											onClick={() => {
+												setAuditFolderFilter('ALL');
+												setAuditAccountFilter('ALL');
+												setAuditStatusFilter('ALL');
+												setAuditSearchQuery('');
+											}}
+											className="mt-3 px-3.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all inline-flex items-center gap-1.5"
+										>
+											<span className="material-symbols-outlined text-[15px]">filter_alt_off</span>
+											<span>Clear All Filters</span>
+										</button>
+									</div>
+								) : (
+									<div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+										<table className="w-full text-left border-collapse min-w-[1050px]">
+											<thead>
+												<tr className="bg-slate-50/80 border-b border-slate-200/90 text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">
+													<th className="py-3 px-3.5 text-center w-12">#</th>
+													<th className="py-3 px-3.5">Loan Date</th>
+													<th className="py-3 px-3.5">Loan ID</th>
+													<th className="py-3 px-3.5">Client / Borrower</th>
+													<th className="py-3 px-3.5">Primary Share</th>
+													<th className="py-3 px-3.5">Secondary Share(s)</th>
+													<th className="py-3 px-3.5 text-right">Total Principal</th>
+													<th className="py-3 px-3.5 text-right">Total Repay</th>
+													<th className="py-3 px-3.5 text-center">Terms</th>
+													<th className="py-3 px-3.5">Folder / File</th>
+													<th className="py-3 px-3.5 text-center">Status</th>
+													<th className="py-3 px-3.5 text-center w-28">Action</th>
+												</tr>
+											</thead>
+											<tbody className="divide-y divide-slate-100 text-xs">
+												{paginatedAuditLoans.map((loan, idx) => {
+													const rowNumber =
+														(auditCurrentPage - 1) * auditPageSize + idx + 1;
+													const isCopied = copiedKey === (loan.unique_key || loan.id);
+
+													return (
+														<tr
+															key={loan.unique_key || loan.id || idx}
+															className="hover:bg-slate-50/70 transition-colors"
+														>
+															{/* Index */}
+															<td className="py-3 px-3.5 text-center font-bold text-slate-400">
+																{rowNumber}
+															</td>
+
+															{/* Loan Date */}
+															<td className="py-3 px-3.5 font-mono text-slate-700 font-semibold whitespace-nowrap">
+																{loan.loan_date || '—'}
+															</td>
+
+															{/* Loan ID */}
+															<td className="py-3 px-3.5 whitespace-nowrap">
+																{loan.loan_id ? (
+																	<span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md ring-1 ring-slate-200 text-[11.5px]">
+																		{loan.loan_id}
+																	</span>
+																) : (
+																	<span className="text-slate-300 font-mono">—</span>
+																)}
+															</td>
+
+															{/* Client Name */}
+															<td className="py-3 px-3.5 max-w-[240px]">
+																<div className="font-bold text-slate-900 truncate">
+																	{loan.client_name}
+																</div>
+																{loan.raw_client_name &&
+																	loan.raw_client_name !== loan.client_name && (
+																		<div className="text-[10.5px] text-slate-400 truncate mt-0.5 font-mono">
+																			{loan.raw_client_name}
+																		</div>
+																	)}
+															</td>
+
+															{/* Primary Share */}
+															<td className="py-3 px-3.5 whitespace-nowrap">
+																<div className="flex items-center gap-1.5">
+																	<span className="font-extrabold text-slate-900 bg-blue-50 text-blue-700 ring-1 ring-blue-200 px-1.5 py-0.5 rounded text-[10.5px]">
+																		{loan.primary_account}
+																	</span>
+																	<span className="font-bold text-slate-800">
+																		{formatCurrency(loan.primary_principal)}
+																	</span>
+																	{loan.primary_share_pct > 0 && (
+																		<span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1 py-0.2 rounded">
+																			{loan.primary_share_pct}%
+																		</span>
+																	)}
+																</div>
+															</td>
+
+															{/* Secondary Shares */}
+															<td className="py-3 px-3.5">
+																<div className="flex flex-wrap items-center gap-1.5">
+																	{(loan.secondary_accounts || []).map((sec, sIdx) => (
+																		<span
+																			key={sIdx}
+																			className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 ring-1 ring-purple-200 px-2 py-0.5 rounded-lg text-[11px] font-semibold"
+																		>
+																			<strong className="font-extrabold">
+																				{sec.account}:
+																			</strong>
+																			<span>{formatCurrency(sec.principal)}</span>
+																			{sec.share_pct > 0 && (
+																				<span className="text-[10px] text-purple-500 font-bold">
+																					({sec.share_pct}%)
+																				</span>
+																			)}
+																		</span>
+																	))}
+																</div>
+															</td>
+
+															{/* Total Principal */}
+															<td className="py-3 px-3.5 text-right font-extrabold text-slate-900 font-mono whitespace-nowrap">
+																{formatCurrency(loan.total_principal)}
+															</td>
+
+															{/* Total Repayment */}
+															<td className="py-3 px-3.5 text-right font-bold text-slate-700 font-mono whitespace-nowrap">
+																{loan.total_repayment
+																	? formatCurrency(loan.total_repayment)
+																	: '—'}
+															</td>
+
+															{/* Terms */}
+															<td className="py-3 px-3.5 text-center whitespace-nowrap">
+																{loan.terms ? (
+																	<span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 ring-1 ring-amber-200">
+																		{loan.terms}
+																	</span>
+																) : (
+																	<span className="text-slate-300 font-mono">—</span>
+																)}
+															</td>
+
+															{/* Folder & File */}
+															<td className="py-3 px-3.5 max-w-[200px]">
+																<div className="text-[11px] font-bold text-slate-800 truncate">
+																	{loan.folder}
+																</div>
+																<div
+																	className="text-[10.5px] text-slate-400 font-mono truncate"
+																	title={`${loan.file} (Row ${loan.row})`}
+																>
+																	{loan.file} : Row {loan.row}
+																</div>
+															</td>
+
+															{/* Status */}
+															<td className="py-3 px-3.5 text-center whitespace-nowrap">
+																{loan.is_created ? (
+																	<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+																		<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+																		<span>Created</span>
+																		{loan.matched_db_loan?.loan_ref_id && (
+																			<span className="font-mono text-[10px]">
+																				({loan.matched_db_loan.loan_ref_id})
+																			</span>
+																		)}
+																	</span>
+																) : (
+																	<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-rose-50 text-rose-700 ring-1 ring-rose-200">
+																		<span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+																		<span>Not Created</span>
+																	</span>
+																)}
+															</td>
+
+															{/* Actions */}
+															<td className="py-3 px-3.5 text-center whitespace-nowrap">
+																{loan.is_created ? (
+																	<button
+																		type="button"
+																		onClick={() =>
+																			onNavigateToJointLoan?.(loan.matched_db_loan)
+																		}
+																		className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all cursor-pointer shadow-2xs"
+																	>
+																		<span className="material-symbols-outlined text-[15px]">
+																			visibility
+																		</span>
+																		<span>View</span>
+																	</button>
+																) : (
+																	<div className="inline-flex items-center gap-1">
+																		<button
+																			type="button"
+																			onClick={() => handleCopyLoanDetails(loan)}
+																			title="Copy loan information to clipboard"
+																			className={`p-1.5 rounded-xl transition-all cursor-pointer ${
+																				isCopied
+																					? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300'
+																					: 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+																			}`}
+																		>
+																			<span className="material-symbols-outlined text-[15px]">
+																				{isCopied ? 'check' : 'content_copy'}
+																			</span>
+																		</button>
+
+																		<button
+																			type="button"
+																			onClick={() => handleCreateLoanClick(loan)}
+																			title="Copy info and switch to Joint Loan page to create"
+																			className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-primary hover:bg-primary/90 text-white text-xs font-bold transition-all shadow-2xs cursor-pointer active:scale-95"
+																		>
+																			<span className="material-symbols-outlined text-[15px]">
+																				add
+																			</span>
+																			<span>Create</span>
+																		</button>
+																	</div>
+																)}
+															</td>
+														</tr>
+													);
+												})}
+											</tbody>
+										</table>
+									</div>
+								)}
+
+								{/* Pagination */}
+								{filteredAuditLoans.length > 0 && (
+									<div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-2">
+										<div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+											<span>
+												Showing{' '}
+												<strong className="text-slate-800 font-bold">
+													{(auditCurrentPage - 1) * auditPageSize + 1}
+												</strong>{' '}
+												to{' '}
+												<strong className="text-slate-800 font-bold">
+													{Math.min(
+														auditCurrentPage * auditPageSize,
+														filteredAuditLoans.length
+													)}
+												</strong>{' '}
+												of{' '}
+												<strong className="text-slate-800 font-bold">
+													{filteredAuditLoans.length}
+												</strong>{' '}
+												loans
+											</span>
+
+											<span className="text-slate-300">|</span>
+
+											<span className="flex items-center gap-1.5">
+												<span>Per page:</span>
+												<select
+													value={auditPageSize}
+													onChange={(e) => setAuditPageSize(Number(e.target.value))}
+													className="h-7 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-bold text-slate-700 cursor-pointer focus:outline-none"
+												>
+													<option value={10}>10</option>
+													<option value={25}>25</option>
+													<option value={50}>50</option>
+													<option value={100}>100</option>
+												</select>
+											</span>
+										</div>
+
+										{/* Page Navigation */}
+										<div className="flex items-center gap-1.5 self-center sm:self-auto">
+											<button
+												type="button"
+												onClick={() => setAuditCurrentPage((prev) => Math.max(prev - 1, 1))}
+												disabled={auditCurrentPage === 1}
+												className="p-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+											>
+												<span className="material-symbols-outlined text-[17px]">
+													chevron_left
+												</span>
+											</button>
+
+											<div className="flex items-center gap-1">
+												{Array.from({ length: auditTotalPages }, (_, i) => i + 1)
+													.filter((page) => {
+														return (
+															page === 1 ||
+															page === auditTotalPages ||
+															Math.abs(page - auditCurrentPage) <= 2
+														);
+													})
+													.map((page, pIdx, arr) => {
+														const prevPage = arr[pIdx - 1];
+														const showEllipsis = prevPage && page - prevPage > 1;
+
+														return (
+															<React.Fragment key={page}>
+																{showEllipsis && (
+																	<span className="px-1 text-slate-400 font-bold text-xs">
+																		...
+																	</span>
+																)}
+																<button
+																	type="button"
+																	onClick={() => setAuditCurrentPage(page)}
+																	className={`h-8 min-w-[32px] px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+																		auditCurrentPage === page
+																			? 'bg-primary text-white shadow-xs'
+																			: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+																	}`}
+																>
+																	{page}
+																</button>
+															</React.Fragment>
+														);
+													})}
+											</div>
+
+											<button
+												type="button"
+												onClick={() =>
+													setAuditCurrentPage((prev) =>
+														Math.min(prev + 1, auditTotalPages)
+													)
+												}
+												disabled={auditCurrentPage === auditTotalPages}
+												className="p-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+											>
+												<span className="material-symbols-outlined text-[17px]">
+													chevron_right
+												</span>
+											</button>
+										</div>
+									</div>
+								)}
+							</>
+						)}
 					</div>
 				</div>
 			)}

@@ -873,7 +873,11 @@ export default function Dashboard({ currentUser, onLogout }) {
 							resetViewTrigger={jointLoanNavKey}
 						/>
 					) : activeNav === 'settings' ? (
-						<Settings searchQuery={searchQuery} />
+						<Settings
+							searchQuery={searchQuery}
+							onNavigateToJointLoan={(loan) => handleNavigateToLoanDetails(loan)}
+							onSwitchToJointLoan={() => setActiveNav('joint-loan')}
+						/>
 					) : activeNav === 'users' ? (
 						<Users searchQuery={searchQuery} />
 					) : activeNav === 'matchup' ? (

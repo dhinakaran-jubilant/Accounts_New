@@ -2265,6 +2265,37 @@ def handle_payout_approval(loan_id, s_no):
 
     return jsonify({'error': 'Invalid action. Expected APPROVE or REJECT.'}), 400
 
+# --- Uncreated Joint Loans Audit Endpoint ---
+@app.route('/api/joint-loans/uncreated-audit', methods=['GET', 'POST'])
+def get_uncreated_joint_loans_route():
+    try:
+        from uncreated_joint_loans import get_uncreated_joint_loans_audit, DEFAULT_EXCEL_BASE_DIR, save_configured_base_dir
+        body = request.get_json(silent=True) or {}
+        force_refresh = (
+            request.args.get('refresh', '').lower() in ('true', '1') or
+            request.args.get('force_refresh', '').lower() in ('true', '1') or
+            request.method == 'POST' or
+            bool(body.get('refresh') or body.get('force_refresh'))
+        )
+        reset_default = (
+            request.args.get('reset_default', '').lower() in ('true', '1') or
+            bool(body.get('reset_default'))
+        )
+        base_dir = (
+            request.args.get('base_dir') or
+            body.get('base_dir') or
+            None
+        )
+        if reset_default:
+            save_configured_base_dir(DEFAULT_EXCEL_BASE_DIR)
+            base_dir = DEFAULT_EXCEL_BASE_DIR
+            force_refresh = True
+        data = get_uncreated_joint_loans_audit(force_refresh=force_refresh, base_dir=base_dir)
+        return jsonify(data), 200
+    except Exception as e:
+        app.logger.error(f"Error in uncreated joint loans audit: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # --- Database Sync / Refresh Endpoint ---
 @app.route('/api/sync', methods=['GET', 'POST'])
 def sync_data():

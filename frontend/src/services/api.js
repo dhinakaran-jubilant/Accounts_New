@@ -16,8 +16,8 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, ''
 async function request(endpoint, options = {}) {
 	const url = `${API_BASE_URL}${endpoint}`;
 	const headers = {
-		'Content-Type': 'application/json',
 		Accept: 'application/json',
+		...(options.body ? { 'Content-Type': 'application/json' } : {}),
 		...(options.headers || {}),
 	};
 
@@ -385,6 +385,18 @@ export const api = {
 		request('/tally/sync-now', {
 			method: 'POST',
 		}),
+
+	// Uncreated Joint Loans Excel Audit
+	getUncreatedJointLoansAudit: (params = {}) => {
+		return request('/joint-loans/uncreated-audit', {
+			method: 'POST',
+			body: JSON.stringify({
+				force_refresh: Boolean(params.force_refresh),
+				base_dir: params.base_dir || null,
+				reset_default: Boolean(params.reset_default),
+			}),
+		});
+	},
 };
 
 export default api;

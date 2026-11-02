@@ -1674,10 +1674,6 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [], lo
 																				<span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
 																				<span>Secondary (View Only)</span>
 																			</span>
-																			<div className="flex items-center gap-1.5 text-[11px] text-blue-700 font-semibold">
-																				<span className="material-symbols-outlined text-[13px]">visibility</span>
-																				<span>Can view {primaryLoansMap[acc.acronym]?.length || 0} {primaryLoansMap[acc.acronym]?.length === 1 ? 'loan' : 'loans'} having {acc.acronym} as Primary</span>
-																			</div>
 																		</div>
 																	) : (
 																		<span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 text-slate-500 ring-1 ring-slate-200">
