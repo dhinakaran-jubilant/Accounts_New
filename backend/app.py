@@ -6,7 +6,17 @@ Date: 2026-04-30 18:41
 Description: Main Flask application server providing REST API routing, loan servicing, auth, file uploads, and approval workflow endpoints.
 """
 
+import sys
 import os
+
+# Ensure backend directory and project root are always in sys.path
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_dir)
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
+if _project_root not in sys.path:
+    sys.path.append(_project_root)
+
 import re
 import json
 import tempfile
@@ -2269,7 +2279,13 @@ def handle_payout_approval(loan_id, s_no):
 @app.route('/api/joint-loans/uncreated-audit', methods=['GET', 'POST'])
 def get_uncreated_joint_loans_route():
     try:
-        from uncreated_joint_loans import get_uncreated_joint_loans_audit, DEFAULT_EXCEL_BASE_DIR, save_configured_base_dir
+        _bdir = os.path.dirname(os.path.abspath(__file__))
+        if _bdir not in sys.path:
+            sys.path.insert(0, _bdir)
+        try:
+            from uncreated_joint_loans import get_uncreated_joint_loans_audit, DEFAULT_EXCEL_BASE_DIR, save_configured_base_dir
+        except ImportError:
+            from backend.uncreated_joint_loans import get_uncreated_joint_loans_audit, DEFAULT_EXCEL_BASE_DIR, save_configured_base_dir
         body = request.get_json(silent=True) or {}
         force_refresh = (
             request.args.get('refresh', '').lower() in ('true', '1') or
