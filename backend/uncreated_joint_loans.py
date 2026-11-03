@@ -20,6 +20,7 @@ except ImportError:
     from backend.models import db, Loan
 
 DEFAULT_EXCEL_BASE_DIR = r"X:\ASHWITHA EVANGELIN\ACCOUNT STATEMENTS\PAYMENT LIST\NEW PAYMENT LIST\Payment details - 2024 & 2025\JAN - DEC - 2026"
+DEFAULT_EXCEL_UNC_DIR = r"\\192.168.0.7\acc\USER14$\ASHWITHA EVANGELIN\ACCOUNT STATEMENTS\PAYMENT LIST\NEW PAYMENT LIST\Payment details - 2024 & 2025\JAN - DEC - 2026"
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uncreated_loans_config.json')
 
 def get_configured_base_dir():
@@ -29,7 +30,9 @@ def get_configured_base_dir():
                 cfg = json.load(f)
                 custom = cfg.get('base_dir')
                 if custom and isinstance(custom, str) and custom.strip():
-                    return custom.strip()
+                    c_clean = custom.strip()
+                    if 'dummy' not in c_clean.lower():
+                        return c_clean
         except Exception:
             pass
     return DEFAULT_EXCEL_BASE_DIR
@@ -158,23 +161,86 @@ def get_id_match_keys(lid_str):
 
     return keys
 
+def get_unc_fallback(path):
+    if not path:
+        return None
+    p = str(path).strip()
+    if p.upper().startswith('X:'):
+        rel = p[2:].lstrip(r'\/')
+        return os.path.join(r'\\192.168.0.7\acc\USER14$', rel)
+    elif p.upper().startswith('Y:'):
+        rel = p[2:].lstrip(r'\/')
+        return os.path.join(r'\\192.168.0.7\CreditTeam$2', rel)
+    elif p.upper().startswith('Z:'):
+        rel = p[2:].lstrip(r'\/')
+        return os.path.join(r'\\192.168.0.7\j', rel)
+    return None
+
 def ensure_drive_connected(path):
-    if path and len(path) >= 2 and path[1] == ':':
-        drive = path[:2].upper()
+    if not path:
+        return
+    clean_p = str(path).strip()
+    if len(clean_p) >= 2 and clean_p[1] == ':':
+        drive = clean_p[:2].upper()
         try:
             import subprocess
             subprocess.run(f"net use {drive}", shell=True, capture_output=True, timeout=5)
+            if not os.path.exists(clean_p):
+                unc = get_unc_fallback(clean_p)
+                if unc:
+                    unc_root = unc.split(r'\ASHWITHA')[0] if r'\ASHWITHA' in unc else r'\\192.168.0.7\acc\USER14$'
+                    subprocess.run(f'net use {drive} "{unc_root}" /persistent:yes', shell=True, capture_output=True, timeout=5)
         except Exception:
             pass
 
+def resolve_accessible_directory(target_dir):
+    """
+    Resolves an accessible directory path.
+    Seamlessly resolves X:\\... to UNC path \\\\192.168.0.7\\acc\\USER14$\\...
+    if mapped drive letter is disconnected in the current process session.
+    """
+    if not target_dir:
+        target_dir = DEFAULT_EXCEL_BASE_DIR
+    clean_dir = str(target_dir).strip()
+    if 'dummy' in clean_dir.lower():
+        clean_dir = DEFAULT_EXCEL_BASE_DIR
+
+    # 1. Directly accessible as-is
+    if os.path.exists(clean_dir):
+        return clean_dir
+
+    # 2. Try waking up/connecting drive letter if it's a mapped drive (e.g. X:)
+    ensure_drive_connected(clean_dir)
+    if os.path.exists(clean_dir):
+        return clean_dir
+
+    # 3. Transparent UNC Fallback:
+    # In Windows, mapped network drives like X:\\ frequently sleep or disconnect in non-interactive sessions,
+    # but the direct SMB UNC path connects directly without requiring drive letter mapping.
+    unc_path = get_unc_fallback(clean_dir)
+    if unc_path and os.path.exists(unc_path):
+        return unc_path
+
+    # 4. If target_dir was already a UNC path, try the mapped X: drive equivalent
+    if clean_dir.lower().startswith(r'\\192.168.0.7\acc\user14$'):
+        x_equiv = 'X:' + clean_dir[len(r'\\192.168.0.7\acc\user14$'):]
+        if os.path.exists(x_equiv):
+            return x_equiv
+
+    # 5. Global fallback to DEFAULT_EXCEL_UNC_DIR if accessible
+    if os.path.exists(DEFAULT_EXCEL_UNC_DIR):
+        return DEFAULT_EXCEL_UNC_DIR
+
+    raise FileNotFoundError(
+        f"Directory not accessible: {clean_dir}. "
+        f"Please ensure the network share (\\\\192.168.0.7\\acc\\USER14$ or X: drive) is connected."
+    )
+
 def scan_excel_files(base_dir=None):
     target_dir = base_dir or DEFAULT_EXCEL_BASE_DIR
-    if not os.path.exists(target_dir):
-        ensure_drive_connected(target_dir)
-    if not os.path.exists(target_dir):
-        raise FileNotFoundError(f"Directory not accessible: {target_dir}")
+    accessible_dir = resolve_accessible_directory(target_dir)
 
-    folders = sorted([f for f in os.listdir(target_dir) if os.path.isdir(os.path.join(target_dir, f))])
+    folders = sorted([f for f in os.listdir(accessible_dir) if os.path.isdir(os.path.join(accessible_dir, f))])
     all_loans = []
     primary_accounts_set = set()
 
@@ -182,7 +248,7 @@ def scan_excel_files(base_dir=None):
     loan_id_pattern = re.compile(r'^(JL[-_\s]*)?[A-Z]{1,5}[-_\s]*0*\d{2,8}$', re.IGNORECASE)
 
     for folder in folders:
-        folder_path = os.path.join(target_dir, folder)
+        folder_path = os.path.join(accessible_dir, folder)
         files = sorted([f for f in os.listdir(folder_path) if f.endswith('.xlsx') and not f.startswith('~$')])
         
         for file in files:
@@ -315,7 +381,7 @@ def scan_excel_files(base_dir=None):
             except Exception as e:
                 print(f"Error processing {filepath}: {e}")
 
-    return all_loans, sorted(list(primary_accounts_set)), folders
+    return all_loans, sorted(list(primary_accounts_set)), folders, accessible_dir
 
 def get_uncreated_joint_loans_audit(force_refresh=False, base_dir=None):
     global _cache
@@ -331,7 +397,7 @@ def get_uncreated_joint_loans_audit(force_refresh=False, base_dir=None):
     if not force_refresh and _cache['data'] and _cache['base_dir'] == target_dir and (now - _cache['timestamp'] < 600):
         return _cache['data']
 
-    raw_loans, primary_accounts, folders = scan_excel_files(target_dir)
+    raw_loans, primary_accounts, folders, accessible_dir = scan_excel_files(target_dir)
 
     # 1. Fetch from current SQLAlchemy DB (active non-deleted loans, including where is_deleted is NULL)
     try:
@@ -557,8 +623,12 @@ def get_uncreated_joint_loans_audit(force_refresh=False, base_dir=None):
         'success': True,
         'scan_timestamp': datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p"),
         'base_dir': target_dir,
+        'accessible_dir': accessible_dir,
         'default_dir': DEFAULT_EXCEL_BASE_DIR,
-        'is_custom_dir': (target_dir.rstrip(r'\/').lower() != DEFAULT_EXCEL_BASE_DIR.rstrip(r'\/').lower()),
+        'is_custom_dir': (
+            target_dir.rstrip(r'\/').lower() != DEFAULT_EXCEL_BASE_DIR.rstrip(r'\/').lower() and
+            target_dir.rstrip(r'\/').lower() != DEFAULT_EXCEL_UNC_DIR.rstrip(r'\/').lower()
+        ),
         'folders': folders,
         'primary_accounts': primary_accounts,
         'summary': {

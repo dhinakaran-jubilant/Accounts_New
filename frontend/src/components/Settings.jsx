@@ -514,10 +514,20 @@ export default function Settings({
 	const DEFAULT_AUDIT_PATH =
 		"X:\\ASHWITHA EVANGELIN\\ACCOUNT STATEMENTS\\PAYMENT LIST\\NEW PAYMENT LIST\\Payment details - 2024 & 2025\\JAN - DEC - 2026";
 	const [auditCustomLocation, setAuditCustomLocation] = useState(() => {
-		return localStorage.getItem('loandesk_audit_base_dir') || DEFAULT_AUDIT_PATH;
+		const saved = localStorage.getItem('loandesk_audit_base_dir');
+		if (saved && (saved.toLowerCase().includes('dummy') || !saved.trim())) {
+			localStorage.removeItem('loandesk_audit_base_dir');
+			return DEFAULT_AUDIT_PATH;
+		}
+		return saved || DEFAULT_AUDIT_PATH;
 	});
 	const [locationInput, setLocationInput] = useState(() => {
-		return localStorage.getItem('loandesk_audit_base_dir') || DEFAULT_AUDIT_PATH;
+		const saved = localStorage.getItem('loandesk_audit_base_dir');
+		if (saved && (saved.toLowerCase().includes('dummy') || !saved.trim())) {
+			localStorage.removeItem('loandesk_audit_base_dir');
+			return DEFAULT_AUDIT_PATH;
+		}
+		return saved || DEFAULT_AUDIT_PATH;
 	});
 	const [auditData, setAuditData] = useState(null);
 	const [isLoadingAudit, setIsLoadingAudit] = useState(false);
