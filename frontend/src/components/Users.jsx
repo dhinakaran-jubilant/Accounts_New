@@ -132,6 +132,108 @@ export const getUserInitials = (name, code) => {
 	if (code) return code.slice(0, 2).toUpperCase();
 	return 'U';
 };
+// Safely extract account acronym permissions for a user
+export const getUserAccountAcronyms = (u) => {
+	if (!u) return { isUniversal: false, primary: [], secondary: [], all: [] };
+	if (['admin', 'super admin'].includes((u.role || '').toLowerCase())) {
+		return { isUniversal: true, primary: ['All (*)'], secondary: ['All (*)'], all: ['All (*)'] };
+	}
+	let perms = u.permissions;
+	if (typeof perms === 'string') {
+		try {
+			perms = JSON.parse(perms);
+		} catch (e) {
+			perms = null;
+		}
+	}
+	let primary = [];
+	let secondary = [];
+	if (perms) {
+		if (Array.isArray(perms)) {
+			primary = [...perms];
+		} else if (typeof perms === 'object') {
+			primary = Array.isArray(perms.primary) ? [...perms.primary] : [];
+			secondary = Array.isArray(perms.secondary) ? [...perms.secondary] : [];
+		}
+	}
+	const primaryClean = primary.map((a) => String(a || '').toUpperCase().trim()).filter(Boolean);
+	const secondaryClean = secondary.map((a) => String(a || '').toUpperCase().trim()).filter(Boolean);
+	const allClean = Array.from(new Set([...primaryClean, ...secondaryClean]));
+
+	return {
+		isUniversal: false,
+		primary: primaryClean,
+		secondary: secondaryClean,
+		all: allClean,
+	};
+};
+
+// Check if user has permission access to an account (by acronym or name)
+export const checkUserMatchesAccount = (u, targetAcronym, targetName) => {
+	if (!targetAcronym || targetAcronym === 'ALL') return true;
+	const { isUniversal, all } = getUserAccountAcronyms(u);
+	if (isUniversal) return true;
+
+	const targetAcrClean = String(targetAcronym || '').toUpperCase().trim();
+	const targetNameClean = String(targetName || '').toUpperCase().trim();
+
+	return all.some((item) => {
+		const itemClean = String(item || '').toUpperCase().trim();
+		return itemClean === targetAcrClean || (targetNameClean && itemClean === targetNameClean);
+	});
+};
+
+
+// Safely extract account acronym permissions for a user
+export const getUserAccountAcronyms = (u) => {
+	if (!u) return { isUniversal: false, primary: [], secondary: [], all: [] };
+	if (['admin', 'super admin'].includes((u.role || '').toLowerCase())) {
+		return { isUniversal: true, primary: ['All (*)'], secondary: ['All (*)'], all: ['All (*)'] };
+	}
+	let perms = u.permissions;
+	if (typeof perms === 'string') {
+		try {
+			perms = JSON.parse(perms);
+		} catch (e) {
+			perms = null;
+		}
+	}
+	let primary = [];
+	let secondary = [];
+	if (perms) {
+		if (Array.isArray(perms)) {
+			primary = [...perms];
+		} else if (typeof perms === 'object') {
+			primary = Array.isArray(perms.primary) ? [...perms.primary] : [];
+			secondary = Array.isArray(perms.secondary) ? [...perms.secondary] : [];
+		}
+	}
+	const primaryClean = primary.map((a) => String(a || '').toUpperCase().trim()).filter(Boolean);
+	const secondaryClean = secondary.map((a) => String(a || '').toUpperCase().trim()).filter(Boolean);
+	const allClean = Array.from(new Set([...primaryClean, ...secondaryClean]));
+
+	return {
+		isUniversal: false,
+		primary: primaryClean,
+		secondary: secondaryClean,
+		all: allClean,
+	};
+};
+
+// Check if user has permission access to an account (by acronym or name)
+export const checkUserMatchesAccount = (u, targetAcronym, targetName) => {
+	if (!targetAcronym || targetAcronym === 'ALL') return true;
+	const { isUniversal, all } = getUserAccountAcronyms(u);
+	if (isUniversal) return true;
+
+	const targetAcrClean = String(targetAcronym || '').toUpperCase().trim();
+	const targetNameClean = String(targetName || '').toUpperCase().trim();
+
+	return all.some((item) => {
+		const itemClean = String(item || '').toUpperCase().trim();
+		return itemClean === targetAcrClean || (targetNameClean && itemClean === targetNameClean);
+	});
+};
 
 // Modern Role Dropdown matching ModernStatusDropdown in JointLoan.jsx
 function ModernRoleDropdown({ value, onChange, options = [] }) {
@@ -273,6 +375,254 @@ function ModernRoleDropdown({ value, onChange, options = [] }) {
 								</button>
 							);
 						})}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
 					</div>
 				</div>
 			)}
@@ -430,6 +780,254 @@ function ModernStatusDropdown({ value, onChange, options = [] }) {
 	);
 }
 
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
 // Modern Menu Access Dropdown matching JointLoan filter styling
 function ModernMenuDropdown({ value, onChange, options = [] }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -542,6 +1140,502 @@ function ModernMenuDropdown({ value, onChange, options = [] }) {
 								</button>
 							);
 						})}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory matching Requests and Settings styling
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
 					</div>
 				</div>
 			)}
@@ -701,6 +1795,254 @@ function FormRoleDropdown({ value, onChange, isSoleAdmin = false }) {
 	);
 }
 
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
 // =========================================================================
 // Form Modern Status Dropdown (for Add / Edit User Modal)
 // =========================================================================
@@ -825,6 +2167,254 @@ function FormStatusDropdown({ value = 'active', onChange }) {
 							</button>
 						);
 					})}
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
 				</div>
 			)}
 		</div>
@@ -1080,6 +2670,254 @@ function FormMenuMultiSelectDropdown({ selectedMenus = [], onChange, isAdmin }) 
 						>
 							Done
 						</button>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
 					</div>
 				</div>
 			)}
@@ -1906,6 +3744,254 @@ function UserDetailsPage({ user, onBack, onEdit, onDelete, accountNames = [], lo
 	);
 }
 
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
 export default function Users({ searchQuery: propSearchQuery = '' }) {
 	const [users, setUsers] = useState([]);
 	const [accountNames, setAccountNames] = useState([]);
@@ -1917,6 +4003,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 	const [roleFilter, setRoleFilter] = useState('ALL'); // 'ALL' | 'admin' | 'manager' | 'user'
 	const [statusFilter, setStatusFilter] = useState('ALL'); // 'ALL' | 'active' | 'inactive'
 	const [menuFilter, setMenuFilter] = useState('ALL'); // 'ALL' | menu id
+	const [accountFilter, setAccountFilter] = useState('ALL'); // 'ALL' | account acronym
 
 	// View Details State
 	const [selectedUser, setSelectedUser] = useState(null);
@@ -2384,6 +4471,52 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 		() => [{ id: 'ALL', label: 'All Menus', icon: 'view_quilt' }, ...AVAILABLE_MENUS],
 		[]
 	);
+// Account options for ModernAccountDropdown with live matching user counts
+	const accountDropdownOptions = useMemo(() => {
+		const opts = [{ id: 'ALL', label: 'All Accounts', count: users.length }];
+
+		const seenAcronyms = new Set();
+
+		// 1. Registered DB Accounts
+		availableAccountList.forEach((acc) => {
+			const acr = (acc.acronym || '').toUpperCase().trim();
+			const name = acc.name || acr;
+			if (acr) seenAcronyms.add(acr);
+
+			const count = users.filter((u) => checkUserMatchesAccount(u, acr, name)).length;
+
+			opts.push({
+				id: acr || name,
+				label: name,
+				acronym: acr,
+				color: acc.color,
+				count,
+			});
+		});
+
+		// 2. Discover any accounts in user permissions that are not in DB table
+		users.forEach((u) => {
+			const { isUniversal, all } = getUserAccountAcronyms(u);
+			if (isUniversal) return;
+			all.forEach((acr) => {
+				const acrUpper = acr.toUpperCase();
+				if (!seenAcronyms.has(acrUpper) && acrUpper !== 'ALL (*)' && acrUpper !== 'ALL ACCOUNTS (*)') {
+					seenAcronyms.add(acrUpper);
+					const count = users.filter((user) => checkUserMatchesAccount(user, acrUpper)).length;
+					opts.push({
+						id: acrUpper,
+						label: acrUpper,
+						acronym: acrUpper,
+						color: 'blue',
+						count,
+					});
+				}
+			});
+		});
+
+		return opts;
+	}, [availableAccountList, users]);
+
 
 	// Filtered users
 	const filteredUsers = useMemo(() => {
@@ -2409,9 +4542,12 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 				['admin', 'super admin'].includes((u.role || '').toLowerCase()) ||
 				userMenus.includes(menuFilter);
 
-			return matchesQuery && matchesRole && matchesStatus && matchesMenu;
+			const matchesAccount =
+				accountFilter === 'ALL' || checkUserMatchesAccount(u, accountFilter);
+
+			return matchesQuery && matchesRole && matchesStatus && matchesMenu && matchesAccount;
 		});
-	}, [users, searchQuery, roleFilter, statusFilter, menuFilter]);
+	}, [users, searchQuery, roleFilter, statusFilter, menuFilter, accountFilter]);
 
 	// Pagination calculations
 	const totalItems = filteredUsers.length;
@@ -2422,7 +4558,7 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 	// Reset page on search or filter change
 	useEffect(() => {
 		setCurrentPage(1);
-	}, [searchQuery, roleFilter, statusFilter, menuFilter, pageSize]);
+	}, [searchQuery, roleFilter, statusFilter, menuFilter, accountFilter, pageSize]);
 
 	// Keep currentPage in valid range when filtered items or page size changes
 	useEffect(() => {
@@ -3209,14 +5345,22 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 							options={menuDropdownOptions}
 						/>
 
+						{/* Account Name Filter */}
+						<ModernAccountDropdown
+							value={accountFilter}
+							onChange={setAccountFilter}
+							options={accountDropdownOptions}
+						/>
+
 						{/* Reset All Filters */}
-						{(roleFilter !== 'ALL' || statusFilter !== 'ALL' || menuFilter !== 'ALL' || internalSearchQuery) && (
+						{(roleFilter !== 'ALL' || statusFilter !== 'ALL' || menuFilter !== 'ALL' || accountFilter !== 'ALL' || internalSearchQuery) && (
 							<button
 								type="button"
 								onClick={() => {
 									setRoleFilter('ALL');
 									setStatusFilter('ALL');
 									setMenuFilter('ALL');
+									setAccountFilter('ALL');
 									setInternalSearchQuery('');
 								}}
 								className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold transition-all cursor-pointer shadow-2xs"
@@ -3280,15 +5424,16 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 												No users found
 											</h3>
 											<p className="text-xs text-slate-500 mt-1">
-												No user records match your selected role, status, or search query.
+												No user records match your selected role, status, account, or search query.
 											</p>
-											{(roleFilter !== 'ALL' || statusFilter !== 'ALL' || menuFilter !== 'ALL' || internalSearchQuery) && (
+											{(roleFilter !== 'ALL' || statusFilter !== 'ALL' || menuFilter !== 'ALL' || accountFilter !== 'ALL' || internalSearchQuery) && (
 												<button
 													type="button"
 													onClick={() => {
 														setRoleFilter('ALL');
 														setStatusFilter('ALL');
 														setMenuFilter('ALL');
+														setAccountFilter('ALL');
 														setInternalSearchQuery('');
 													}}
 													className="mt-3 text-xs font-bold text-primary hover:underline cursor-pointer"
@@ -3340,10 +5485,42 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 											</td>
 
 											{/* 3. User Name */}
-											<td className="py-3 px-4 max-w-[200px]">
+											<td className="py-3 px-4 max-w-[220px]">
 												<div className="font-bold text-slate-900 group-hover:text-primary transition-colors truncate">
 													{user.name || 'Unnamed User'}
 												</div>
+												{rowPrimary[0] === 'All (*)' ? (
+													<div className="text-[10.5px] text-purple-600 font-semibold mt-0.5 flex items-center gap-1">
+														<span className="material-symbols-outlined text-[12px]">shield</span>
+														<span>All Accounts (*)</span>
+													</div>
+												) : (rowPrimary.length > 0 || rowSecondary.length > 0) ? (
+													<div className="flex items-center gap-1 mt-1 flex-wrap">
+														{rowPrimary.slice(0, 3).map((acr) => (
+															<span
+																key={acr}
+																className={`text-[9.5px] font-extrabold px-1.5 py-0.5 rounded uppercase ring-1 ${getEntityTagColor(acr)}`}
+																title={`Primary: ${acr}`}
+															>
+																{acr}
+															</span>
+														))}
+														{rowSecondary.slice(0, 2).map((acr) => (
+															<span
+																key={acr}
+																className="text-[9.5px] font-bold px-1.5 py-0.5 rounded uppercase bg-slate-100 text-slate-600 ring-1 ring-slate-200"
+																title={`Secondary: ${acr}`}
+															>
+																{acr}
+															</span>
+														))}
+														{rowPrimary.length + rowSecondary.length > 5 && (
+															<span className="text-[9.5px] text-slate-400 font-bold">
+																+{rowPrimary.length + rowSecondary.length - 5}
+															</span>
+														)}
+													</div>
+												) : null}
 											</td>
 
 											{/* 3. Role */}
@@ -3559,6 +5736,254 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 			{/* Interactive Modals */}
 			{renderDeleteModal()}
 			{renderCreateModal()}
+		</div>
+	);
+}
+
+// Modern Account Dropdown for Users Directory
+export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] }) {
+	const [isOpen, setIsOpen] = useState(false);
+	const [searchTerm, setSearchTerm] = useState('');
+	const dropdownRef = useRef(null);
+	const searchInputRef = useRef(null);
+
+	const selectedOption =
+		options.find((o) => o.id === value) ||
+		options[0] || { id: 'ALL', label: 'All Accounts' };
+
+	const filteredOptions = useMemo(() => {
+		if (!searchTerm.trim()) return options;
+		const q = searchTerm.toLowerCase();
+		return options.filter((o) => {
+			const labelMatch = o.label && o.label.toLowerCase().includes(q);
+			const acronymMatch = o.acronym && o.acronym.toLowerCase().includes(q);
+			return labelMatch || acronymMatch;
+		});
+	}, [options, searchTerm]);
+
+	useEffect(() => {
+		if (!isOpen) return;
+		const handleClickOutside = (e) => {
+			if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		const handleKeyDown = (e) => {
+			if (e.key === 'Escape') {
+				setIsOpen(false);
+				setSearchTerm('');
+			}
+		};
+		document.addEventListener('mousedown', handleClickOutside);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isOpen]);
+
+	useEffect(() => {
+		if (isOpen && searchInputRef.current) {
+			setTimeout(() => searchInputRef.current?.focus(), 50);
+		}
+	}, [isOpen]);
+
+	const handleToggle = () => {
+		setIsOpen((prev) => !prev);
+		if (isOpen) setSearchTerm('');
+	};
+
+	const handleSelect = (id) => {
+		onChange(id);
+		setIsOpen(false);
+		setSearchTerm('');
+	};
+
+	const isFiltered = value !== 'ALL';
+
+	return (
+		<div ref={dropdownRef} className="relative inline-block text-left">
+			{/* Trigger Button */}
+			<button
+				type="button"
+				onClick={handleToggle}
+				aria-haspopup="listbox"
+				aria-expanded={isOpen}
+				className={`h-9 inline-flex items-center gap-2 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer select-none ${
+					isOpen
+						? 'bg-white border-primary ring-2 ring-primary/20 text-slate-900 shadow-xs'
+						: isFiltered
+						? 'bg-primary/5 hover:bg-primary/10 border-primary/30 text-primary font-bold shadow-2xs'
+						: 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 text-slate-700 hover:text-slate-900 shadow-2xs'
+				}`}
+			>
+				<span className="flex items-center gap-1.5 font-bold">
+					<span
+						className={`material-symbols-outlined text-[16px] shrink-0 ${
+							isFiltered ? 'text-primary' : 'text-slate-500'
+						}`}
+					>
+						account_balance
+					</span>
+					<span className="max-w-[130px] sm:max-w-[160px] truncate text-left">
+						{selectedOption.label}
+					</span>
+				</span>
+
+				{selectedOption.count !== undefined && (
+					<span
+						className={`px-1.5 py-0.5 rounded-full text-[10px] font-extrabold shrink-0 ${
+							isFiltered
+								? 'bg-primary text-white'
+								: 'bg-slate-200/90 text-slate-700'
+						}`}
+					>
+						{selectedOption.count}
+					</span>
+				)}
+
+				{isFiltered && (
+					<span
+						role="button"
+						tabIndex={0}
+						onClick={(e) => {
+							e.stopPropagation();
+							onChange('ALL');
+							setSearchTerm('');
+						}}
+						title="Clear account filter"
+						className="p-0.5 hover:bg-primary/15 rounded text-primary/70 hover:text-primary transition-colors cursor-pointer"
+					>
+						<span className="material-symbols-outlined text-[14px]">close</span>
+					</span>
+				)}
+
+				<span
+					className={`material-symbols-outlined text-[17px] text-slate-400 transition-transform duration-200 shrink-0 ${
+						isOpen ? 'rotate-180 text-primary' : ''
+					}`}
+				>
+					expand_more
+				</span>
+			</button>
+
+			{/* Dropdown Menu Popover */}
+			{isOpen && (
+				<div
+					role="listbox"
+					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
+				>
+					{/* Header */}
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+						<span className="flex items-center gap-1.5">
+							<span className="material-symbols-outlined text-[14px]">account_balance</span>
+							Filter by Account Name
+						</span>
+						{isFiltered && (
+							<button
+								type="button"
+								onClick={() => handleSelect('ALL')}
+								className="text-[11px] text-primary hover:underline font-bold cursor-pointer"
+							>
+								Show All
+							</button>
+						)}
+					</div>
+
+					{/* Search input if more than 4 options */}
+					{options.length > 4 && (
+						<div className="relative px-1 pt-1 pb-1">
+							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
+								search
+							</span>
+							<input
+								ref={searchInputRef}
+								type="text"
+								value={searchTerm}
+								onChange={(e) => setSearchTerm(e.target.value)}
+								placeholder="Search account name or code..."
+								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
+							/>
+							{searchTerm && (
+								<button
+									type="button"
+									onClick={() => setSearchTerm('')}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+								>
+									<span className="material-symbols-outlined text-[14px]">close</span>
+								</button>
+							)}
+						</div>
+					)}
+
+					{/* Options List */}
+					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
+						{filteredOptions.length > 0 ? (
+							filteredOptions.map((opt) => {
+								const isSelected = opt.id === value;
+								return (
+									<button
+										key={opt.id}
+										type="button"
+										role="option"
+										aria-selected={isSelected}
+										onClick={() => handleSelect(opt.id)}
+										className={`flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer group text-left ${
+											isSelected
+												? 'bg-primary/10 text-primary font-bold ring-1 ring-primary/20'
+												: 'text-slate-700 hover:text-slate-900 hover:bg-slate-50'
+										}`}
+									>
+										<div className="flex items-center gap-2 min-w-0 pr-2">
+											{opt.id === 'ALL' ? (
+												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
+													apps
+												</span>
+											) : (
+												<span
+													className={`inline-block font-extrabold text-[10px] px-1.5 py-0.5 rounded-md uppercase tracking-wider ring-1 shrink-0 ${getEntityTagColor(
+														opt.acronym,
+														opt.color
+													)}`}
+												>
+													{opt.acronym || opt.id}
+												</span>
+											)}
+											<span className="truncate">{opt.label}</span>
+										</div>
+
+										<div className="flex items-center gap-1.5 shrink-0">
+											{opt.count !== undefined && (
+												<span
+													className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+														isSelected
+															? 'bg-primary text-white'
+															: opt.count > 0
+															? 'bg-slate-100 text-slate-700 group-hover:bg-slate-200'
+															: 'bg-slate-50 text-slate-400'
+													}`}
+												>
+													{opt.count}
+												</span>
+											)}
+											{isSelected && (
+												<span className="material-symbols-outlined text-[16px] text-primary">
+													check
+												</span>
+											)}
+										</div>
+									</button>
+								);
+							})
+						) : (
+							<div className="px-3 py-4 text-center text-slate-400 text-xs">
+								No accounts found
+							</div>
+						)}
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
