@@ -538,7 +538,7 @@ export default function Settings({
 	const [auditStatusFilter, setAuditStatusFilter] = useState('NOT_CREATED'); // 'NOT_CREATED' | 'CREATED' | 'ALL'
 	const [auditSearchQuery, setAuditSearchQuery] = useState('');
 	const [auditCurrentPage, setAuditCurrentPage] = useState(1);
-	const [auditPageSize, setAuditPageSize] = useState(10);
+	const [auditPageSize, setAuditPageSize] = useState(15);
 	const [copiedKey, setCopiedKey] = useState(null);
 
 	const fetchUncreatedAudit = async (forceRefresh = false, customBaseDir = null, resetDefault = false) => {
@@ -2954,22 +2954,6 @@ export default function Settings({
 													{filteredAuditLoans.length}
 												</strong>{' '}
 												loans
-											</span>
-
-											<span className="text-slate-300">|</span>
-
-											<span className="flex items-center gap-1.5">
-												<span>Per page:</span>
-												<select
-													value={auditPageSize}
-													onChange={(e) => setAuditPageSize(Number(e.target.value))}
-													className="h-7 px-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-bold text-slate-700 cursor-pointer focus:outline-none"
-												>
-													<option value={10}>10</option>
-													<option value={25}>25</option>
-													<option value={50}>50</option>
-													<option value={100}>100</option>
-												</select>
 											</span>
 										</div>
 
