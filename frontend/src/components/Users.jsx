@@ -735,7 +735,7 @@ export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] })
 					className="absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-2 flex flex-col gap-1.5 animate-in fade-in zoom-in-95 duration-100"
 				>
 					{/* Header */}
-					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+					<div className="flex items-center justify-between px-2 py-1 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
 						<span className="flex items-center gap-1.5">
 							<span className="material-symbols-outlined text-[14px]">account_balance</span>
 							Filter by Account Name
@@ -750,32 +750,6 @@ export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] })
 							</button>
 						)}
 					</div>
-
-					{/* Search input if more than 4 options */}
-					{options.length > 4 && (
-						<div className="relative px-1 pt-1 pb-1">
-							<span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[15px] text-slate-400">
-								search
-							</span>
-							<input
-								ref={searchInputRef}
-								type="text"
-								value={searchTerm}
-								onChange={(e) => setSearchTerm(e.target.value)}
-								placeholder="Search account name or code..."
-								className="w-full h-8 pl-7 pr-7 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-1 focus:ring-primary focus:bg-white placeholder:text-slate-400"
-							/>
-							{searchTerm && (
-								<button
-									type="button"
-									onClick={() => setSearchTerm('')}
-									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-								>
-									<span className="material-symbols-outlined text-[14px]">close</span>
-								</button>
-							)}
-						</div>
-					)}
 
 					{/* Options List */}
 					<div className="overflow-y-auto flex flex-col gap-0.5 p-0.5 max-h-60">
@@ -796,6 +770,7 @@ export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] })
 										}`}
 									>
 										<div className="flex items-center gap-2 min-w-0 pr-2">
+											<span className="truncate">{opt.label}</span>
 											{opt.id === 'ALL' ? (
 												<span className="material-symbols-outlined text-[16px] text-slate-400 group-hover:text-primary">
 													apps
@@ -810,7 +785,6 @@ export function ModernAccountDropdown({ value = 'ALL', onChange, options = [] })
 													{opt.acronym || opt.id}
 												</span>
 											)}
-											<span className="truncate">{opt.label}</span>
 										</div>
 
 										<div className="flex items-center gap-1.5 shrink-0">
@@ -3702,38 +3676,6 @@ export default function Users({ searchQuery: propSearchQuery = '' }) {
 												<div className="font-bold text-slate-900 group-hover:text-primary transition-colors truncate">
 													{user.name || 'Unnamed User'}
 												</div>
-												{rowPrimary[0] === 'All (*)' ? (
-													<div className="text-[10.5px] text-purple-600 font-semibold mt-0.5 flex items-center gap-1">
-														<span className="material-symbols-outlined text-[12px]">shield</span>
-														<span>All Accounts (*)</span>
-													</div>
-												) : (rowPrimary.length > 0 || rowSecondary.length > 0) ? (
-													<div className="flex items-center gap-1 mt-1 flex-wrap">
-														{rowPrimary.slice(0, 3).map((acr) => (
-															<span
-																key={acr}
-																className={`text-[9.5px] font-extrabold px-1.5 py-0.5 rounded uppercase ring-1 ${getEntityTagColor(acr)}`}
-																title={`Primary: ${acr}`}
-															>
-																{acr}
-															</span>
-														))}
-														{rowSecondary.slice(0, 2).map((acr) => (
-															<span
-																key={acr}
-																className="text-[9.5px] font-bold px-1.5 py-0.5 rounded uppercase bg-slate-100 text-slate-600 ring-1 ring-slate-200"
-																title={`Secondary: ${acr}`}
-															>
-																{acr}
-															</span>
-														))}
-														{rowPrimary.length + rowSecondary.length > 5 && (
-															<span className="text-[9.5px] text-slate-400 font-bold">
-																+{rowPrimary.length + rowSecondary.length - 5}
-															</span>
-														)}
-													</div>
-												) : null}
 											</td>
 
 											{/* 3. Role */}
