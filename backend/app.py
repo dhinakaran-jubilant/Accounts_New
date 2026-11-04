@@ -1164,6 +1164,16 @@ def update_joint_loan(loan_id):
         return jsonify({"error": "Loan not found"}), 404
 
     try:
+        # Update loan reference ID if provided
+        new_ref = payload.get('loan_ref_id') or payload.get('loanId')
+        if new_ref and str(new_ref).strip():
+            clean_new_ref = str(new_ref).strip()
+            if clean_new_ref and not clean_new_ref.startswith('audit_'):
+                if clean_new_ref.lower() != str(loan.loan_ref_id or '').strip().lower():
+                    dup = check_loan_ref_id_exists(ref_id=clean_new_ref)
+                    if dup and dup.id != loan.id:
+                        return jsonify({"error": f"Loan ID '{clean_new_ref}' already exists in database for client '{dup.client_account_name}'"}), 400
+                    loan.loan_ref_id = clean_new_ref
         if 'approval_status' in payload or 'approvalStatus' in payload:
             loan.approval_status = str(payload.get('approval_status') or payload.get('approvalStatus')).strip()
         elif 'status' in payload:

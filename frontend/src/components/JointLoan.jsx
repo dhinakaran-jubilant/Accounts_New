@@ -5089,6 +5089,8 @@ function EditAllocationsModal({
 	isOpen,
 	editAccounts,
 	loan,
+	loanId,
+	onLoanIdChange,
 	availableAccountOptions = [],
 	availableAccountObjects = [],
 	onAccountChange,
@@ -5199,10 +5201,10 @@ function EditAllocationsModal({
 						</div>
 						<div>
 							<h3 className="font-extrabold text-[17px] text-slate-900">
-								Edit Account Allocations
+								Edit Account Allocations &amp; Details
 							</h3>
 							<p className="text-[12px] text-slate-500 mt-0.5">
-								Configure co-lender facility distribution, shares, and manage secondary partners.
+								Configure loan ID, co-lender facility distribution, shares, and manage secondary partners.
 							</p>
 						</div>
 					</div>
@@ -5219,6 +5221,69 @@ function EditAllocationsModal({
 
 				{/* Scrollable Form Body */}
 				<div className="overflow-y-auto px-6 py-5 flex flex-col gap-5 flex-1">
+					{/* 0. Loan ID Reference Card */}
+					<div className="border border-indigo-200/90 bg-indigo-50/20 rounded-2xl p-5 shadow-2xs">
+						<div className="flex items-center justify-between mb-3">
+							<div className="flex items-center gap-2">
+								<span className="w-2.5 h-2.5 rounded-full bg-indigo-600" />
+								<h4 className="font-extrabold text-[13px] text-slate-900">
+									Loan ID / Reference Number
+								</h4>
+								<span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 ring-1 ring-indigo-200">
+									Identifier
+								</span>
+							</div>
+						</div>
+
+						<div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5 items-start">
+							{/* Loan ID input (6 cols) */}
+							<div className="sm:col-span-6">
+								<div className="h-5 flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+									<span className="flex items-center gap-1">
+										<span className="material-symbols-outlined text-[14px] text-indigo-600">badge</span>
+										<span>Loan ID</span>
+									</span>
+									<span className="text-[10px] text-slate-400 font-normal lowercase">(e.g. AS000546, JLAS000598)</span>
+								</div>
+								<div className="relative">
+									<span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-mono font-bold text-[13px] pointer-events-none select-none">
+										#
+									</span>
+									<input
+										type="text"
+										value={loanId || ''}
+										onChange={(e) => onLoanIdChange && onLoanIdChange(e.target.value.toUpperCase())}
+										placeholder="e.g. AS000546"
+										className="w-full h-10 pl-8 pr-3 text-[13px] font-mono font-bold text-slate-900 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary/20 focus:border-primary shadow-2xs transition-all uppercase placeholder:font-normal placeholder:normal-case placeholder:text-slate-400"
+									/>
+								</div>
+								<p className="text-[11px] text-slate-500 mt-1">
+									Custom loan number / reference identifier for this joint facility.
+								</p>
+							</div>
+
+							{/* Client / Borrower name (6 cols, read-only context) */}
+							<div className="sm:col-span-6">
+								<div className="h-5 flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+									<span className="flex items-center gap-1">
+										<span className="material-symbols-outlined text-[14px] text-slate-400">person</span>
+										<span>Client / Borrower</span>
+									</span>
+								</div>
+								<input
+									type="text"
+									value={cleanCustomerName(loan?.primaryBorrower?.name || loan?.client_account_name || loan?.clientName || loan?.borrowerName || '')}
+									disabled
+									title="Borrower name for this facility"
+									className="w-full h-10 px-3.5 text-[12px] font-bold text-slate-600 bg-slate-100/90 border border-slate-200 rounded-xl cursor-not-allowed select-none shadow-2xs"
+								/>
+								<p className="text-[11px] text-slate-400 mt-1">
+									Associated borrower account.
+								</p>
+							</div>
+						</div>
+					</div>
+
 					{/* 1. Primary Account Card */}
 					<div className="border border-purple-200/90 bg-purple-50/25 rounded-2xl p-5 shadow-2xs">
 						<div className="flex items-center justify-between mb-4">
@@ -6126,6 +6191,7 @@ export function JointLoanDetailsPage({
 	const [currentStatus, setCurrentStatus] = useState(() => getComputedLoanStatus(loan) || loan?.status);
 	const [isEditing, setIsEditing] = useState(false);
 	const [editAccounts, setEditAccounts] = useState(() => getLoanAccountDetails(loan));
+	const [editLoanId, setEditLoanId] = useState(() => loan?.loan_ref_id || loan?.id || '');
 	const [saveFeedback, setSaveFeedback] = useState(null);
 	const [confirmDelete, setConfirmDelete] = useState(false);
 	const [exportNotification, setExportNotification] = useState(null);
@@ -6160,6 +6226,7 @@ export function JointLoanDetailsPage({
 			const accs = getLoanAccountDetails(loan);
 			setAccounts(accs);
 			setEditAccounts(accs);
+			setEditLoanId(loan?.loan_ref_id || loan?.id || '');
 			setCurrentStatus(getComputedLoanStatus(loan) || loan.status);
 			const rawSch = (loan.repaymentSchedule && Array.isArray(loan.repaymentSchedule))
 				? loan.repaymentSchedule
@@ -9393,9 +9460,14 @@ export function JointLoanDetailsPage({
 			(sum, a) => sum + (Number(a.principal) || 0),
 			0
 		);
+		const trimmedLoanId = (editLoanId || '').trim();
+		const finalLoanRefId = trimmedLoanId || loan.loan_ref_id || loan.id;
+
 		const updated = {
 			...loan,
 			db_id: loan?.db_id,
+			loan_ref_id: finalLoanRefId,
+			id: finalLoanRefId,
 			amount: newTotalPrincipal > 0 ? newTotalPrincipal : loan.amount,
 			accountDetails: finalizedAccounts,
 			secondaryAccounts: secondaries.map((sec, idx) => ({
@@ -9423,18 +9495,24 @@ export function JointLoanDetailsPage({
 				const res = await api.updateJointLoan(loanIdentifier, updated);
 				if (res && res.loan) {
 					onUpdateLoan(res.loan);
+				} else if (res && res.error) {
+					alert(`Failed to save loan details: ${res.error}`);
+					return;
 				}
 			} catch (err) {
 				console.warn('Could not persist updated allocations to backend:', err);
+				alert(err?.message || 'Could not persist updated allocations to backend');
+				return;
 			}
 		}
 		setIsEditing(false);
-		setSaveFeedback('Allocations Saved');
+		setSaveFeedback('Allocations & Loan ID Saved');
 		setTimeout(() => setSaveFeedback(null), 2500);
 	};
 
 	const handleCancelEdit = () => {
 		setEditAccounts(JSON.parse(JSON.stringify(accounts)));
+		setEditLoanId(loan?.loan_ref_id || loan?.id || '');
 		setIsEditing(false);
 	};
 
@@ -10792,8 +10870,8 @@ export function JointLoanDetailsPage({
 						<span className="font-bold text-[14px] text-slate-900">
 							{loan.primaryBorrower?.name || 'Client'}
 						</span>
-						<span className="font-extrabold text-[11px] text-primary bg-primary/10 px-2 py-0.5 rounded-md ring-1 ring-primary/20 tracking-tight">
-							{loan.id}
+						<span className="font-extrabold text-[11px] text-primary bg-primary/10 px-2 py-0.5 rounded-md ring-1 ring-primary/20 tracking-tight font-mono">
+							{loan.loan_ref_id || loan.id}
 						</span>
 						{(() => {
 							const rawDate =
@@ -12216,7 +12294,13 @@ export function JointLoanDetailsPage({
 									</span>
 								</div>
 								<div>
-									<span className="font-extrabold text-[17px] text-slate-900">Account Details &amp; Allocations</span>
+									<div className="flex items-center gap-2 flex-wrap">
+										<span className="font-extrabold text-[17px] text-slate-900">Account Details &amp; Allocations</span>
+										<span className="inline-flex items-center gap-1 font-mono font-extrabold text-[11px] text-primary bg-primary/10 px-2.5 py-0.5 rounded-md ring-1 ring-primary/20">
+											<span className="material-symbols-outlined text-[13px]">tag</span>
+											<span>Loan ID: {loan.loan_ref_id || loan.id}</span>
+										</span>
+									</div>
 									<p className="text-[12px] text-slate-500 mt-0.5">
 										Primary and secondary account allocation, principal liability, interest, share %, and total repayment amount.
 									</p>
@@ -12229,6 +12313,7 @@ export function JointLoanDetailsPage({
 							disabled={isSecondaryLoan || (!isFinallyApproved && !userPerms.isAdmin)}
 							onClick={() => {
 								if (isSecondaryLoan || (!isFinallyApproved && !userPerms.isAdmin)) return;
+								setEditLoanId(loan?.loan_ref_id || loan?.id || '');
 								setEditAccounts(JSON.parse(JSON.stringify(accounts)).map(acc => {
 									const sharePct = (facilityTotalPrincipal > 0 && acc.principal != null && Number(acc.principal) > 0)
 										? ((Number(acc.principal) / facilityTotalPrincipal) * 100)
@@ -12569,6 +12654,8 @@ export function JointLoanDetailsPage({
 				isOpen={isEditing}
 				editAccounts={editAccounts}
 				loan={loan}
+				loanId={editLoanId}
+				onLoanIdChange={setEditLoanId}
 				availableAccountOptions={availableAccountOptions}
 				availableAccountObjects={accountObjectsList || availableAccountObjects}
 				onAccountChange={handleEditAccountChange}
