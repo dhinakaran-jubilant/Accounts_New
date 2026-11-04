@@ -2661,11 +2661,25 @@ export default function Requests({
 			const approverCode = currentUser?.employee_code || '';
 			const targetRole = item.targetRole === 'Primary Partner' ? 'PRIMARY' : 'SECONDARY';
 
+			const loanKey = getLoanUniqueId(loan);
+			const itemKey = `${loanKey}_${item.sNo}`;
+			const parentKey = `${loanKey}_${sNo}`;
+			setUpdatedPayoutKeys((prev) => {
+				const next = new Set(prev);
+				next.add(itemKey);
+				next.add(parentKey);
+				return next;
+			});
+			setSelectedPayoutItemKeys((prev) => prev.filter((k) => k !== itemKey && k !== parentKey));
+
 			const payload = {
 				approver_name: approverName,
 				approver_employee_code: approverCode,
 				approver_role: targetRole,
 				notes: 'Confirmed secondary remittance and approved payout date',
+				installment_id: item.rawInst?.id || item.rawInst?.db_id || item.id,
+				sub_s_no: item.sNo,
+				db_id: loan.db_id,
 			};
 
 			const res = await api.approvePayoutDate(loanId, sNo, payload);
@@ -2716,20 +2730,36 @@ export default function Requests({
 	// Confirm payout rejection / flag discrepancy
 	const handleConfirmRejectPayout = async () => {
 		if (!payoutToReject) return;
+		const { loan, item } = payoutToReject;
+		const loanKey = getLoanUniqueId(loan);
+		const sNo = item.parentSNo || item.sNo;
+		const itemKey = `${loanKey}_${item.sNo}`;
+		const parentKey = `${loanKey}_${sNo}`;
+
 		try {
 			setIsSubmittingPayout(true);
-			const { loan, item } = payoutToReject;
 			const loanId = loan.db_id || loan.id;
-			const sNo = item.parentSNo || item.sNo;
 			const approverName = currentUser?.name || currentUser?.employee_code || 'Manager';
 			const approverCode = currentUser?.employee_code || '';
 			const targetRole = item.targetRole === 'Primary Partner' ? 'PRIMARY' : 'SECONDARY';
+
+			// Optimistically exclude from Payout Pending list immediately
+			setUpdatedPayoutKeys((prev) => {
+				const next = new Set(prev);
+				next.add(itemKey);
+				next.add(parentKey);
+				return next;
+			});
+			setSelectedPayoutItemKeys((prev) => prev.filter((k) => k !== itemKey && k !== parentKey));
 
 			const payload = {
 				approver_name: approverName,
 				approver_employee_code: approverCode,
 				approver_role: targetRole,
 				notes: payoutRejectReason.trim() || 'Payout date rejected due to remittance discrepancy',
+				installment_id: item.rawInst?.id || item.rawInst?.db_id || item.id,
+				sub_s_no: item.sNo,
+				db_id: loan.db_id,
 			};
 
 			const res = await api.rejectPayoutDate(loanId, sNo, payload);
@@ -2741,21 +2771,28 @@ export default function Requests({
 				setIsPayoutRejectModalOpen(false);
 				setPayoutToReject(null);
 				setPayoutRejectReason('');
-				await loadData();
-				const loanKey = getLoanUniqueId(loan);
-				const itemKey = `${loanKey}_${item.sNo}`;
 				setPayoutDateOverrides((prev) => {
 					const next = { ...prev };
 					delete next[itemKey];
+					delete next[parentKey];
 					return next;
 				});
 				if (committedDatesRef.current) {
 					delete committedDatesRef.current[itemKey];
+					delete committedDatesRef.current[parentKey];
 				}
+				await loadData();
 				window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));
 				window.dispatchEvent(new CustomEvent('loanDesk_loans_updated'));
 				setSelectedLoan(null);
 			} else {
+				// Revert exclusion on error
+				setUpdatedPayoutKeys((prev) => {
+					const next = new Set(prev);
+					next.delete(itemKey);
+					next.delete(parentKey);
+					return next;
+				});
 				setFeedbackMsg({
 					type: 'error',
 					text: res?.message || res?.error || `Failed to reject payout date for ${item.label}.`,
@@ -2763,6 +2800,13 @@ export default function Requests({
 			}
 		} catch (err) {
 			console.error('Error rejecting payout date:', err);
+			// Revert exclusion on error
+			setUpdatedPayoutKeys((prev) => {
+				const next = new Set(prev);
+				next.delete(itemKey);
+				next.delete(parentKey);
+				return next;
+			});
 			setFeedbackMsg({
 				type: 'error',
 				text: err?.message || 'Error occurred while rejecting payout date.',
@@ -2783,6 +2827,18 @@ export default function Requests({
 		let successCount = 0;
 		let failCount = 0;
 
+		// Optimistically exclude all selected dues
+		setUpdatedPayoutKeys((prev) => {
+			const next = new Set(prev);
+			selectedPayoutDues.forEach(({ loan, item }) => {
+				const loanKey = getLoanUniqueId(loan);
+				const sNo = item.parentSNo || item.sNo;
+				next.add(`${loanKey}_${item.sNo}`);
+				next.add(`${loanKey}_${sNo}`);
+			});
+			return next;
+		});
+
 		for (const { loan, item } of selectedPayoutDues) {
 			const loanId = loan.db_id || loan.id;
 			const sNo = item.parentSNo || item.sNo;
@@ -2792,6 +2848,9 @@ export default function Requests({
 				approver_employee_code: approverCode,
 				approver_role: targetRole,
 				notes: 'Confirmed secondary remittance and approved payout date',
+				installment_id: item.rawInst?.id || item.rawInst?.db_id || item.id,
+				sub_s_no: item.sNo,
+				db_id: loan.db_id,
 			};
 
 			try {
@@ -2857,6 +2916,18 @@ export default function Requests({
 		let successCount = 0;
 		let failCount = 0;
 
+		// Optimistically exclude all selected dues
+		setUpdatedPayoutKeys((prev) => {
+			const next = new Set(prev);
+			selectedPayoutDues.forEach(({ loan, item }) => {
+				const loanKey = getLoanUniqueId(loan);
+				const sNo = item.parentSNo || item.sNo;
+				next.add(`${loanKey}_${item.sNo}`);
+				next.add(`${loanKey}_${sNo}`);
+			});
+			return next;
+		});
+
 		for (const { loan, item } of selectedPayoutDues) {
 			const loanId = loan.db_id || loan.id;
 			const sNo = item.parentSNo || item.sNo;
@@ -2866,6 +2937,9 @@ export default function Requests({
 				approver_employee_code: approverCode,
 				approver_role: targetRole,
 				notes,
+				installment_id: item.rawInst?.id || item.rawInst?.db_id || item.id,
+				sub_s_no: item.sNo,
+				db_id: loan.db_id,
 			};
 
 			try {

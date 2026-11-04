@@ -308,6 +308,8 @@ def serialize_pg_loan_to_joint(l):
         elif is_p_approved or (has_pay and p_status == 'APPROVED'):
             p_status = 'APPROVED'
             p_target = None
+        elif p_status == 'REJECTED':
+            p_target = None
         elif p_status == 'PENDING' or (has_recd and not is_p_approved):
             p_status = 'PENDING'
             if not p_target:
@@ -425,7 +427,7 @@ def serialize_pg_loan_to_joint(l):
         has_recd = bool(s_item.get('received_date') and str(s_item.get('received_date')).strip() not in ('', '-', '—', 'None'))
         has_pay = bool(s_item.get('payment_date') and str(s_item.get('payment_date')).strip() not in ('', '-', '—', 'None'))
 
-        if (has_recd or has_pay) and (p_stat != 'APPROVED' and not p_approved_by):
+        if (has_recd or has_pay) and (p_stat not in ('APPROVED', 'REJECTED') and not p_approved_by):
             has_payout_pending = True
 
         sp_data = s_item.get('splits')
@@ -439,7 +441,7 @@ def serialize_pg_loan_to_joint(l):
                 recd_b = sp_data.get('recdDateB')
                 has_a = bool((recd_a and str(recd_a).strip() not in ('', '-', '—', 'None')) or (due_a and str(due_a).strip() not in ('', '-', '—', 'None')))
                 has_b = bool((recd_b and str(recd_b).strip() not in ('', '-', '—', 'None')) or (due_b and str(due_b).strip() not in ('', '-', '—', 'None')))
-                if (has_a and stat_a != 'APPROVED') or (has_b and stat_b != 'APPROVED'):
+                if (has_a and stat_a not in ('APPROVED', 'REJECTED')) or (has_b and stat_b not in ('APPROVED', 'REJECTED')):
                     has_payout_pending = True
                 if not recd_a or not due_a or stat_a != 'APPROVED':
                     all_settled = False
@@ -2092,11 +2094,25 @@ def handle_payout_approval(loan_id, s_no):
     if not loan or not loan.repayment_schedule:
         return jsonify({'error': 'Loan or repayment schedule not found'}), 404
 
-    target_idx = s_no - 1
-    if target_idx < 0 or target_idx >= len(loan.repayment_schedule):
-        return jsonify({'error': f'Invalid installment number #{s_no}'}), 400
+    sch = None
+    target_id = payload.get('installment_id') or payload.get('id')
+    if target_id:
+        for item in loan.repayment_schedule:
+            if str(item.id) == str(target_id):
+                sch = item
+                break
+    if not sch:
+        for idx, item in enumerate(loan.repayment_schedule):
+            if idx + 1 == s_no or getattr(item, 's_no', None) == s_no:
+                sch = item
+                break
+    if not sch:
+        target_idx = s_no - 1
+        if 0 <= target_idx < len(loan.repayment_schedule):
+            sch = loan.repayment_schedule[target_idx]
 
-    sch = loan.repayment_schedule[target_idx]
+    if not sch:
+        return jsonify({'error': f'Invalid installment number #{s_no}'}), 400
     now_str = datetime.datetime.now().strftime("%d-%m-%Y %I:%M %p")
 
     curr_h = []
@@ -2239,6 +2255,22 @@ def handle_payout_approval(loan_id, s_no):
         sch.payout_approval_target = None
         sch.payout_notes = notes
 
+        # Update splits if row is split
+        if sch.splits:
+            try:
+                curr_splits = json.loads(sch.splits) if isinstance(sch.splits, str) else sch.splits
+                curr_splits['payoutApprovalStatus'] = 'REJECTED'
+                curr_splits['payoutApprovalStatusA'] = 'REJECTED'
+                curr_splits['payoutApprovalStatusB'] = 'REJECTED'
+                curr_splits['payoutApprovalTarget'] = None
+                curr_splits['payoutApprovalTargetA'] = None
+                curr_splits['payoutApprovalTargetB'] = None
+                if notes:
+                    curr_splits['payoutNotes'] = notes
+                sch.splits = json.dumps(curr_splits)
+            except Exception:
+                pass
+
         hist_entry = {
             'id': f"hist_payout_rej_{int(datetime.datetime.now().timestamp() * 1000)}",
             'type': 'payout_rejection',
@@ -2254,6 +2286,15 @@ def handle_payout_approval(loan_id, s_no):
         }
         curr_h.append(hist_entry)
         loan.history = json.dumps(curr_h)
+
+        # Mark all pending approval notifications for this loan & EMI as read/resolved
+        try:
+            target_str = f"EMI #{s_no} Payout Approval Required: {loan.loan_ref_id or loan.id}"
+            notifs = Notification.query.filter(Notification.title == target_str).all()
+            for n in notifs:
+                n.is_read = True
+        except Exception:
+            pass
 
         if sch.payout_requested_by:
             db.session.add(Notification(

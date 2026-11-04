@@ -1250,6 +1250,9 @@ export const isLoanPayoutPending = (loan, customSchedule) => {
 					if (!sub) continue;
 					const subPStatus = (sub.payout_approval_status || sub.payoutApprovalStatus || '').toUpperCase();
 					const subStatus = (sub.status || '').toLowerCase();
+					if (subPStatus === 'REJECTED' || subStatus === 'payout discrepancy' || subStatus === 'rejected') {
+						continue;
+					}
 					const subRecd = sub.receivedDate || sub.received_date || sub.recdDate;
 					const hasSubRecd = Boolean(subRecd && String(subRecd).trim() && String(subRecd).trim() !== '-' && String(subRecd).trim() !== '—');
 					const subPayoutDate = sub.dueDate || sub.due_date || sub.paymentDate || sub.payment_date || sub.payoutDate || sub.payout_date;
@@ -1282,18 +1285,21 @@ export const isLoanPayoutPending = (loan, customSchedule) => {
 					const hasA = Boolean((recdA && String(recdA).trim() && recdA !== '-' && recdA !== '—') || (dueA && String(dueA).trim() && dueA !== '-' && dueA !== '—'));
 					const hasB = Boolean((recdB && String(recdB).trim() && recdB !== '-' && recdB !== '—') || (dueB && String(dueB).trim() && dueB !== '-' && dueB !== '—'));
 
-					if (hasA && sA !== 'APPROVED') return true;
-					if (hasB && sB !== 'APPROVED') return true;
+					if (hasA && sA !== 'APPROVED' && sA !== 'REJECTED') return true;
+					if (hasB && sB !== 'APPROVED' && sB !== 'REJECTED') return true;
 				}
 			}
 
 			// 3. Regular installment
+			const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
+			const instStatus = (item.status || '').toLowerCase();
+			if (pStatus === 'REJECTED' || instStatus === 'payout discrepancy' || instStatus === 'rejected') {
+				continue;
+			}
 			const recdDate = item.receivedDate || item.received_date || item.recdDate || item.recd_date;
 			const hasRecdDate = Boolean(recdDate && String(recdDate).trim() && String(recdDate).trim() !== '-' && String(recdDate).trim() !== '—') || item.status === 'Collected';
 			const payoutDate = item.dueDate || item.due_date || item.paymentDate || item.payment_date || item.payoutDate || item.payout_date;
 			const hasPayoutDate = Boolean(payoutDate && String(payoutDate).trim() && String(payoutDate).trim() !== '-' && String(payoutDate).trim() !== '—');
-			const pStatus = (item.payout_approval_status || item.payoutApprovalStatus || '').toUpperCase();
-			const instStatus = (item.status || '').toLowerCase();
 			const isApproved = hasPayoutDate && (instStatus === 'settled' || ((pStatus === 'APPROVED' || item.payout_approved_by || item.payoutApprovedBy) && pStatus !== 'PENDING' && pStatus !== 'REJECTED'));
 
 			// Rule: pending status means, if recd date or payout date filled and sec manager not approved that payout date
