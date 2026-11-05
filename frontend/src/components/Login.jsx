@@ -13,12 +13,18 @@ import ForgotPasswordModal from './forgotpasswordmodel';
 export default function Login({ onLoginSuccess }) {
 	const [employeeCode, setEmployeeCode] = useState(() => {
 		try {
-			return localStorage.getItem('loanDesk_remembered_code') || '';
+			return localStorage.getItem('loanDesk_remembered_code') || localStorage.getItem('loanDesk_last_code') || '';
 		} catch (e) {
 			return '';
 		}
 	});
-	const [password, setPassword] = useState('');
+	const [password, setPassword] = useState(() => {
+		try {
+			return localStorage.getItem('loanDesk_remembered_password') || localStorage.getItem('loanDesk_last_password') || '';
+		} catch (e) {
+			return '';
+		}
+	});
 	const [showPassword, setShowPassword] = useState(false);
 	const [rememberMe, setRememberMe] = useState(() => {
 		try {
@@ -79,13 +85,23 @@ export default function Login({ onLoginSuccess }) {
 					sessionStorage.setItem('loanDesk_token', res.token);
 				}
 
-				// Remember employee code on login screen if Remember Me is checked
-				if (rememberMe) {
-					localStorage.setItem('loanDesk_remembered_code', trimmedCode);
-					localStorage.setItem('loanDesk_remember_me', 'true');
-				} else {
-					localStorage.removeItem('loanDesk_remembered_code');
-					localStorage.setItem('loanDesk_remember_me', 'false');
+				// Remember credentials on login screen if Remember Me is checked
+				try {
+					if (rememberMe) {
+						localStorage.setItem('loanDesk_remembered_code', trimmedCode);
+						localStorage.setItem('loanDesk_remembered_password', password);
+						localStorage.setItem('loanDesk_last_code', trimmedCode);
+						localStorage.setItem('loanDesk_last_password', password);
+						localStorage.setItem('loanDesk_remember_me', 'true');
+					} else {
+						localStorage.removeItem('loanDesk_remembered_code');
+						localStorage.removeItem('loanDesk_remembered_password');
+						localStorage.removeItem('loanDesk_last_code');
+						localStorage.removeItem('loanDesk_last_password');
+						localStorage.setItem('loanDesk_remember_me', 'false');
+					}
+				} catch (e) {
+					console.warn('Could not persist login credentials:', e);
 				}
 
 				// Always clear persistent auth from localStorage so http://localhost:1111/ defaults to login page
@@ -287,13 +303,16 @@ export default function Login({ onLoginSuccess }) {
 										<span className="material-symbols-outlined text-[20px]">badge</span>
 									</div>
 									<input
+										id="employeeCode"
+										name="username"
+										autoComplete="username"
 										type="text"
 										value={employeeCode}
 										onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
 										placeholder="e.g. ADMIN or JC0001"
 										className="w-full h-11 pl-11 pr-10 rounded-xl text-xs font-bold font-mono tracking-wider bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 placeholder:font-sans placeholder:font-normal placeholder:tracking-normal focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all shadow-2xs"
 										required
-										autoFocus
+										autoFocus={!employeeCode || !password}
 									/>
 									{employeeCode && (
 										<button
@@ -327,6 +346,9 @@ export default function Login({ onLoginSuccess }) {
 										<span className="material-symbols-outlined text-[20px]">lock</span>
 									</div>
 									<input
+										id="password"
+										name="password"
+										autoComplete="current-password"
 										type={showPassword ? 'text' : 'password'}
 										value={password}
 										onChange={(e) => setPassword(e.target.value)}
@@ -381,7 +403,7 @@ export default function Login({ onLoginSuccess }) {
 										</div>
 									</div>
 									<span className={`text-xs font-medium transition-colors ${rememberMe ? 'text-slate-800' : 'text-slate-500 group-hover:text-slate-700'}`}>
-										Remember session for 30 days
+										Remember credentials &amp; session
 									</span>
 								</label>
 							</div>
@@ -444,6 +466,10 @@ export default function Login({ onLoginSuccess }) {
 						setEmployeeCode(code);
 					}
 					setPassword('');
+					try {
+						localStorage.removeItem('loanDesk_remembered_password');
+						localStorage.removeItem('loanDesk_last_password');
+					} catch (e) {}
 					setErrorMessage('');
 					setSuccessNotice('Password reset successfully! Please log in with your new password.');
 					setShowForgotModal(false);

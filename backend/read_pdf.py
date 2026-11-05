@@ -777,8 +777,16 @@ def build_final_output(data, remaining_accounts):
     total_interest = round(total_repayment - loan_amount, 2) if total_repayment >= loan_amount else 0.0
 
     primary_amount = round(loan_amount - remaining_total, 2)
-    primary_percentage = round((primary_amount / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
-    primary_interest = round((primary_amount / loan_amount) * total_interest, 2) if loan_amount > 0 else 0.0
+    data_pri_share = data.get("primary_account_share") or data.get("primaryShare")
+    if data_pri_share is not None and str(data_pri_share).strip() != "":
+        try:
+            primary_percentage = round(float(data_pri_share), 2)
+        except (ValueError, TypeError):
+            primary_percentage = round((primary_amount / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
+    else:
+        primary_percentage = round((primary_amount / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
+
+    primary_interest = round((primary_percentage / 100.0) * total_interest, 2) if total_interest > 0 else (round((primary_amount / loan_amount) * total_interest, 2) if loan_amount > 0 else 0.0)
 
     formatted_remaining = []
     for acc in (remaining_accounts or []):
@@ -786,8 +794,24 @@ def build_final_output(data, remaining_accounts):
             share = float(str(acc.get("share", 0)).replace(",", "").strip())
         except (ValueError, TypeError):
             share = 0.0
-        pct = round((share / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
-        int_amt = round((share / loan_amount) * total_interest, 2) if loan_amount > 0 else 0.0
+        acc_pct = acc.get("percentage") or acc.get("share_pct")
+        if acc_pct is not None and str(acc_pct).strip() != "":
+            try:
+                pct = round(float(acc_pct), 2)
+            except (ValueError, TypeError):
+                pct = round((share / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
+        else:
+            pct = round((share / loan_amount) * 100, 2) if loan_amount > 0 else 0.0
+
+        acc_int = acc.get("interest_amount") or acc.get("interest")
+        if acc_int is not None and str(acc_int).strip() != "":
+            try:
+                int_amt = round(float(acc_int), 2)
+            except (ValueError, TypeError):
+                int_amt = round((pct / 100.0) * total_interest, 2) if total_interest > 0 else 0.0
+        else:
+            int_amt = round((pct / 100.0) * total_interest, 2) if total_interest > 0 else 0.0
+
         tds = round(int_amt * 0.10, 2)
         formatted_remaining.append({
             "account_name": str(acc.get("name") or acc.get("account_name", "")).strip().upper(),
