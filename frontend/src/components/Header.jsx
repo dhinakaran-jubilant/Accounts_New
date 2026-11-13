@@ -14,6 +14,11 @@ import {
 	checkUserHasPrimaryAccessForLoanSecondary,
 	checkUserHasPrimaryAccessForAccount,
 } from './JointLoan';
+import {
+	requestDesktopNotificationPermission,
+	notifyNewLoanApproval,
+	notifyPayoutDateApproval,
+} from '../utils/desktopNotification';
 
 export default function Header({
 	searchQuery,
@@ -290,6 +295,46 @@ export default function Header({
 
 		return pending;
 	}, [loans, user, rawAccounts, isAdmin]);
+
+	// Request Windows Notification Permission on mount and on first user interaction
+	useEffect(() => {
+		requestDesktopNotificationPermission();
+
+		const handleFirstInteraction = () => {
+			requestDesktopNotificationPermission();
+		};
+		window.addEventListener('click', handleFirstInteraction, { once: true });
+		return () => {
+			window.removeEventListener('click', handleFirstInteraction);
+		};
+	}, []);
+
+	// Display Windows Notifications for pending loan approvals and payout approvals requiring action
+	useEffect(() => {
+		if (!user) return;
+
+		// 1. Windows desktop notification for new loan approval requests
+		if (Array.isArray(pendingRequests) && pendingRequests.length > 0) {
+			pendingRequests.forEach((loan) => {
+				notifyNewLoanApproval(loan, user?.name || 'You');
+			});
+		}
+
+		// 2. Windows desktop notification for payout date approval requests
+		if (Array.isArray(pendingPayoutNotifs) && pendingPayoutNotifs.length > 0) {
+			pendingPayoutNotifs.forEach((payout) => {
+				notifyPayoutDateApproval({
+					loan: payout.loan,
+					loanId: payout.loanRef || payout.loan?.loan_ref_id || payout.loan?.id,
+					sNo: payout.sNo,
+					payoutDate: payout.paymentDate || payout.dueDate,
+					amount: payout.amount,
+					targetRole: payout.targetRole === 'PRIMARY' ? 'Primary Manager' : 'Secondary Manager',
+					clientName: payout.clientName,
+				});
+			});
+		}
+	}, [pendingRequests, pendingPayoutNotifs, user]);
 
 	const actionNeededCount = pendingRequests.length + pendingPayoutNotifs.length;
 

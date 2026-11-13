@@ -17,6 +17,15 @@ import {
 	exportJointLoanPortfolioReport,
 } from '../utils/jointLoanExport';
 import SyncedLoansModal from './dashboard/SyncedLoansModal';
+import {
+	isUserPendingLoan,
+	getLoanPendingPayoutItems,
+} from './Requests';
+import {
+	requestDesktopNotificationPermission,
+	notifyNewLoanApproval,
+	notifyPayoutDateApproval,
+} from '../utils/desktopNotification';
 
 // Status badge styling helper for: Active, Overdue, Date Overdue, Closed, Pending
 export const getStatusBadge = (status) => {
@@ -8370,6 +8379,19 @@ export function JointLoanDetailsPage({
 				// Update committed baseline so subsequent keystrokes don't duplicate
 				committedDatesRef.current[cellKey] = finalVal;
 
+				// Display in Windows Notification Panel if a payout date approval was requested
+				if (field === 'dueDate' && instOverrides.payout_approval_status === 'PENDING') {
+					notifyPayoutDateApproval({
+						loan,
+						loanId: loan?.loan_ref_id || loan?.id,
+						sNo,
+						payoutDate: finalVal,
+						amount: currentInst.amount,
+						targetRole: instOverrides.payout_approval_target === 'PRIMARY' ? 'Primary Manager' : 'Secondary Manager',
+						clientName: loan?.client_account_name || loan?.primaryBorrower?.name,
+					});
+				}
+
 				setLoanHistory((prevHist) => {
 					// If top item is from the same cell in the current session, update in place
 					const top = prevHist[0];
@@ -13989,6 +14011,83 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		};
 	}, []);
 
+	// Request Windows Notification Permission on mount and on first user interaction
+	useEffect(() => {
+		requestDesktopNotificationPermission();
+
+		const handleFirstInteraction = () => {
+			requestDesktopNotificationPermission();
+		};
+		window.addEventListener('click', handleFirstInteraction, { once: true });
+		return () => {
+			window.removeEventListener('click', handleFirstInteraction);
+		};
+	}, []);
+
+	// Listen for loan and notification updates and poll so Windows notifications display promptly
+	useEffect(() => {
+		const refreshLoansData = async () => {
+			try {
+				const remote = await api.getJointLoans();
+				if (Array.isArray(remote)) {
+					setLoans(remote);
+				}
+			} catch (_) {}
+		};
+
+		window.addEventListener('loanDesk_notifications_updated', refreshLoansData);
+		window.addEventListener('loanDesk_loans_updated', refreshLoansData);
+		window.addEventListener('loan_updated', refreshLoansData);
+		window.addEventListener('loan_approved', refreshLoansData);
+
+		const pollInterval = setInterval(refreshLoansData, 30000);
+
+		return () => {
+			window.removeEventListener('loanDesk_notifications_updated', refreshLoansData);
+			window.removeEventListener('loanDesk_loans_updated', refreshLoansData);
+			window.removeEventListener('loan_updated', refreshLoansData);
+			window.removeEventListener('loan_approved', refreshLoansData);
+			clearInterval(pollInterval);
+		};
+	}, []);
+
+	// Scan for pending loan and payout approval requests requiring current user's action and display in Windows Notification Panel
+	useEffect(() => {
+		if (!activeUser || !Array.isArray(loans) || loans.length === 0) return;
+
+		// 1. Scan for new loan approval requests pending action from logged-in user
+		loans.forEach((loan) => {
+			if (!loan || loan.is_deleted) return;
+			if (isUserPendingLoan(loan, activeUser, availableAccountObjects)) {
+				notifyNewLoanApproval(loan, activeUser?.name || 'You');
+			}
+		});
+
+		// 2. Scan for pending payout date approvals requiring action from logged-in user
+		loans.forEach((loan) => {
+			if (!loan || loan.is_deleted) return;
+			const pendingPayouts = getLoanPendingPayoutItems(
+				loan,
+				activeUser,
+				availableAccountObjects,
+				allUsers
+			);
+			if (Array.isArray(pendingPayouts) && pendingPayouts.length > 0) {
+				pendingPayouts.forEach((item) => {
+					notifyPayoutDateApproval({
+						loan,
+						loanId: loan.loan_ref_id || loan.id,
+						sNo: item.sNo,
+						payoutDate: item.paymentDate || item.dueDate,
+						amount: item.amount,
+						targetRole: 'You',
+						clientName: loan.client_account_name || loan.primaryBorrower?.name,
+					});
+				});
+			}
+		});
+	}, [loans, activeUser, availableAccountObjects, allUsers]);
+
 	// Synchronize selected loan with URL path (e.g. /joint-loan/JLSS000040)
 	useEffect(() => {
 		let isCancelled = false;
@@ -15588,6 +15687,11 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			const secMgrName = getRespectedSecManagerName(matchedLoan, createRes?.sec_manager_name);
 			const isAuto = Boolean(createRes?.is_auto_approved || isSuperAdmin);
 			showCreateSuccessAlert(createdLoanId, secMgrName, isAuto);
+
+			// Display in Windows Notification Panel for secondary approval request
+			if (!isAuto) {
+				notifyNewLoanApproval(matchedLoan, secMgrName);
+			}
 
 			try {
 				window.dispatchEvent(new CustomEvent('loanDesk_notifications_updated'));

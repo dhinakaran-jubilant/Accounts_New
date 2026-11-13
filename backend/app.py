@@ -3657,6 +3657,11 @@ def get_loans():
 @app.route('/api/matchup/compare', methods=['POST'])
 @app.route('/api/upload-files', methods=['POST'])
 def matchup_compare():
+    import importlib
+    import matchup_service
+    importlib.reload(matchup_service)
+    reconcile_uploaded_files = matchup_service.reconcile_uploaded_files
+    is_cloud_filename = matchup_service.is_cloud_filename
     files_list = request.files.getlist('files')
     if len(files_list) >= 2:
         file1 = files_list[0]
@@ -3718,6 +3723,12 @@ def matchup_compare():
 
 @app.route('/api/matchup/preview', methods=['POST'])
 def matchup_preview():
+    import importlib
+    import matchup_service
+    importlib.reload(matchup_service)
+    read_uploaded_file = matchup_service.read_uploaded_file
+    compare_datasets = matchup_service.compare_datasets
+    is_cloud_filename = matchup_service.is_cloud_filename
     files_list = request.files.getlist('files')
     if len(files_list) >= 2:
         file1 = files_list[0]

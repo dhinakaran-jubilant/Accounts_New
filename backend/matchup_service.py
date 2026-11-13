@@ -458,7 +458,8 @@ def read_cloud_data_file(cloud_source):
     df = read_data_file(cloud_source, header=0)
     cols_upper = [str(c).strip().upper() for c in df.columns]
     if 'VOUCHER TYPE' in cols_upper or 'PARTICULARS' in cols_upper or 'COMMENTS' in cols_upper:
-        return df
+        df.columns = [str(c).strip() for c in df.columns]
+        return df.dropna(how='all').reset_index(drop=True)
 
     df_raw = read_data_file(cloud_source, header=None)
     for idx in range(min(25, len(df_raw))):
@@ -469,8 +470,9 @@ def read_cloud_data_file(cloud_source):
                 for i, c in enumerate(df_raw.iloc[idx])
             ]
             df_promoted = df_raw.iloc[idx + 1:].copy()
-            df_promoted.columns = headers
+            df_promoted.columns = [str(h).strip() for h in headers]
             return df_promoted.dropna(how='all').reset_index(drop=True)
+    df.columns = [str(c).strip() for c in df.columns]
     return df
 
 
@@ -515,7 +517,7 @@ def extract_bank_account_number(bank_source=None, bank_basename='', df_bank=None
                 if col in df.columns:
                     for v in df[col].dropna().unique():
                         v_str = str(v).strip()
-                        if any(k in v_str.upper() for k in ('KOTAK', 'KMB')):
+                        if any(k in v_str.upper() for k in ('KOTAK', 'KMB')) and '_' in v_str:
                             m = re.search(r'\d{6,}', v_str)
                             if m:
                                 return m.group(0)
@@ -865,7 +867,7 @@ def resolve_bank_ledger(bank_source, df_bank, df_cloud, detected_bank=''):
     # Filter candidate ledgers that have account numbers (at least 6 digits) and bank identifiers
     bank_candidates = [
         d for d in details_vals
-        if re.search(r'\d{6,}', d) and any(b in d.upper() for b in BANK_NAMES)
+        if re.search(r'\d{6,}', d) and any(b in d.upper() for b in BANK_NAMES) and ('_' in d or re.search(r'\d{8,18}', d))
     ]
     if not bank_candidates:
         bank_candidates = [d for d in details_vals if re.search(r'\d{6,}', d)]
@@ -1047,6 +1049,56 @@ def extract_tables(file_path):
     return final_df
 
 
+def resolve_party_ledger_from_row(row):
+    """
+    Resolves the party/customer ledger name from a Day Book (cloud) row.
+    If details value is like 'KOTAK_GC_0149711195' (contains underscores),
+    always gets the Particulars column value (e.g. 'KMB MOTOR LLP - GC000593').
+    """
+    if row is None:
+        return ''
+
+    keys = list(row.keys() if hasattr(row, 'keys') else getattr(row, 'index', []))
+
+    part_val = None
+    for k in keys:
+        k_str = str(k).strip().lower()
+        if k_str in ('particulars', 'particular'):
+            part_val = row.get(k)
+            break
+    if part_val is None and 'Particulars' in row:
+        part_val = row.get('Particulars')
+
+    particulars_str = str(part_val).strip() if pd.notna(part_val) else ''
+    if particulars_str.lower() in ('nan', 'none'):
+        particulars_str = ''
+
+    det_val = None
+    for k in keys:
+        k_str = str(k).strip().lower()
+        if k_str in ('details', 'detail'):
+            det_val = row.get(k)
+            break
+    if det_val is None and 'Details' in row:
+        det_val = row.get('Details')
+
+    details_str = str(det_val).strip() if pd.notna(det_val) else ''
+    if details_str.lower() in ('nan', 'none'):
+        details_str = ''
+
+    # 1. If details value contains underscores (e.g. 'KOTAK_GC_0149711195'),
+    # it represents a bank/voucher code -> get Particulars column value (e.g. 'KMB MOTOR LLP - GC000593')
+    if '_' in details_str:
+        return particulars_str or str(part_val or '').strip()
+
+    # 2. If particulars value contains underscores (e.g. 'KOTAK_GC_0149711195')
+    # and details is a valid party name without underscores, details is the party ledger
+    if '_' in particulars_str and details_str and '_' not in details_str:
+        return details_str
+
+    return particulars_str or str(part_val or '').strip() or details_str
+
+
 def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1, receipt_no_start=1):
     """
     Processes the bank statement and cloud file to identify matches using a multi-round reconciliation engine.
@@ -1220,7 +1272,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
                 for _, row in df2_receipts.iterrows():
                     raw_inst = row.get('Instrument No.')
                     cheque_no = str(raw_inst).strip() if pd.notna(raw_inst) else ''
-                    ledger = row.get('Particulars')
+                    ledger = resolve_party_ledger_from_row(row)
                     amount = row.get('Credit')
                     txn_date = row.get('Transaction Date')
 
@@ -1367,12 +1419,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
                         if rtgs_lower in df1_desc_lower[pos_i]
                     ]
 
-                    particulars_str = str(row.get('Particulars')) if pd.notna(row.get('Particulars')) else ''
-                    details_val = row.get('Details')
-                    if any(bank in particulars_str for bank in BANK_NAMES) and pd.notna(details_val) and str(details_val).strip():
-                        ledger = details_val
-                    else:
-                        ledger = row.get('Particulars')
+                    ledger = resolve_party_ledger_from_row(row)
 
                     if len(matched) == 1 and pd.notna(ledger) and str(ledger).strip():
                         idx = matched[0]
@@ -1416,12 +1463,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
                         if rtgs_lower in df1_desc_lower[pos_i]
                     ]
 
-                    particulars_str = str(row.get('Particulars')) if pd.notna(row.get('Particulars')) else ''
-                    details_val = row.get('Details')
-                    if any(bank in particulars_str for bank in BANK_NAMES) and pd.notna(details_val) and str(details_val).strip():
-                        ledger = details_val
-                    else:
-                        ledger = row.get('Particulars')
+                    ledger = resolve_party_ledger_from_row(row)
 
                     if len(matched) == 1 and pd.notna(ledger) and str(ledger).strip():
                         idx = matched[0]
@@ -1452,7 +1494,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
             # Pre-parse cloud records for matching
             cloud_ft_cands = []
             for c_idx, c_row in df2.iterrows():
-                c_part = str(c_row.get(part_col, '')).strip() if pd.notna(c_row.get(part_col)) else ''
+                c_part = resolve_party_ledger_from_row(c_row)
                 c_credit = c_row.get('Credit')
                 c_debit = c_row.get('Debit')
                 c_amt = c_credit if (pd.notna(c_credit) and str(c_credit).strip() not in ('', 'nan', 'None')) else c_debit
@@ -1543,12 +1585,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
                     ft_matched_cloud_indices.add(best_cand['c_idx'])
 
                     c_row = best_cand['row']
-                    particulars_str = str(c_row.get('Particulars')) if pd.notna(c_row.get('Particulars')) else ''
-                    details_val = c_row.get('Details')
-                    if any(bank in particulars_str for bank in BANK_NAMES) and pd.notna(details_val) and str(details_val).strip():
-                        ledger = str(details_val).strip()
-                    else:
-                        ledger = c_row.get('Particulars')
+                    ledger = resolve_party_ledger_from_row(c_row)
 
                     df1.at[idx, 'Ledger'] = ledger
                     df1.at[idx, 'Value'] = best_cand['amount']
@@ -1575,14 +1612,7 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
                     norm_key = normalize_instrument_no(raw_inst)
                     if norm_key:
                         p_val = c_row.get(part_col)
-                        p_str = str(p_val).strip() if pd.notna(p_val) else ''
-                        d_val = c_row.get('Details')
-                        if any(b in p_str for b in BANK_NAMES) and pd.notna(d_val) and str(d_val).strip():
-                            resolved_p = str(d_val).strip()
-                        else:
-                            resolved_p = p_str if p_str and p_str.lower() not in ('nan', 'none') else (str(d_val).strip() if pd.notna(d_val) else '')
-
-                        resolved_name = resolved_p or p_str
+                        resolved_name = resolve_party_ledger_from_row(c_row)
                         amt_val = c_row.get('Credit') if pd.notna(c_row.get('Credit')) else c_row.get('Debit')
 
                         if norm_key not in cloud_inst_map or (not cloud_inst_map[norm_key]['particulars'] and resolved_name):
@@ -1719,6 +1749,39 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
         if 'Value Date' in df1.columns and pd.api.types.is_datetime64_any_dtype(df1['Value Date']):
             df1['Value Date'] = df1['Value Date'].dt.strftime('%d-%m-%Y')
 
+        # Safeguard: after comparing day book and bank statement, if details value
+        # like KOTAK_GC_0149711195 (contains underscores) was captured as ledger,
+        # get the Particulars column value (e.g. KMB MOTOR LLP - GC000593)
+        if 'Ledger' in df1.columns and df2 is not None and not df2.empty:
+            part_col = next((c for c in ['Particulars', 'Ledger', 'Account', 'Party Name'] if c in df2.columns), 'Particulars')
+            if 'Details' in df2.columns and part_col in df2.columns:
+                for idx in df1.index:
+                    ledger_val = df1.at[idx, 'Ledger']
+                    if pd.notna(ledger_val) and '_' in str(ledger_val):
+                        ledger_str = str(ledger_val).strip()
+                        c_amt = df1.at[idx, 'Credit'] if ('Credit' in df1.columns and pd.notna(df1.at[idx, 'Credit'])) else df1.at[idx, 'Debit']
+                        try:
+                            c_amt_f = round(float(str(c_amt).replace(',', '')), 2) if pd.notna(c_amt) else None
+                        except Exception:
+                            c_amt_f = None
+
+                        mask_det = df2['Details'].astype(str).str.strip() == ledger_str
+                        matching_sub = df2[mask_det]
+                        if c_amt_f is not None and not matching_sub.empty:
+                            if 'Credit' in matching_sub.columns:
+                                sub_cr = matching_sub[matching_sub['Credit'].round(2) == c_amt_f]
+                                if not sub_cr.empty:
+                                    matching_sub = sub_cr
+                            if 'Debit' in matching_sub.columns and len(matching_sub) > 1:
+                                sub_dr = matching_sub[matching_sub['Debit'].round(2) == c_amt_f]
+                                if not sub_dr.empty:
+                                    matching_sub = sub_dr
+
+                        if not matching_sub.empty:
+                            fixed_part = matching_sub.iloc[0].get(part_col)
+                            if pd.notna(fixed_part) and str(fixed_part).strip() and '_' not in str(fixed_part):
+                                df1.at[idx, 'Ledger'] = str(fixed_part).strip()
+
         # Resolve detected bank name
         detected_bank = ""
         bank_filename = getattr(bank_source, 'filename', '') or (os.path.basename(bank_source) if isinstance(bank_source, str) else '')
@@ -1812,6 +1875,46 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
         raw_payment = raw_non_contra[mask_payment].copy()
         raw_receipt = raw_non_contra[mask_receipt].copy()
 
+        def clean_final_account(acc_name, desc_text, amt_val, is_credit=True):
+            if not acc_name or pd.isna(acc_name):
+                return ''
+            s = str(acc_name).strip()
+            if s.lower() in ('nan', 'none'):
+                return ''
+            # If after match details value has _ (e.g. KOTAK_GC_0149711195), get Particulars
+            if '_' in s and df2 is not None and not df2.empty:
+                part_col = next((c for c in ['Particulars', 'Ledger', 'Account', 'Party Name'] if c in df2.columns), 'Particulars')
+                desc_str = str(desc_text or '')
+                # 1. Try matching by instrument no from narration/description
+                m_inst = re.search(r'\b0*(\d{5,8})\b', desc_str)
+                if m_inst:
+                    chq_digits = m_inst.group(1).lstrip('0')
+                    inst_col = next((c for c in ['Instrument No.', 'Instrument No', 'Cheque No'] if c in df2.columns), None)
+                    if inst_col:
+                        matched_by_inst = df2[df2[inst_col].astype(str).str.lstrip('0').str.strip() == chq_digits]
+                        if not matched_by_inst.empty:
+                            p_cand = matched_by_inst.iloc[0].get(part_col)
+                            if pd.notna(p_cand) and str(p_cand).strip() and '_' not in str(p_cand):
+                                return str(p_cand).strip()
+                # 2. Try matching by Details and Amount
+                try:
+                    amt_f = round(float(str(amt_val).replace(',', '')), 2) if pd.notna(amt_val) else None
+                except Exception:
+                    amt_f = None
+                if 'Details' in df2.columns:
+                    matched_det = df2[df2['Details'].astype(str).str.strip() == s]
+                    if amt_f is not None and not matched_det.empty:
+                        target_col = 'Credit' if is_credit else 'Debit'
+                        if target_col in matched_det.columns:
+                            sub = matched_det[matched_det[target_col].round(2) == amt_f]
+                            if not sub.empty:
+                                matched_det = sub
+                    if not matched_det.empty:
+                        p_cand = matched_det.iloc[0].get(part_col)
+                        if pd.notna(p_cand) and str(p_cand).strip() and '_' not in str(p_cand):
+                            return str(p_cand).strip()
+            return s
+
         # Build Payment Sheet records: Date (Value date), Payment No, Bank / Cash, Debit Account (Ledger), Amount (Debit), Cheque No, Cheque Date, Narration(Description)
         payment_records = []
         payment_indices = []
@@ -1822,10 +1925,10 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
             date_str = date_val.strftime('%d-%m-%Y') if hasattr(date_val, 'strftime') else (str(date_val).strip() if pd.notna(date_val) and str(date_val).strip().lower() not in ('nan', 'none') else '')
             raw_bank_val = resolved_bank_ledger or row.get('Bank / Cash') or row.get('Bank') or detected_bank or ''
             bank_val = format_output_bank_cash(raw_bank_val, fallback_acc=output_acc_no, detected_bank=detected_bank)
-            debit_acc = row.get('Ledger') or ''
-            amt_val = row.get('Debit')
             desc_val = row.get('Original_Description') if ('Original_Description' in row and pd.notna(row.get('Original_Description'))) else (row.get('Description') or '')
             desc_str = str(desc_val).strip() if pd.notna(desc_val) and str(desc_val).strip().lower() not in ('nan', 'none') else ''
+            amt_val = row.get('Debit')
+            debit_acc = clean_final_account(row.get('Ledger') or '', desc_str, amt_val, is_credit=False)
 
             chq_no_val = ''
             chk_dt_val = ''
@@ -1860,10 +1963,10 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
             date_str = date_val.strftime('%d-%m-%Y') if hasattr(date_val, 'strftime') else (str(date_val).strip() if pd.notna(date_val) and str(date_val).strip().lower() not in ('nan', 'none') else '')
             raw_bank_val = resolved_bank_ledger or row.get('Bank / Cash') or row.get('Bank') or detected_bank or ''
             bank_val = format_output_bank_cash(raw_bank_val, fallback_acc=output_acc_no, detected_bank=detected_bank)
-            credit_acc = row.get('Ledger') or ''
-            amt_val = row.get('Credit')
             desc_val = row.get('Original_Description') if ('Original_Description' in row and pd.notna(row.get('Original_Description'))) else (row.get('Description') or '')
             desc_str = str(desc_val).strip() if pd.notna(desc_val) and str(desc_val).strip().lower() not in ('nan', 'none') else ''
+            amt_val = row.get('Credit')
+            credit_acc = clean_final_account(row.get('Ledger') or '', desc_str, amt_val, is_credit=True)
 
             chq_no_val = ''
             chk_dt_val = ''
