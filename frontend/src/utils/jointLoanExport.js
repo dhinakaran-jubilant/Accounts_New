@@ -1978,6 +1978,9 @@ export function buildJLReportWorksheet(
 					recdDue += 1;
 					totalCollected += emiAmt;
 				} else {
+					if (inst.isPartial && inst.partialPaidAmount) {
+						totalCollected += Number(inst.partialPaidAmount) || 0;
+					}
 					const unpaid = getScheduleItemUnpaid(inst);
 					if (isDueDateCrossedDate(inst.date) || String(inst.status || '').toLowerCase() === 'overdue') {
 						overDue += 1;
@@ -2010,7 +2013,7 @@ export function buildJLReportWorksheet(
 				status = 'ACTIVE';
 			}
 
-			// Resolve Received & O/S
+			// Resolve Received & Outstanding (O/S = Repayment - Received)
 			let overallRecd = 0;
 			let primaryRecd = 0;
 			const secRecd = [];
@@ -2030,47 +2033,43 @@ export function buildJLReportWorksheet(
 				}
 				overallOS = 0;
 				primaryOS = 0;
-			} else if (status === 'TDS') {
-				overallRecd = totalCollected > 0 ? totalCollected : Math.round(repayment * 0.98);
+			} else {
+				if (status === 'TDS') {
+					overallRecd = totalCollected > 0 ? totalCollected : Math.round(repayment * 0.98);
+				} else {
+					overallRecd = Math.min(repayment, totalCollected);
+				}
+
 				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
+				let remainingRecd = Math.max(0, overallRecd - primaryRecd);
+				for (let k = 0; k < maxSec; k++) {
+					if (k < secs.length) {
+						if (k === secs.length - 1) {
+							secRecd.push(remainingRecd);
+						} else {
+							const sR = Math.min(remainingRecd, Math.round(overallRecd * (secRepayment[k] / effectiveRepay)));
+							secRecd.push(sR);
+							remainingRecd -= sR;
+						}
+					} else {
+						secRecd.push('');
+					}
+				}
+
+				// Outstanding (O/S) balance: Overall O/S = Repayment - Overall Received
 				overallOS = Math.max(0, repayment - overallRecd);
 				primaryOS = Math.max(0, priRepayment - primaryRecd);
+				let remainingOS = Math.max(0, overallOS - primaryOS);
 				for (let k = 0; k < maxSec; k++) {
 					if (k < secs.length) {
-						const sR = Math.round(overallRecd * (secRepayment[k] / effectiveRepay));
-						secRecd.push(sR);
-						secOS.push(Math.max(0, secRepayment[k] - sR));
+						if (k === secs.length - 1) {
+							secOS.push(remainingOS);
+						} else {
+							const sOS = Math.min(remainingOS, Math.max(0, secRepayment[k] - (secRecd[k] || 0)));
+							secOS.push(sOS);
+							remainingOS -= sOS;
+						}
 					} else {
-						secRecd.push('');
-						secOS.push('');
-					}
-				}
-			} else if (status === 'OVERDUE' || status === 'DATE OVERDUE') {
-				overallRecd = totalCollected;
-				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
-				overallOS = overdueUnpaidTotal;
-				primaryOS = Math.round(overallOS * (priRepayment / effectiveRepay));
-				for (let k = 0; k < maxSec; k++) {
-					if (k < secs.length) {
-						secRecd.push(Math.round(overallRecd * (secRepayment[k] / effectiveRepay)));
-						secOS.push(Math.round(overallOS * (secRepayment[k] / effectiveRepay)));
-					} else {
-						secRecd.push('');
-						secOS.push('');
-					}
-				}
-			} else {
-				// ACTIVE or PENDING
-				overallRecd = totalCollected;
-				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
-				overallOS = 0;
-				primaryOS = 0;
-				for (let k = 0; k < maxSec; k++) {
-					if (k < secs.length) {
-						secRecd.push(Math.round(overallRecd * (secRepayment[k] / effectiveRepay)));
-						secOS.push(0);
-					} else {
-						secRecd.push('');
 						secOS.push('');
 					}
 				}
