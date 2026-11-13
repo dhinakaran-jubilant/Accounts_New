@@ -14,6 +14,7 @@ import {
 	exportJointLoanToExcel,
 	exportJointLoansListToExcel,
 	exportOutstandingReportPerPrimaryAccount,
+	exportJointLoanPortfolioReport,
 } from '../utils/jointLoanExport';
 import SyncedLoansModal from './dashboard/SyncedLoansModal';
 
@@ -15121,6 +15122,24 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const listExportTimerRef = useRef(null);
 	const listExportErrorTimerRef = useRef(null);
 
+	// Export Menu Popover State
+	const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
+	const exportDropdownRef = useRef(null);
+
+	useEffect(() => {
+		const handleClickOutside = (e) => {
+			if (exportDropdownRef.current && !exportDropdownRef.current.contains(e.target)) {
+				setIsExportDropdownOpen(false);
+			}
+		};
+		if (isExportDropdownOpen) {
+			document.addEventListener('mousedown', handleClickOutside);
+		}
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+		};
+	}, [isExportDropdownOpen]);
+
 	const showListExportError = useCallback((errMsg) => {
 		if (listExportErrorTimerRef.current) {
 			clearTimeout(listExportErrorTimerRef.current);
@@ -15133,7 +15152,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 		alert(errMsg);
 	}, []);
 
-	const handleExportLoansList = useCallback(() => {
+	const handleExportLoansList = useCallback((reportType = 'OS') => {
 		try {
 			const isFiltered = Boolean(
 				(statusFilter && statusFilter !== 'ALL') ||
@@ -15147,17 +15166,29 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				: (filteredLoans.length > 0 ? filteredLoans : userPermittedLoans);
 
 			if (!loansToExport || loansToExport.length === 0) {
-				showListExportError('No outstanding loans');
+				showListExportError('No loans to export');
 				return;
 			}
-			const result = exportOutstandingReportPerPrimaryAccount(
-				loansToExport,
-				(loan) => generateRepaymentSchedule(loan, getLoanAccountDetails(loan)),
-				availableAccountObjects,
-				{ selectedAccount: (accountFilter && accountFilter !== 'ALL') ? accountFilter : null }
-			);
+
+			let result;
+			if (reportType === 'JL') {
+				result = exportJointLoanPortfolioReport(
+					loansToExport,
+					(loan) => generateRepaymentSchedule(loan, getLoanAccountDetails(loan)),
+					availableAccountObjects,
+					{ selectedAccount: (accountFilter && accountFilter !== 'ALL') ? accountFilter : null }
+				);
+			} else {
+				result = exportOutstandingReportPerPrimaryAccount(
+					loansToExport,
+					(loan) => generateRepaymentSchedule(loan, getLoanAccountDetails(loan)),
+					availableAccountObjects,
+					{ selectedAccount: (accountFilter && accountFilter !== 'ALL') ? accountFilter : null }
+				);
+			}
+
 			if (!result || result.success === false) {
-				const errMsg = (result && result.message) ? result.message : 'No outstanding loans';
+				const errMsg = (result && result.message) ? result.message : 'No loans to export';
 				showListExportError(errMsg);
 				return;
 			}
@@ -15173,7 +15204,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 				}, 5000);
 			}
 		} catch (err) {
-			console.error('Failed to export outstanding report to Excel:', err);
+			console.error('Failed to export report to Excel:', err);
 			showListExportError('Failed to export Excel file. Please try again.');
 		}
 	}, [filteredLoans, userPermittedLoans, availableAccountObjects, statusFilter, accountFilter, dateRangeFilter, searchQuery, showListExportError]);
@@ -16093,18 +16124,60 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 						</div>
 					</button>
 
-					<button
-						type="button"
-						onClick={handleExportLoansList}
-						disabled={filteredLoans.length === 0 && userPermittedLoans.length === 0}
-						className="flex items-center gap-1.5 bg-blue-700 hover:bg-blue-900 text-white border border-slate-200/80 px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-						title="Export outstanding report per primary account (.xlsx)"
-					>
-						<span className="material-symbols-outlined text-[18px] text-white">
-							download
-						</span>
-						<span>Export</span>
-					</button>
+					{/* Export Reports Dropdown */}
+					<div ref={exportDropdownRef} className="relative inline-block text-left">
+						<button
+							type="button"
+							onClick={() => setIsExportDropdownOpen((prev) => !prev)}
+							disabled={filteredLoans.length === 0 && userPermittedLoans.length === 0}
+							className="flex items-center gap-1.5 bg-blue-700 hover:bg-blue-900 text-white border border-slate-200/80 px-3 py-2 rounded-xl font-bold text-[12.5px] shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+							title="Export reports (.xlsx)"
+						>
+							<span className="material-symbols-outlined text-[18px] text-white">
+								download
+							</span>
+							<span>Export</span>
+							<span className="material-symbols-outlined text-[16px] text-white/80 transition-transform duration-200">
+								{isExportDropdownOpen ? 'expand_less' : 'expand_more'}
+							</span>
+						</button>
+
+						{isExportDropdownOpen && (
+							<div className="absolute right-0 top-full mt-1.5 z-50 min-w-[240px] bg-white rounded-2xl shadow-xl ring-1 ring-slate-200/90 p-1.5 flex flex-col gap-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
+								<button
+									type="button"
+									onClick={() => {
+										setIsExportDropdownOpen(false);
+										handleExportLoansList('OS');
+									}}
+									className="flex items-center gap-2.5 p-1.5 rounded-xl text-left bg-blue-50 text-slate-700 transition-colors cursor-pointer group"
+								>
+									<div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+										<span className="material-symbols-outlined text-[18px]">table_chart</span>
+									</div>
+									<div>
+										<div className="text-[12.5px] font-bold text-blue-700">O/S Report</div>
+									</div>
+								</button>
+
+								<button
+									type="button"
+									onClick={() => {
+										setIsExportDropdownOpen(false);
+										handleExportLoansList('JL');
+									}}
+									className="flex items-center gap-2.5 p-1.5 rounded-xl text-left bg-emerald-50 text-slate-700 transition-colors cursor-pointer group"
+								>
+									<div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+										<span className="material-symbols-outlined text-[18px]">summarize</span>
+									</div>
+									<div>
+										<div className="text-[12.5px] font-bold text-emerald-700">JL Report</div>
+									</div>
+								</button>
+							</div>
+						)}
+					</div>
 
 					<button
 						type="button"

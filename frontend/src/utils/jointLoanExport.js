@@ -1678,4 +1678,637 @@ export function exportOutstandingReportPerPrimaryAccount(
 
 export const exportOutstandingReport = exportOutstandingReportPerPrimaryAccount;
 
+/**
+ * Helper to resolve secondary accounts list from a loan
+ */
+export const getLoanSecondaryAccounts = (loan, availableAccounts = []) => {
+	if (!loan) return [];
+	let secList = [];
+	if (Array.isArray(loan.accountDetails) && loan.accountDetails.length > 0) {
+		secList = loan.accountDetails.filter((a) => a && !a.isPrimary);
+	} else if (Array.isArray(loan.secondaryAccounts) && loan.secondaryAccounts.length > 0) {
+		secList = loan.secondaryAccounts;
+	} else if (Array.isArray(loan.remaining_accounts) && loan.remaining_accounts.length > 0) {
+		secList = loan.remaining_accounts;
+	}
+
+	if (secList.length === 0) {
+		const singleSecName = loan.secondaryAccountName || loan.secAccountName || loan.coBorrower?.name || '';
+		if (singleSecName) {
+			secList = [{
+				name: singleSecName,
+				accountName: singleSecName,
+				share: loan.secondaryShare || loan.secShare || (100 - (loan.primaryShare || 60)),
+				principal: loan.secondaryPrincipal || loan.secPrincipal || 0,
+				totalRepayment: loan.secondaryRepayment || loan.secRepayment || 0,
+			}];
+		}
+	}
+
+	return secList.map((sec) => {
+		const rawName = sec.accountName || sec.name || sec.accountTag || sec.tag || '';
+		const rawTag = sec.accountTag || sec.tag || sec.acronym || '';
+		let tag = rawTag;
+		let name = rawName;
+		if (!tag && name) {
+			const words = name.split(/\s+/);
+			tag = words.length > 1 ? words.map((w) => w[0]).join('').slice(0, 5).toUpperCase() : name.slice(0, 4).toUpperCase();
+		}
+		if (Array.isArray(availableAccounts) && availableAccounts.length > 0) {
+			const match = availableAccounts.find((a) =>
+				isAccountTagOrNameMatch(a.acronym || a.tag || a.name, tag, name, availableAccounts)
+			);
+			if (match) {
+				tag = match.acronym || match.tag || tag;
+				name = match.name || match.accountName || name;
+			}
+		}
+		return {
+			...sec,
+			tag: tag || 'SEC',
+			name: name || tag || 'Secondary Account',
+		};
+	});
+};
+
+/**
+ * Check if a date string is strictly in the past (due date crossed today)
+ */
+export const isDueDateCrossedDate = (dateStr) => {
+	if (!dateStr || dateStr === '-' || dateStr === '—') return false;
+	const clean = String(dateStr).trim().replace(/[/.]/g, '-');
+	let d = null;
+	const dmy = clean.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/);
+	if (dmy) {
+		d = new Date(parseInt(dmy[3], 10), parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10));
+	} else {
+		const ymd = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+		if (ymd) {
+			d = new Date(parseInt(ymd[1], 10), parseInt(ymd[2], 10) - 1, parseInt(ymd[3], 10));
+		} else {
+			const parsed = new Date(clean);
+			if (!isNaN(parsed.getTime())) d = parsed;
+		}
+	}
+	if (!d || isNaN(d.getTime())) return false;
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	return d.getTime() < today.getTime();
+};
+
+/**
+ * Helper to check if schedule installment is paid
+ */
+const isScheduleItemPaid = (inst) => {
+	if (!inst) return false;
+	const status = String(inst.status || '').toLowerCase();
+	if (status === 'overdue') return false;
+
+	if (inst.isPartial) {
+		if (inst.isRowFullyPaid || inst.partialBalAmount === 0) return true;
+		const emiAmount = Number(inst.amount ?? inst.totalEmi ?? 0);
+		const paid = Number(inst.partialPaidAmount || 0);
+		return emiAmount > 0 && paid >= emiAmount;
+	}
+
+	const recd = inst.receivedDate || inst.received_date || inst.paymentDate || inst.payment_date || inst.recdDate || inst.recd_date;
+	const hasRecdDate = Boolean(recd && String(recd).trim() && String(recd).trim() !== '-' && String(recd).trim() !== '—' && String(recd).trim() !== 'null');
+	return hasRecdDate || status === 'settled' || status === 'collected' || status === 'paid';
+};
+
+/**
+ * Helper to calculate unpaid balance of a schedule installment
+ */
+const getScheduleItemUnpaid = (inst) => {
+	if (!inst) return 0;
+	const emiAmount = Number(inst.amount ?? inst.totalEmi ?? 0);
+	if (emiAmount <= 0) return 0;
+
+	if (isScheduleItemPaid(inst)) return 0;
+
+	if (inst.isPartial) {
+		if (inst.partialBalAmount !== undefined && inst.partialBalAmount !== null) {
+			return Number(inst.partialBalAmount) || 0;
+		}
+		const paid = Number(inst.partialPaidAmount || 0);
+		return Math.max(0, emiAmount - paid);
+	}
+
+	return emiAmount;
+};
+
+/**
+ * Build a styled worksheet for JL Report matching the requested column structure:
+ * Columns: S.NO, DATE, LOAN NO, CLIENT NAME, PRIMARY, SEC-1..N,
+ * LOAN AMOUNT, REPAYMENT, OVERALL RECEIVED, OVERALL O/S,
+ * PRIMARY LOAN, PRIMARY REPAYMENT, PRIMARY RECEIVED, PRIMARY O/S,
+ * SEC-1 LOAN, SEC-1 REPAYMENT, SEC-1 RECEIVED, SEC-1 O/S, ...
+ * SEC-N LOAN, SEC-N REPAYMENT, SEC-N RECEIVED, SEC-N O/S,
+ * TOTAL DUE, RECEIVED DUE, OVER DUE, Status
+ */
+export function buildJLReportWorksheet(
+	primaryTag,
+	loans = [],
+	getScheduleFn = null,
+	availableAccounts = []
+) {
+	const border1px = {
+		top: { style: 'thin', color: { rgb: '000000' } },
+		bottom: { style: 'thin', color: { rgb: '000000' } },
+		left: { style: 'thin', color: { rgb: '000000' } },
+		right: { style: 'thin', color: { rgb: '000000' } },
+	};
+
+	// Determine max secondary accounts for this sheet (minimum 1)
+	const maxSec = Math.max(
+		1,
+		...loans.map((loan) => getLoanSecondaryAccounts(loan, availableAccounts).length)
+	);
+
+	// Construct Headers matching exact user requested column order:
+	// S.NO, DATE, LOAN NO, CLIENT NAME, PRIMARY, SEC-1..SEC-N,
+	// LOAN AMOUNT, REPAYMENT, OVERALL RECEIVED, OVERALL O/S,
+	// PRIMARY LOAN, PRIMARY REPAYMENT, PRIMARY RECEIVED, PRIMARY O/S,
+	// SEC-1 LOAN, SEC-1 REPAYMENT, SEC-1 RECEIVED, SEC-1 O/S, ...
+	// SEC-N LOAN, SEC-N REPAYMENT, SEC-N RECEIVED, SEC-N O/S,
+	// TOTAL DUE, RECEIVED DUE, OVER DUE, Status
+	const headers = [
+		'S.NO',
+		'DATE',
+		'LOAN NO',
+		'CLIENT NAME',
+		'PRIMARY',
+	];
+	for (let k = 1; k <= maxSec; k++) {
+		headers.push(`SEC-${k}`);
+	}
+	headers.push(
+		'LOAN AMOUNT',
+		'REPAYMENT',
+		'OVERALL\nRECEIVED',
+		'OVERALL\nO/S',
+		'PRIMARY\nLOAN',
+		'PRIMARY\nREPAYMENT',
+		'PRIMARY\nRECEIVED',
+		'PRIMARY\nO/S'
+	);
+	for (let k = 1; k <= maxSec; k++) {
+		headers.push(`SEC-${k}\nLOAN`);
+		headers.push(`SEC-${k}\nREPAYMENT`);
+		headers.push(`SEC-${k}\nRECEIVED`);
+		headers.push(`SEC-${k}\nO/S`);
+	}
+	headers.push('TOTAL DUE', 'RECEIVED DUE', 'OVER DUE', 'Status');
+
+	const rows = [headers];
+	const rowStyles = ['tblHeader'];
+	const rowDataMeta = [{}];
+
+	const addRow = (cells, styleType = 'data', meta = {}) => {
+		rows.push(cells);
+		rowStyles.push(styleType);
+		rowDataMeta.push(meta);
+	};
+
+	// Group loans by secondary accounts combination
+	const getSecSignature = (loan) => {
+		const secs = getLoanSecondaryAccounts(loan, availableAccounts);
+		return secs.map((s) => s.tag || s.name).sort().join('__') || 'NONE';
+	};
+
+	const groupMap = new Map();
+	loans.forEach((loan) => {
+		const sig = getSecSignature(loan);
+		if (!groupMap.has(sig)) {
+			groupMap.set(sig, []);
+		}
+		groupMap.get(sig).push(loan);
+	});
+
+	let groupIndex = 0;
+	let rowIndexSeq = 0;
+
+	for (const [, groupLoans] of groupMap.entries()) {
+		if (groupIndex > 0) {
+			// Empty separator row between secondary partner combinations
+			addRow([], 'empty');
+		}
+		groupIndex += 1;
+
+		for (const loan of groupLoans) {
+			rowIndexSeq += 1;
+
+			const loanDate = formatDisplayDate(loan.loan_date || loan.appliedDate || loan.loanDate || loan.date || loan.applied_date);
+			const loanNo = loan.loan_ref_id || loan.loanId || loan.id || '—';
+			const clientName = loan.client_account_name || loan.primaryBorrower?.name || loan.clientName || 'Client';
+
+			const loanAmount = Number(loan.loan_amount ?? loan.sanctioned_amount ?? loan.amount ?? loan.principal ?? 0);
+			const repayment = Number(loan.total_repayment ?? loan.repayment_amount ?? loan.totalRepayment ?? 0);
+
+			const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+			const priTag = primaryTag || pri.tag || 'PRI';
+
+			const secs = getLoanSecondaryAccounts(loan, availableAccounts);
+
+			// Resolve primary allocation
+			const priAccount = Array.isArray(loan.accountDetails)
+				? loan.accountDetails.find((a) => a && (a.isPrimary || isAccountTagOrNameMatch(a.name || a.accountName, priTag, priTag, availableAccounts)))
+				: null;
+
+			let priLoan = 0;
+			let priRepayment = 0;
+			if (priAccount) {
+				priLoan = Number(priAccount.principal ?? priAccount.principalAmount ?? 0);
+				priRepayment = Number(priAccount.totalRepayment ?? priAccount.repaymentAmount ?? priAccount.repayment ?? 0);
+			}
+			if (!priLoan && loanAmount > 0) {
+				const priShare = Number(loan.primaryShare ?? loan.primary_account_share ?? 60);
+				priLoan = Math.round((loanAmount * priShare) / 100);
+			}
+			if (!priRepayment && repayment > 0) {
+				const priShare = Number(loan.primaryShare ?? loan.primary_account_share ?? 60);
+				priRepayment = Math.round((repayment * priShare) / 100);
+			}
+
+			// Resolve secondary allocations
+			const secLoan = [];
+			const secRepayment = [];
+			for (let k = 0; k < maxSec; k++) {
+				if (k < secs.length) {
+					const sec = secs[k];
+					let sLoan = Number(sec.principal ?? sec.principalAmount ?? 0);
+					let sRepay = Number(sec.totalRepayment ?? sec.repaymentAmount ?? sec.repayment ?? 0);
+					if (!sLoan && loanAmount > 0) {
+						const sShare = Number(sec.share ?? sec.percentage ?? 0);
+						sLoan = Math.round((loanAmount * sShare) / 100);
+					}
+					if (!sRepay && repayment > 0) {
+						const sShare = Number(sec.share ?? sec.percentage ?? 0);
+						sRepay = Math.round((repayment * sShare) / 100);
+					}
+					secLoan.push(sLoan);
+					secRepayment.push(sRepay);
+				} else {
+					secLoan.push('');
+					secRepayment.push('');
+				}
+			}
+
+			// Generate/retrieve repayment schedule
+			let schedule = [];
+			if (typeof getScheduleFn === 'function') {
+				try {
+					schedule = getScheduleFn(loan) || [];
+				} catch (_) {}
+			}
+			if (!schedule || schedule.length === 0) {
+				schedule = loan.repaymentSchedule || loan.repayment_schedule || [];
+			}
+
+			const totalDue = schedule.length;
+			let recdDue = 0;
+			let overDue = 0;
+			let totalCollected = 0;
+			let overdueUnpaidTotal = 0;
+
+			schedule.forEach((inst) => {
+				const emiAmt = Number(inst.amount ?? inst.totalEmi ?? 0);
+				const paid = isScheduleItemPaid(inst);
+				if (paid) {
+					recdDue += 1;
+					totalCollected += emiAmt;
+				} else {
+					const unpaid = getScheduleItemUnpaid(inst);
+					if (isDueDateCrossedDate(inst.date) || String(inst.status || '').toLowerCase() === 'overdue') {
+						overDue += 1;
+						overdueUnpaidTotal += unpaid;
+					}
+				}
+			});
+
+			// Resolve Loan Status
+			let status = 'ACTIVE';
+			const rawStatus = String(loan.status || loan.computed_status || '').trim();
+			const rawStatusLower = rawStatus.toLowerCase();
+			const approvalStatus = String(loan.approval_status || '').toUpperCase();
+
+			if (rawStatusLower === 'closed' || (totalDue > 0 && recdDue === totalDue)) {
+				status = 'CLOSED';
+			} else if (rawStatus.toUpperCase().includes('TDS') || loan.tds_status === 'TDS') {
+				status = 'TDS';
+			} else if (rawStatusLower === 'date overdue') {
+				status = 'DATE OVERDUE';
+			} else if (overDue > 0 || rawStatusLower === 'overdue') {
+				status = 'OVERDUE';
+			} else if (
+				rawStatusLower === 'pending' ||
+				approvalStatus === 'PENDING_SECONDARY' ||
+				approvalStatus === 'PENDING_ADMIN'
+			) {
+				status = 'PENDING';
+			} else {
+				status = 'ACTIVE';
+			}
+
+			// Resolve Received & O/S
+			let overallRecd = 0;
+			let primaryRecd = 0;
+			const secRecd = [];
+
+			let overallOS = 0;
+			let primaryOS = 0;
+			const secOS = [];
+
+			const effectiveRepay = repayment > 0 ? repayment : 1;
+
+			if (status === 'CLOSED') {
+				overallRecd = repayment;
+				primaryRecd = priRepayment;
+				for (let k = 0; k < maxSec; k++) {
+					secRecd.push(k < secs.length ? secRepayment[k] : '');
+					secOS.push(k < secs.length ? 0 : '');
+				}
+				overallOS = 0;
+				primaryOS = 0;
+			} else if (status === 'TDS') {
+				overallRecd = totalCollected > 0 ? totalCollected : Math.round(repayment * 0.98);
+				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
+				overallOS = Math.max(0, repayment - overallRecd);
+				primaryOS = Math.max(0, priRepayment - primaryRecd);
+				for (let k = 0; k < maxSec; k++) {
+					if (k < secs.length) {
+						const sR = Math.round(overallRecd * (secRepayment[k] / effectiveRepay));
+						secRecd.push(sR);
+						secOS.push(Math.max(0, secRepayment[k] - sR));
+					} else {
+						secRecd.push('');
+						secOS.push('');
+					}
+				}
+			} else if (status === 'OVERDUE' || status === 'DATE OVERDUE') {
+				overallRecd = totalCollected;
+				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
+				overallOS = overdueUnpaidTotal;
+				primaryOS = Math.round(overallOS * (priRepayment / effectiveRepay));
+				for (let k = 0; k < maxSec; k++) {
+					if (k < secs.length) {
+						secRecd.push(Math.round(overallRecd * (secRepayment[k] / effectiveRepay)));
+						secOS.push(Math.round(overallOS * (secRepayment[k] / effectiveRepay)));
+					} else {
+						secRecd.push('');
+						secOS.push('');
+					}
+				}
+			} else {
+				// ACTIVE or PENDING
+				overallRecd = totalCollected;
+				primaryRecd = Math.round(overallRecd * (priRepayment / effectiveRepay));
+				overallOS = 0;
+				primaryOS = 0;
+				for (let k = 0; k < maxSec; k++) {
+					if (k < secs.length) {
+						secRecd.push(Math.round(overallRecd * (secRepayment[k] / effectiveRepay)));
+						secOS.push(0);
+					} else {
+						secRecd.push('');
+						secOS.push('');
+					}
+				}
+			}
+
+			// Build Data Row matching exact user requested column order:
+			// s.no, date, loan no, client name, primary, sec-1..n,
+			// loan amount, repayment, overall received, overall o/s,
+			// primary loan, primary repayment, primary received, primary o/s,
+			// sec-1 loan, sec-1 repayment, sec-1 received, sec-1 o/s, ...
+			// sec-n loan, sec-n repayment, sec-n received, sec-n o/s,
+			// total due, received due, over due, status
+			const row = [
+				rowIndexSeq,
+				loanDate,
+				loanNo,
+				clientName,
+				priTag,
+			];
+			// SEC-1..N
+			for (let k = 0; k < maxSec; k++) {
+				row.push(k < secs.length ? (secs[k].tag || secs[k].name || '') : '');
+			}
+
+			// Overall totals
+			row.push(loanAmount);
+			row.push(repayment);
+			row.push(overallRecd);
+			row.push(overallOS);
+
+			// Primary allocations
+			row.push(priLoan);
+			row.push(priRepayment);
+			row.push(primaryRecd);
+			row.push(primaryOS);
+
+			// SEC-1..N allocations (loan, repayment, received, o/s per partner)
+			for (let k = 0; k < maxSec; k++) {
+				if (k < secs.length) {
+					row.push(secLoan[k]);
+					row.push(secRepayment[k]);
+					row.push(secRecd[k]);
+					row.push(secOS[k]);
+				} else {
+					row.push('');
+					row.push('');
+					row.push('');
+					row.push('');
+				}
+			}
+
+			// TOTAL DUE, RECEIVED DUE, OVER DUE, Status
+			row.push(totalDue);
+			row.push(recdDue);
+			row.push(overDue);
+			row.push(status);
+
+			addRow(row, 'data', { status });
+		}
+	}
+
+	const ws = XLSX.utils.aoa_to_sheet(rows);
+
+	// Apply Styles
+	for (let r = 0; r < rows.length; r++) {
+		const rowData = rows[r];
+		if (!rowData || rowData.length === 0) continue;
+		const rowType = rowStyles[r];
+
+		for (let c = 0; c < rowData.length; c++) {
+			const cellAddr = XLSX.utils.encode_cell({ r, c });
+			if (!ws[cellAddr]) {
+				ws[cellAddr] = { t: 's', v: '' };
+			}
+			const cell = ws[cellAddr];
+			const isNumeric = cell.t === 'n' || typeof cell.v === 'number';
+
+			if (rowType === 'tblHeader') {
+				cell.s = {
+					font: { bold: true, color: { rgb: '0F172A' }, sz: 10 },
+					fill: { fgColor: { rgb: 'B8CCE4' } },
+					border: { ...border1px },
+					alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+				};
+			} else if (rowType === 'data') {
+				const isStatusCol = c === headers.length - 1;
+				const isClientCol = c === 3;
+				const headerName = headers[c] || '';
+				const isDueCol = headerName === 'TOTAL DUE' || headerName === 'RECEIVED DUE' || headerName === 'OVER DUE';
+				const isCenterCol =
+					c === 0 ||
+					c === 1 ||
+					c === 2 ||
+					c === 4 ||
+					(c >= 5 && c < 5 + maxSec) ||
+					isDueCol ||
+					isStatusCol;
+
+				let fontColor = '0F172A';
+				let isBold = false;
+
+				if (isStatusCol) {
+					isBold = true;
+					const st = String(cell.v || '').toUpperCase();
+					if (st === 'CLOSED') fontColor = '047857';
+					else if (st === 'OVERDUE' || st === 'DATE OVERDUE') fontColor = 'DC2626';
+					else if (st === 'TDS') fontColor = 'D97706';
+					else if (st === 'PENDING') fontColor = 'EA580C';
+					else if (st === 'ACTIVE') fontColor = '16A34A';
+				}
+
+				const horizontalAlign = isCenterCol ? 'center' : (isNumeric ? 'right' : (isClientCol ? 'left' : 'center'));
+
+				cell.s = {
+					font: { color: { rgb: fontColor }, bold: isBold, sz: 10 },
+					border: { ...border1px },
+					alignment: {
+						horizontal: horizontalAlign,
+						vertical: 'center',
+					},
+				};
+				if (isNumeric) {
+					cell.z = '#,##0';
+				}
+			}
+		}
+	}
+
+	// Auto-fit column widths
+	ws['!cols'] = headers.map((h, colIdx) => {
+		if (colIdx === 0) return { wch: 6 };
+		if (colIdx === 1) return { wch: 12 };
+		if (colIdx === 2) return { wch: 16 };
+		if (colIdx === 3) return { wch: 32 };
+		if (h === 'PRIMARY' || (h.startsWith('SEC-') && !h.includes('\n'))) return { wch: 12 };
+		if (h === 'Status') return { wch: 14 };
+		if (h.includes('DUE')) return { wch: 12 };
+		return { wch: 16 };
+	});
+	ws['!rows'] = [{ hpt: 28 }];
+
+	return { ws, count: rowIndexSeq };
+}
+
+/**
+ * Export complete Joint Loan portfolio report matching JL_Report_All.xlsx format
+ * Creates a sheet per Primary Account with secondary grouping and dynamic SEC-1..N columns
+ */
+export function exportJointLoanPortfolioReport(
+	loansList = [],
+	getScheduleFn = null,
+	availableAccounts = [],
+	options = {}
+) {
+	if (!Array.isArray(loansList) || loansList.length === 0) {
+		return { success: false, message: 'No loans to export', count: 0 };
+	}
+
+	const wb = XLSX.utils.book_new();
+	const selectedAccount = options.selectedAccount;
+	const isSingleAccount = Boolean(selectedAccount && selectedAccount !== 'ALL');
+
+	// Group loans by Primary Account
+	const primaryAccountGroups = new Map();
+
+	loansList.forEach((loan) => {
+		if (!loan || loan.is_deleted) return;
+		const pri = resolveLoanPrimaryAccount(loan, availableAccounts);
+		const priTag = (pri.tag || 'OTHER').toUpperCase();
+
+		if (isSingleAccount) {
+			const matches =
+				isAccountTagOrNameMatch(pri.tag, selectedAccount, selectedAccount, availableAccounts) ||
+				isAccountTagOrNameMatch(pri.name, selectedAccount, selectedAccount, availableAccounts);
+			if (!matches) return;
+		}
+
+		if (!primaryAccountGroups.has(priTag)) {
+			primaryAccountGroups.set(priTag, {
+				tag: priTag,
+				name: pri.name,
+				loans: [],
+			});
+		}
+		primaryAccountGroups.get(priTag).loans.push(loan);
+	});
+
+	if (primaryAccountGroups.size === 0) {
+		return { success: false, message: 'No loans found for selected account', count: 0 };
+	}
+
+	let totalLoansExported = 0;
+	const usedSheetNames = new Set();
+	const getUniqueSheetName = (desired) => {
+		let clean = desired.replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 31);
+		if (!clean) clean = 'Sheet';
+		let result = clean;
+		let counter = 1;
+		while (usedSheetNames.has(result.toLowerCase())) {
+			result = `${clean.slice(0, 27)}_${counter++}`;
+		}
+		usedSheetNames.add(result.toLowerCase());
+		return result;
+	};
+
+	// Standard order matching sample excel
+	const standardOrder = ['SCS', 'AS', 'JE', 'JC', 'ACE', 'FC', 'SS', 'SN', 'SCE', 'ASQ', 'GC'];
+	const sortedGroups = Array.from(primaryAccountGroups.values()).sort((a, b) => {
+		const idxA = standardOrder.indexOf(a.tag);
+		const idxB = standardOrder.indexOf(b.tag);
+		if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+		if (idxA !== -1) return -1;
+		if (idxB !== -1) return 1;
+		return a.tag.localeCompare(b.tag);
+	});
+
+	sortedGroups.forEach(({ tag, loans }) => {
+		const { ws, count } = buildJLReportWorksheet(tag, loans, getScheduleFn, availableAccounts);
+		if (count > 0) {
+			const sheetName = getUniqueSheetName(tag);
+			XLSX.utils.book_append_sheet(wb, ws, sheetName);
+			totalLoansExported += count;
+		}
+	});
+
+	if (totalLoansExported === 0) {
+		return { success: false, message: 'No loans to export', count: 0 };
+	}
+
+	const datePart = new Date().toISOString().slice(0, 10);
+	const filename = isSingleAccount
+		? `JL_Report_${selectedAccount.toUpperCase()}_${datePart}.xlsx`
+		: `JL_Report_All_${datePart}.xlsx`;
+
+	XLSX.writeFile(wb, filename);
+	return { success: true, filename, count: totalLoansExported };
+}
+
+export const exportJLReport = exportJointLoanPortfolioReport;
+
 
