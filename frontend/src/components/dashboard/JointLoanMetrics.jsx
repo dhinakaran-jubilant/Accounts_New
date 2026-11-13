@@ -187,7 +187,7 @@ export default function JointLoanMetrics({ metrics, roleFilter = 'primary', onFi
 						<span className="font-bold text-[12px] uppercase tracking-wider text-slate-500 flex items-center gap-1">
 							Pending Approval
 						</span>
-						<div className="w-9 h-9 rounded-xl bg-[#a5caff] text-[#2b7cee] flex items-center justify-center group-hover:scale-110 transition-transform">
+						<div className="w-9 h-9 rounded-xl bg-[#73adff]/15 text-[#2b7cee] flex items-center justify-center group-hover:scale-110 transition-transform">
 							<span className="material-symbols-outlined text-[20px]">assignment_turned_in</span>
 						</div>
 					</div>
