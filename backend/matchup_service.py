@@ -368,6 +368,25 @@ def is_closing_balance_cell(val):
     )
 
 
+def make_unique_column_names(columns):
+    """
+    Ensures all column names in the list or Index are non-empty strings and unique.
+    If duplicate column names exist (e.g. 'Dr / Cr' appearing for both Amount and Balance),
+    renames later occurrences with suffix: 'Dr / Cr', 'Dr / Cr_1', etc.
+    """
+    seen = {}
+    new_cols = []
+    for i, col in enumerate(columns):
+        c_str = str(col).strip() if pd.notna(col) and str(col).strip().lower() not in ('nan', 'none') else f"Col_{i}"
+        if c_str in seen:
+            seen[c_str] += 1
+            new_cols.append(f"{c_str}_{seen[c_str]}")
+        else:
+            seen[c_str] = 0
+            new_cols.append(c_str)
+    return new_cols
+
+
 def clean_bank_statement(bank_source):
     """
     Cleans bank statement file (e.g., Kotak, SBI, IDFC, HDFC):
@@ -401,10 +420,7 @@ def clean_bank_statement(bank_source):
             break
 
     if header_idx is not None:
-        headers = [
-            str(c).strip() if pd.notna(c) and str(c).strip().lower() not in ('nan', 'none') else f"Col_{i}"
-            for i, c in enumerate(df_raw.iloc[header_idx])
-        ]
+        headers = make_unique_column_names(df_raw.iloc[header_idx])
         data_start = header_idx + 1
     else:
         # Fallback: check if any row has standard date headers
@@ -412,10 +428,7 @@ def clean_bank_statement(bank_source):
             row_strs = [str(c).strip().lower() for c in df_raw.iloc[idx] if pd.notna(c)]
             if any(h in row_strs for h in ['transaction date', 'value date', 'txn date', 'date']):
                 header_idx = idx
-                headers = [
-                    str(c).strip() if pd.notna(c) and str(c).strip().lower() not in ('nan', 'none') else f"Col_{i}"
-                    for i, c in enumerate(df_raw.iloc[header_idx])
-                ]
+                headers = make_unique_column_names(df_raw.iloc[header_idx])
                 data_start = header_idx + 1
                 break
         else:
@@ -447,6 +460,7 @@ def clean_bank_statement(bank_source):
                 df_cleaned = df_cleaned.iloc[:idx].copy()
                 break
 
+    df_cleaned.columns = make_unique_column_names(df_cleaned.columns)
     return df_cleaned.dropna(how='all').reset_index(drop=True)
 
 
@@ -456,23 +470,21 @@ def read_cloud_data_file(cloud_source):
     detects the header row containing 'Voucher Type' or 'Particulars' and promotes it.
     """
     df = read_data_file(cloud_source, header=0)
+    df.columns = make_unique_column_names(df.columns)
     cols_upper = [str(c).strip().upper() for c in df.columns]
     if 'VOUCHER TYPE' in cols_upper or 'PARTICULARS' in cols_upper or 'COMMENTS' in cols_upper:
-        df.columns = [str(c).strip() for c in df.columns]
+        df.columns = make_unique_column_names(df.columns)
         return df.dropna(how='all').reset_index(drop=True)
 
     df_raw = read_data_file(cloud_source, header=None)
     for idx in range(min(25, len(df_raw))):
         row_vals = [str(c).strip().upper() for c in df_raw.iloc[idx] if pd.notna(c)]
         if 'VOUCHER TYPE' in row_vals or 'PARTICULARS' in row_vals or 'INSTRUMENT NO.' in row_vals:
-            headers = [
-                str(c).strip() if pd.notna(c) and str(c).strip().lower() not in ('nan', 'none') else f"Col_{i}"
-                for i, c in enumerate(df_raw.iloc[idx])
-            ]
+            headers = make_unique_column_names(df_raw.iloc[idx])
             df_promoted = df_raw.iloc[idx + 1:].copy()
-            df_promoted.columns = [str(h).strip() for h in headers]
+            df_promoted.columns = headers
             return df_promoted.dropna(how='all').reset_index(drop=True)
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = make_unique_column_names(df.columns)
     return df
 
 
@@ -1025,7 +1037,7 @@ def extract_tables(file_path):
                     break
 
         table_df = df.iloc[start_data:chunk_end].copy()
-        table_df.columns = header
+        table_df.columns = make_unique_column_names(header)
         table_df = table_df.dropna(how='all')
 
         if not table_df.empty:
@@ -1039,7 +1051,7 @@ def extract_tables(file_path):
         final_df = final_df.iloc[1:].reset_index(drop=True)
         expected_cols = ["Transaction Date", "Value Date", "Description", "Cheque No", "Debit", "Credit", "Balance"]
         # Normalize columns
-        final_df.columns = [str(col).strip() for col in final_df.columns]
+        final_df.columns = make_unique_column_names([str(col).strip() for col in final_df.columns])
         final_df.rename(columns={'Particulars': 'Description'}, inplace=True)
 
         # Keep only existing expected columns
@@ -1144,20 +1156,37 @@ def process_files(bank_path, cloud_path, output_folder=None, payment_no_start=1,
         # Read Cloud File (Day Book report)
         df2 = read_cloud_data_file(cloud_source)
 
+        df1.columns = make_unique_column_names(df1.columns)
+        df2.columns = make_unique_column_names(df2.columns)
+
         # --- Preprocessing ---
 
         # Clean 'Amount' to handle commas and dots
         if 'Amount' in df1.columns:
-            df1['Amount'] = pd.to_numeric(df1['Amount'].astype(str).str.replace(',', '', regex=False), errors='coerce')
+            amt_s = df1['Amount']
+            if isinstance(amt_s, pd.DataFrame):
+                amt_s = amt_s.iloc[:, 0]
+            df1['Amount'] = pd.to_numeric(amt_s.astype(str).str.replace(',', '', regex=False), errors='coerce')
             if 'Dr / Cr' in df1.columns:
-                df1["Debit"] = df1["Amount"].where(df1["Dr / Cr"] == "DR")
-                df1["Credit"] = df1["Amount"].where(df1["Dr / Cr"] == "CR")
+                dr_cr_s = df1['Dr / Cr']
+                if isinstance(dr_cr_s, pd.DataFrame):
+                    dr_cr_s = dr_cr_s.iloc[:, 0]
+                dr_cr_clean = dr_cr_s.astype(str).str.strip().str.upper()
+                df1["Debit"] = df1["Amount"].where(dr_cr_clean.isin(["DR", "DR."]))
+                df1["Credit"] = df1["Amount"].where(dr_cr_clean.isin(["CR", "CR."]))
 
         if 'Amount (INR)' in df1.columns:
-            df1['Amount (INR)'] = pd.to_numeric(df1['Amount (INR)'].astype(str).str.replace(',', '', regex=False), errors='coerce')
+            amt_s = df1['Amount (INR)']
+            if isinstance(amt_s, pd.DataFrame):
+                amt_s = amt_s.iloc[:, 0]
+            df1['Amount (INR)'] = pd.to_numeric(amt_s.astype(str).str.replace(',', '', regex=False), errors='coerce')
             if 'CR/DR' in df1.columns:
-                df1["Debit"] = df1["Amount (INR)"].where(df1["CR/DR"] == "Dr.")
-                df1["Credit"] = df1["Amount (INR)"].where(df1["CR/DR"] == "Cr.")
+                cr_dr_s = df1['CR/DR']
+                if isinstance(cr_dr_s, pd.DataFrame):
+                    cr_dr_s = cr_dr_s.iloc[:, 0]
+                cr_dr_clean = cr_dr_s.astype(str).str.strip().str.upper()
+                df1["Debit"] = df1["Amount (INR)"].where(cr_dr_clean.isin(["DR", "DR."]))
+                df1["Credit"] = df1["Amount (INR)"].where(cr_dr_clean.isin(["CR", "CR."]))
 
         # Ensure Credit and Debit are numeric in df1
         if 'Credit' in df1.columns:
