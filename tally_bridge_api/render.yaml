@@ -2,6 +2,7 @@ services:
   - type: web
     name: tally-loandesk-bridge
     runtime: python
+    rootDir: tally_bridge_api
     region: singapore
     plan: free
     buildCommand: pip install -r requirements.txt

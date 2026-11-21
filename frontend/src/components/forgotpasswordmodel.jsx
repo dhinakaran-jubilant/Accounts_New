@@ -193,398 +193,431 @@ export default function ForgotPasswordModal({
 
 	return (
 		<div
-			className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/40 backdrop-blur-sm font-sans animate-in fade-in duration-150 overflow-y-auto"
+			className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/30 backdrop-blur-sm font-sans animate-in fade-in duration-150 overflow-y-auto"
 			onClick={() => !isLoading && onClose()}
 		>
-			<div
-				className="bg-white border border-slate-200 rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl animate-in zoom-in-95 duration-150 flex flex-col relative my-auto overflow-hidden text-slate-800"
-				onClick={(e) => e.stopPropagation()}
-			>
+			<div className="relative w-full max-w-lg my-auto">
+				{/* Ambient Backlight Glow matching Login page */}
+				<div className="absolute -inset-1.5 bg-gradient-to-tr from-orange-400/20 via-primary/10 to-amber-300/15 rounded-[32px] blur-2xl opacity-70 pointer-events-none -z-10" />
 
-				{/* Close Button */}
-				<button
-					type="button"
-					onClick={onClose}
-					disabled={isLoading}
-					className="absolute top-5 right-5 w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition-all cursor-pointer disabled:opacity-50"
-					title="Close"
+				<div
+					className="relative rounded-3xl bg-white/95 border border-slate-200/90 backdrop-blur-2xl p-6 sm:p-8 shadow-[0_20px_60px_-15px_rgba(15,23,42,0.12)] ring-1 ring-slate-900/5 animate-in zoom-in-95 duration-150 flex flex-col overflow-hidden text-slate-900"
+					onClick={(e) => e.stopPropagation()}
 				>
-					<span className="material-symbols-outlined text-[18px]">close</span>
-				</button>
+					{/* Top Specular Highlight Border */}
+					<div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-orange-500/50 to-transparent pointer-events-none" />
+					{/* Ambient Soft Corner Glow */}
+					<div className="absolute -top-16 -right-16 w-36 h-36 bg-orange-400/10 rounded-full blur-2xl pointer-events-none" />
 
-				{/* Header Section */}
-				<div className="flex items-start gap-3.5 mb-5 pr-8">
-					<div className="w-12 h-12 rounded-2xl bg-orange-50 border border-orange-200 text-orange-600 flex items-center justify-center flex-shrink-0 shadow-sm">
-						<span className="material-symbols-outlined text-[26px]">
-							{step === 1 ? 'badge' : step === 2 ? 'quiz' : 'lock_reset'}
-						</span>
-					</div>
-					<div>
-						<h2 className="text-[20px] font-extrabold text-slate-900 tracking-tight leading-tight">
-							{step === 1 && 'Account Recovery'}
-							{step === 2 && 'Security Verification'}
-							{step === 3 && 'Create New Password'}
-						</h2>
-						<p className="text-[12.5px] text-slate-500 mt-0.5 leading-snug">
-							{step === 1 && 'Enter your Employee Code / Login ID to begin.'}
-							{step === 2 && `Answer your registered security question for ${employeeCode}.`}
-							{step === 3 && `Set up a secure new password for employee ${employeeCode}.`}
-						</p>
-					</div>
-				</div>
+					{/* Close Button */}
+					<button
+						type="button"
+						onClick={onClose}
+						disabled={isLoading}
+						className="absolute top-5 right-5 w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-400 hover:text-slate-700 flex items-center justify-center transition-all cursor-pointer disabled:opacity-50"
+						title="Close"
+					>
+						<span className="material-symbols-outlined text-[18px]">close</span>
+					</button>
 
-				{/* 3-Step Breadcrumb Progress Bar */}
-				<div className="grid grid-cols-3 gap-2 mb-2">
-					<div
-						className={`h-1.5 rounded-full transition-all duration-300 ${
-							step >= 1 ? 'bg-orange-500' : 'bg-slate-200'
-						}`}
-					/>
-					<div
-						className={`h-1.5 rounded-full transition-all duration-300 ${
-							step >= 2 ? 'bg-orange-500' : 'bg-slate-200'
-						}`}
-					/>
-					<div
-						className={`h-1.5 rounded-full transition-all duration-300 ${
-							step >= 3 ? 'bg-orange-500' : 'bg-slate-200'
-						}`}
-					/>
-				</div>
-
-				{/* Step Labels */}
-				<div className="flex items-center justify-between text-[11px] font-bold text-slate-400 mb-5 px-0.5">
-					<span className={step === 1 ? 'text-orange-600 font-extrabold' : step > 1 ? 'text-emerald-600' : ''}>
-						1. Employee Code
-					</span>
-					<span className={step === 2 ? 'text-orange-600 font-extrabold' : step > 2 ? 'text-emerald-600' : ''}>
-						2. Security Question
-					</span>
-					<span className={step === 3 ? 'text-orange-600 font-extrabold' : ''}>
-						3. Reset Password
-					</span>
-				</div>
-
-				{/* Error Alert Box */}
-				{errorMessage && (
-					<div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-[12.5px] font-semibold flex items-start gap-2.5 animate-in fade-in duration-150">
-						<span className="material-symbols-outlined text-[18px] text-rose-500 flex-shrink-0 mt-0.5">
-							error
-						</span>
-						<span className="flex-1 leading-snug">{errorMessage}</span>
-					</div>
-				)}
-
-				{/* ================================================================= */}
-				{/* STEP 1: USER ENTER EMP CODE -> CLICK NEXT                          */}
-				{/* ================================================================= */}
-				{step === 1 && (
-					<form onSubmit={handleStep1Next} className="space-y-4">
-						<div>
-							<label className="block text-[12px] font-bold text-slate-700 mb-1.5">
-								Employee Code / Login ID <span className="text-rose-500">*</span>
-							</label>
-							<div className="relative">
-								<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[20px] pointer-events-none">
-									badge
-								</span>
-								<input
-									type="text"
-									value={employeeCode}
-									onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
-									placeholder="e.g. JC0001 or ADMIN"
-									className="w-full pl-10 pr-4 py-2.5 rounded-xl text-[13.5px] font-bold font-mono tracking-wide bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 placeholder:font-sans placeholder:font-normal focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all"
-									required
-									autoFocus
-								/>
-							</div>
-							<p className="text-[11.5px] text-slate-500 mt-1.5">
-								We will look up your registered security credentials for this employee account.
-							</p>
-						</div>
-
-						{/* Action Buttons: 50% Back to Login & 50% Next */}
-						<div className="pt-2 grid grid-cols-2 gap-3">
-							<button
-								type="button"
-								onClick={onClose}
-								disabled={isLoading}
-								className="w-full py-3 px-4 rounded-xl text-[14px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-							>
-								<span className="material-symbols-outlined text-[20px]">arrow_back</span>
-								<span>Back to Login</span>
-							</button>
-
-							<button
-								type="submit"
-								disabled={isLoading || !employeeCode.trim()}
-								className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-bold text-[14px] shadow-md shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-							>
-								{isLoading ? (
-									<>
-										<span className="material-symbols-outlined text-[20px] animate-spin">
-											progress_activity
-										</span>
-										<span>Checking...</span>
-									</>
-								) : (
-									<>
-										<span>Next</span>
-										<span className="material-symbols-outlined text-[20px]">arrow_forward</span>
-									</>
-								)}
-							</button>
-						</div>
-					</form>
-				)}
-
-				{/* ================================================================= */}
-				{/* STEP 2: DISPLAY SECURITY QUESTION WITH ANSWER FIELD               */}
-				{/* ================================================================= */}
-				{step === 2 && (
-					<form onSubmit={handleStep2Verify} className="space-y-4">
-						{/* Employee Info Pill */}
-						<div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-[12px]">
-							<div className="flex items-center gap-2 text-slate-700 font-medium">
-								<span className="material-symbols-outlined text-orange-500 text-[18px]">badge</span>
-								<span>
-									Employee: <span className="font-bold text-slate-900 font-mono">{employeeCode}</span>
-									{userName && userName !== employeeCode && (
-										<span className="text-slate-500 ml-1.5">({userName})</span>
-									)}
-								</span>
-							</div>
-							<span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full">
-								Step 2 of 3
+					{/* Header Section */}
+					<div className="flex items-start gap-3.5 mb-5 pr-8">
+						<div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-primary to-orange-500 text-white flex items-center justify-center shadow-lg shadow-orange-500/20 ring-1 ring-orange-400/30 flex-shrink-0">
+							<span className="material-symbols-outlined text-[24px]">
+								{step === 1 ? 'badge' : step === 2 ? 'quiz' : 'lock_reset'}
 							</span>
 						</div>
-
-						{/* Registered Security Question Display Card */}
-						<div className="p-3.5 rounded-2xl bg-gradient-to-br from-orange-50/70 to-amber-50/50 border border-orange-200/80 shadow-xs">
-							<div className="flex items-start gap-3">
-								<div className="w-8 h-8 rounded-lg bg-orange-100 border border-orange-200 text-orange-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-									<span className="material-symbols-outlined text-[19px]">quiz</span>
-								</div>
-								<div className="flex-1 min-w-0">
-									<div className="text-[11px] font-bold uppercase tracking-wider text-orange-800">
-										Your Registered Security Question
-									</div>
-									<div className="text-[14px] text-slate-900 font-bold mt-1 leading-snug">
-										{securityQuestion}
-									</div>
-								</div>
-							</div>
-						</div>
-
-						{/* Security Answer Input */}
 						<div>
-							<div className="flex items-center justify-between mb-1.5">
-								<label className="block text-[12px] font-bold text-slate-700">
-									Security Answer <span className="text-rose-500">*</span>
+							<div className="flex items-center gap-2 mb-1">
+								<span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-orange-50 border border-orange-200/80 text-orange-700 text-[11px] font-bold">
+									<span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
+									<span>Password Recovery</span>
+								</span>
+							</div>
+							<h2 className="text-[20px] font-extrabold text-slate-900 tracking-tight leading-tight">
+								{step === 1 && 'Account Recovery'}
+								{step === 2 && 'Security Verification'}
+								{step === 3 && 'Create New Password'}
+							</h2>
+							<p className="text-[12.5px] text-slate-500 mt-0.5 leading-snug">
+								{step === 1 && 'Enter your Employee Code / Login ID to begin.'}
+								{step === 2 && `Answer your registered security question for ${employeeCode}.`}
+								{step === 3 && `Set up a secure new password for employee ${employeeCode}.`}
+							</p>
+						</div>
+					</div>
+
+					{/* 3-Step Breadcrumb Progress Bar */}
+					<div className="grid grid-cols-3 gap-2 mb-2">
+						<div
+							className={`h-1.5 rounded-full transition-all duration-300 ${
+								step >= 1 ? 'bg-gradient-to-r from-orange-500 to-amber-500' : 'bg-slate-100'
+							}`}
+						/>
+						<div
+							className={`h-1.5 rounded-full transition-all duration-300 ${
+								step >= 2 ? 'bg-gradient-to-r from-orange-500 to-amber-500' : 'bg-slate-100'
+							}`}
+						/>
+						<div
+							className={`h-1.5 rounded-full transition-all duration-300 ${
+								step >= 3 ? 'bg-gradient-to-r from-orange-500 to-amber-500' : 'bg-slate-100'
+							}`}
+						/>
+					</div>
+
+					{/* Step Labels */}
+					<div className="flex items-center justify-between text-[11px] font-bold text-slate-400 mb-5 px-0.5">
+						<span className={step === 1 ? 'text-orange-600 font-extrabold' : step > 1 ? 'text-emerald-600' : ''}>
+							1. Employee Code
+						</span>
+						<span className={step === 2 ? 'text-orange-600 font-extrabold' : step > 2 ? 'text-emerald-600' : ''}>
+							2. Security Question
+						</span>
+						<span className={step === 3 ? 'text-orange-600 font-extrabold' : ''}>
+							3. Reset Password
+						</span>
+					</div>
+
+					{/* Error Alert Box */}
+					{errorMessage && (
+						<div className="mb-4 p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-[12.5px] font-semibold flex items-start gap-2.5 animate-in fade-in duration-150 shadow-sm">
+							<span className="material-symbols-outlined text-[18px] text-rose-600 flex-shrink-0 mt-0.5">
+								error
+							</span>
+							<span className="flex-1 leading-snug">{errorMessage}</span>
+						</div>
+					)}
+
+					{/* ================================================================= */}
+					{/* STEP 1: USER ENTER EMP CODE -> CLICK NEXT                          */}
+					{/* ================================================================= */}
+					{step === 1 && (
+						<form onSubmit={handleStep1Next} className="space-y-4">
+							<div className="space-y-1.5">
+								<label className="block text-xs font-bold text-slate-700">
+									Employee Code / Login ID <span className="text-rose-500">*</span>
 								</label>
-								<button
-									type="button"
-									onClick={() => setShowAnswer((p) => !p)}
-									className="text-[11.5px] font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-								>
-									{showAnswer ? 'Hide answer' : 'Show answer'}
-								</button>
-							</div>
-							<div className="relative">
-								<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[19px] pointer-events-none">
-									key
-								</span>
-								<input
-									type={showAnswer ? 'text' : 'password'}
-									value={securityAnswer}
-									onChange={(e) => setSecurityAnswer(e.target.value)}
-									placeholder="Enter your confidential answer"
-									className="w-full pl-10 pr-10 py-2.5 rounded-xl text-[13px] font-medium bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all"
-									required
-									autoFocus
-								/>
-							</div>
-							<p className="text-[11px] text-slate-500 mt-1">
-								Answers are verified case-insensitively.
-							</p>
-						</div>
-
-						{/* Action Buttons: 50% Back to Step 1 & 50% Verify Answer */}
-						<div className="pt-2 grid grid-cols-2 gap-3">
-							<button
-								type="button"
-								onClick={() => {
-									setStep(1);
-									setErrorMessage('');
-								}}
-								disabled={isLoading}
-								className="w-full py-3 px-4 rounded-xl text-[14px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-							>
-								<span className="material-symbols-outlined text-[20px]">arrow_back</span>
-								<span>Back</span>
-							</button>
-
-							<button
-								type="submit"
-								disabled={isLoading || !securityAnswer.trim()}
-								className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-bold text-[14px] shadow-md shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-							>
-								{isLoading ? (
-									<>
-										<span className="material-symbols-outlined text-[20px] animate-spin">
-											progress_activity
-										</span>
-										<span>Verifying...</span>
-									</>
-								) : (
-									<>
-										<span>Verify Answer</span>
-										<span className="material-symbols-outlined text-[20px]">arrow_forward</span>
-									</>
-								)}
-							</button>
-						</div>
-					</form>
-				)}
-
-				{/* ================================================================= */}
-				{/* STEP 3: USER ENTER NEW PASSWORD -> RESET -> LOGIN PAGE            */}
-				{/* ================================================================= */}
-				{step === 3 && (
-					<form onSubmit={handleStep3Reset} className="space-y-4">
-						{/* Verified User Banner */}
-						<div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-[12px]">
-							<div className="flex items-center gap-2 text-emerald-800 font-semibold">
-								<span className="material-symbols-outlined text-emerald-600 text-[18px]">
-									verified
-								</span>
-								<span>
-									Identity Verified: <span className="font-bold text-slate-900 font-mono">{employeeCode}</span>
-								</span>
-							</div>
-							<span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">Step 3 of 3</span>
-						</div>
-
-						{/* New Password Input */}
-						<div>
-							<label className="block text-[12px] font-bold text-slate-700 mb-1.5">
-								New Password <span className="text-rose-500">*</span>
-							</label>
-							<div className="relative">
-								<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[19px] pointer-events-none">
-									lock
-								</span>
-								<input
-									type={showNewPassword ? 'text' : 'password'}
-									value={newPassword}
-									onChange={(e) => setNewPassword(e.target.value)}
-									placeholder="Enter strong new password"
-									className="w-full pl-10 pr-10 py-2.5 rounded-xl text-[13px] font-medium bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all"
-									required
-									autoFocus
-								/>
-								<button
-									type="button"
-									onClick={() => setShowNewPassword((p) => !p)}
-									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer transition-colors"
-									tabIndex={-1}
-								>
-									<span className="material-symbols-outlined text-[19px]">
-										{showNewPassword ? 'visibility_off' : 'visibility'}
+								<div className="relative group">
+									<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-orange-500 text-[19px] pointer-events-none transition-colors">
+										badge
 									</span>
-								</button>
-							</div>
-							<p className="text-[11px] text-slate-500 mt-1">
-								Must be at least 6 characters long.
-							</p>
-						</div>
-
-						{/* Confirm New Password Input */}
-						<div>
-							<label className="block text-[12px] font-bold text-slate-700 mb-1.5">
-								Confirm New Password <span className="text-rose-500">*</span>
-							</label>
-							<div className="relative">
-								<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[19px] pointer-events-none">
-									lock_reset
-								</span>
-								<input
-									type={showConfirmPassword ? 'text' : 'password'}
-									value={confirmPassword}
-									onChange={(e) => setConfirmPassword(e.target.value)}
-									placeholder="Confirm new password"
-									className={`w-full pl-10 pr-10 py-2.5 rounded-xl text-[13px] font-medium bg-slate-50 border text-slate-900 placeholder:text-slate-400 focus:bg-white outline-none transition-all ${
-										isPasswordMismatch
-											? 'border-rose-500 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20'
-											: isPasswordMatch && isPasswordLengthValid
-											? 'border-emerald-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
-											: 'border-slate-200 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20'
-									}`}
-									required
-								/>
-								<button
-									type="button"
-									onClick={() => setShowConfirmPassword((p) => !p)}
-									className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer transition-colors"
-									tabIndex={-1}
-								>
-									<span className="material-symbols-outlined text-[19px]">
-										{showConfirmPassword ? 'visibility_off' : 'visibility'}
-									</span>
-								</button>
-							</div>
-							{confirmPassword.length > 0 && (
-								<p
-									className={`text-[11px] mt-1 font-medium ${
-										isPasswordMatch
-											? 'text-emerald-600'
-											: 'text-rose-600'
-									}`}
-								>
-									{isPasswordMatch
-										? 'Passwords match'
-										: 'Passwords do not match'}
+									<input
+										type="text"
+										value={employeeCode}
+										onChange={(e) => setEmployeeCode(e.target.value.toUpperCase())}
+										placeholder="e.g. JC0001 or ADMIN"
+										className="w-full h-11 pl-11 pr-4 rounded-xl text-xs font-bold font-mono tracking-wider bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 placeholder:font-sans placeholder:font-normal placeholder:tracking-normal focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all shadow-2xs"
+										required
+										autoFocus
+									/>
+								</div>
+								<p className="text-[11px] text-slate-500">
+									We will look up your registered security credentials for this employee account.
 								</p>
-							)}
-						</div>
+							</div>
 
-						{/* Action Buttons: 50% Back to Step 2 & 50% Reset Password */}
-						<div className="pt-2 grid grid-cols-2 gap-3">
-							<button
-								type="button"
-								onClick={() => {
-									setStep(2);
-									setErrorMessage('');
-								}}
-								disabled={isLoading}
-								className="w-full py-3 px-4 rounded-xl text-[14px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-							>
-								<span className="material-symbols-outlined text-[20px]">arrow_back</span>
-								<span>Back</span>
-							</button>
+							{/* Action Buttons: 50% Back to Login & 50% Next */}
+							<div className="pt-2 grid grid-cols-2 gap-3">
+								<button
+									type="button"
+									onClick={onClose}
+									disabled={isLoading}
+									className="w-full h-11 sm:h-12 rounded-xl text-xs sm:text-[13.5px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+								>
+									<span className="material-symbols-outlined text-[19px]">arrow_back</span>
+									<span>Back to Login</span>
+								</button>
 
-							<button
-								type="submit"
-								disabled={isLoading || !isFormValid}
-								className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-bold text-[14px] shadow-md shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-							>
-								{isLoading ? (
-									<>
-										<span className="material-symbols-outlined text-[20px] animate-spin">
-											progress_activity
+								<button
+									type="submit"
+									disabled={isLoading || !employeeCode.trim()}
+									className="w-full h-11 sm:h-12 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-extrabold text-xs sm:text-[13.5px] tracking-wide shadow-lg shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden"
+								>
+									{/* Shimmer sweep effect */}
+									<div className="absolute inset-0 -translate-x-full group-hover:translate-x-full duration-1000 bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform ease-out pointer-events-none" />
+
+									{isLoading ? (
+										<>
+											<span className="material-symbols-outlined text-[20px] animate-spin">
+												progress_activity
+											</span>
+											<span>Checking...</span>
+										</>
+									) : (
+										<>
+											<span>Next</span>
+											<span className="material-symbols-outlined text-[19px] group-hover:translate-x-0.5 transition-transform">arrow_forward</span>
+										</>
+									)}
+								</button>
+							</div>
+						</form>
+					)}
+
+					{/* ================================================================= */}
+					{/* STEP 2: DISPLAY SECURITY QUESTION WITH ANSWER FIELD               */}
+					{/* ================================================================= */}
+					{step === 2 && (
+						<form onSubmit={handleStep2Verify} className="space-y-4">
+							{/* Employee Info Pill */}
+							<div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[12px]">
+								<div className="flex items-center gap-2 text-slate-700 font-medium">
+									<span className="material-symbols-outlined text-orange-500 text-[18px]">badge</span>
+									<span>
+										Employee: <span className="font-bold text-slate-900 font-mono">{employeeCode}</span>
+										{userName && userName !== employeeCode && (
+											<span className="text-slate-500 ml-1.5">({userName})</span>
+										)}
+									</span>
+								</div>
+								<span className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full">
+									Step 2 of 3
+								</span>
+							</div>
+
+							{/* Registered Security Question Display Card */}
+							<div className="p-3.5 rounded-2xl bg-gradient-to-br from-orange-50/80 via-white to-amber-50/60 border border-orange-200/80 shadow-2xs">
+								<div className="flex items-start gap-3">
+									<div className="w-8 h-8 rounded-lg bg-orange-100 border border-orange-200 text-orange-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+										<span className="material-symbols-outlined text-[19px]">quiz</span>
+									</div>
+									<div className="flex-1 min-w-0">
+										<div className="text-[10.5px] font-bold uppercase tracking-wider text-orange-800">
+											Your Registered Security Question
+										</div>
+										<div className="text-[13.5px] text-slate-900 font-bold mt-1 leading-snug">
+											{securityQuestion}
+										</div>
+									</div>
+								</div>
+							</div>
+
+							{/* Security Answer Input */}
+							<div className="space-y-1.5">
+								<div className="flex items-center justify-between">
+									<label className="block text-xs font-bold text-slate-700">
+										Security Answer <span className="text-rose-500">*</span>
+									</label>
+									<button
+										type="button"
+										onClick={() => setShowAnswer((p) => !p)}
+										className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+									>
+										{showAnswer ? 'Hide answer' : 'Show answer'}
+									</button>
+								</div>
+								<div className="relative group">
+									<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-orange-500 text-[19px] pointer-events-none transition-colors">
+										key
+									</span>
+									<input
+										type={showAnswer ? 'text' : 'password'}
+										value={securityAnswer}
+										onChange={(e) => setSecurityAnswer(e.target.value)}
+										placeholder="Enter your confidential answer"
+										className="w-full h-11 pl-11 pr-10 rounded-xl text-xs font-semibold bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all shadow-2xs"
+										required
+										autoFocus
+									/>
+								</div>
+								<p className="text-[11px] text-slate-500">
+									Answers are verified case-insensitively.
+								</p>
+							</div>
+
+							{/* Action Buttons: 50% Back to Step 1 & 50% Verify Answer */}
+							<div className="pt-2 grid grid-cols-2 gap-3">
+								<button
+									type="button"
+									onClick={() => {
+										setStep(1);
+										setErrorMessage('');
+									}}
+									disabled={isLoading}
+									className="w-full h-11 sm:h-12 rounded-xl text-xs sm:text-[13.5px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+								>
+									<span className="material-symbols-outlined text-[19px]">arrow_back</span>
+									<span>Back</span>
+								</button>
+
+								<button
+									type="submit"
+									disabled={isLoading || !securityAnswer.trim()}
+									className="w-full h-11 sm:h-12 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-extrabold text-xs sm:text-[13.5px] tracking-wide shadow-lg shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden"
+								>
+									{/* Shimmer sweep effect */}
+									<div className="absolute inset-0 -translate-x-full group-hover:translate-x-full duration-1000 bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform ease-out pointer-events-none" />
+
+									{isLoading ? (
+										<>
+											<span className="material-symbols-outlined text-[20px] animate-spin">
+												progress_activity
+											</span>
+											<span>Verifying...</span>
+										</>
+									) : (
+										<>
+											<span>Verify Answer</span>
+											<span className="material-symbols-outlined text-[19px] group-hover:translate-x-0.5 transition-transform">arrow_forward</span>
+										</>
+									)}
+								</button>
+							</div>
+						</form>
+					)}
+
+					{/* ================================================================= */}
+					{/* STEP 3: USER ENTER NEW PASSWORD -> RESET -> LOGIN PAGE            */}
+					{/* ================================================================= */}
+					{step === 3 && (
+						<form onSubmit={handleStep3Reset} className="space-y-4">
+							{/* Verified User Banner */}
+							<div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-[12px]">
+								<div className="flex items-center gap-2 text-emerald-800 font-semibold">
+									<span className="material-symbols-outlined text-emerald-600 text-[18px]">
+										verified
+									</span>
+									<span>
+										Identity Verified: <span className="font-bold text-slate-900 font-mono">{employeeCode}</span>
+									</span>
+								</div>
+								<span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">Step 3 of 3</span>
+							</div>
+
+							{/* New Password Input */}
+							<div className="space-y-1.5">
+								<label className="block text-xs font-bold text-slate-700">
+									New Password <span className="text-rose-500">*</span>
+								</label>
+								<div className="relative group">
+									<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-orange-500 text-[19px] pointer-events-none transition-colors">
+										lock
+									</span>
+									<input
+										type={showNewPassword ? 'text' : 'password'}
+										value={newPassword}
+										onChange={(e) => setNewPassword(e.target.value)}
+										placeholder="Enter strong new password"
+										className="w-full h-11 pl-11 pr-10 rounded-xl text-xs font-semibold bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 outline-none transition-all shadow-2xs"
+										required
+										autoFocus
+									/>
+									<button
+										type="button"
+										onClick={() => setShowNewPassword((p) => !p)}
+										className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer transition-colors"
+										tabIndex={-1}
+									>
+										<span className="material-symbols-outlined text-[19px]">
+											{showNewPassword ? 'visibility_off' : 'visibility'}
 										</span>
-										<span>Resetting...</span>
-									</>
-								) : (
-									<>
-										<span className="material-symbols-outlined text-[20px]">lock_reset</span>
-										<span>Reset Password</span>
-									</>
+									</button>
+								</div>
+								<p className="text-[11px] text-slate-500">
+									Must be at least 6 characters long.
+								</p>
+							</div>
+
+							{/* Confirm New Password Input */}
+							<div className="space-y-1.5">
+								<label className="block text-xs font-bold text-slate-700">
+									Confirm New Password <span className="text-rose-500">*</span>
+								</label>
+								<div className="relative group">
+									<span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-orange-500 text-[19px] pointer-events-none transition-colors">
+										lock_reset
+									</span>
+									<input
+										type={showConfirmPassword ? 'text' : 'password'}
+										value={confirmPassword}
+										onChange={(e) => setConfirmPassword(e.target.value)}
+										placeholder="Confirm new password"
+										className={`w-full h-11 pl-11 pr-10 rounded-xl text-xs font-semibold bg-slate-50 border text-slate-900 placeholder:text-slate-400 focus:bg-white outline-none transition-all shadow-2xs ${
+											isPasswordMismatch
+												? 'border-rose-400 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20'
+												: isPasswordMatch && isPasswordLengthValid
+												? 'border-emerald-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
+												: 'border-slate-200 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20'
+										}`}
+										required
+									/>
+									<button
+										type="button"
+										onClick={() => setShowConfirmPassword((p) => !p)}
+										className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer transition-colors"
+										tabIndex={-1}
+									>
+										<span className="material-symbols-outlined text-[19px]">
+											{showConfirmPassword ? 'visibility_off' : 'visibility'}
+										</span>
+									</button>
+								</div>
+								{confirmPassword.length > 0 && (
+									<p
+										className={`text-[11px] font-medium ${
+											isPasswordMatch
+												? 'text-emerald-600'
+												: 'text-rose-600'
+										}`}
+									>
+										{isPasswordMatch
+											? 'Passwords match'
+											: 'Passwords do not match'}
+									</p>
 								)}
-							</button>
+							</div>
+
+							{/* Action Buttons: 50% Back to Step 2 & 50% Reset Password */}
+							<div className="pt-2 grid grid-cols-2 gap-3">
+								<button
+									type="button"
+									onClick={() => {
+										setStep(2);
+										setErrorMessage('');
+									}}
+									disabled={isLoading}
+									className="w-full h-11 sm:h-12 rounded-xl text-xs sm:text-[13.5px] font-bold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+								>
+									<span className="material-symbols-outlined text-[19px]">arrow_back</span>
+									<span>Back</span>
+								</button>
+
+								<button
+									type="submit"
+									disabled={isLoading || !isFormValid}
+									className="w-full h-11 sm:h-12 rounded-xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-700 hover:via-orange-600 hover:to-amber-600 text-white font-extrabold text-xs sm:text-[13.5px] tracking-wide shadow-lg shadow-orange-500/25 active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden"
+								>
+									{/* Shimmer sweep effect */}
+									<div className="absolute inset-0 -translate-x-full group-hover:translate-x-full duration-1000 bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform ease-out pointer-events-none" />
+
+									{isLoading ? (
+										<>
+											<span className="material-symbols-outlined text-[20px] animate-spin">
+												progress_activity
+											</span>
+											<span>Resetting...</span>
+										</>
+									) : (
+										<>
+											<span className="material-symbols-outlined text-[19px]">lock_reset</span>
+											<span>Reset Password</span>
+										</>
+									)}
+								</button>
+							</div>
+						</form>
+					)}
+
+					{/* Trust Micro-strip */}
+					<div className="mt-5 pt-4 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+						<div className="flex items-center gap-1.5 text-slate-500">
+							<span className="material-symbols-outlined text-[15px] text-emerald-600">verified_user</span>
+							<span>Encrypted Verification</span>
 						</div>
-					</form>
-				)}
+						<span className="font-mono text-slate-400">TLS 1.3 Protected</span>
+					</div>
+				</div>
 			</div>
 		</div>
 	);
