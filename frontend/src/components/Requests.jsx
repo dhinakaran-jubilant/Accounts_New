@@ -332,7 +332,7 @@ export const getLoanSignOffDetails = (loan, allUsers = [], accountObjects = []) 
 		} else {
 			secStatus = 'REJECTED';
 		}
-	} else if (!checkLoanSecondaryRequiresApproval(loan, availableAccountObjects)) {
+	} else if (!checkLoanSecondaryRequiresApproval(loan, accountObjects)) {
 		// Secondary approval is not required by account settings -> auto-verified for workflow
 		secStatus = 'VERIFIED';
 		secName = 'Approval Not Required';
@@ -568,7 +568,7 @@ export const isUserPendingLoan = (loan, user, accountObjects = [], meta = null) 
 	}
 
 	const status = (loan.approval_status || loan.approvalStatus || 'PENDING').toUpperCase();
-	const secReqAction = checkLoanSecondaryRequiresApproval(loan, availableAccountObjects);
+	const secReqAction = checkLoanSecondaryRequiresApproval(loan, accountObjects);
 	const isPendingSecondary =
 		secReqAction &&
 		(status === 'PENDING_SECONDARY' ||
