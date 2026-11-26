@@ -322,6 +322,11 @@ export const getLoanSignOffDetails = (loan, allUsers = [], accountObjects = []) 
 	);
 	// 3. Determine Secondary Manager Stage Status: 'PENDING' | 'VERIFIED' | 'REJECTED'
 	let secStatus = 'PENDING';
+	// Declare these early so they can be set inside any branch of the if/else below (avoids TDZ)
+	let secName = '';
+	let secCode = '';
+	let secTimestamp = '';
+	let secReason = '';
 	const hasPlaceholderVerifier =
 		loan.verified_by &&
 		['secondary manager', 'secondary account manager'].includes(String(loan.verified_by).toLowerCase().trim());
@@ -357,12 +362,9 @@ export const getLoanSignOffDetails = (loan, allUsers = [], accountObjects = []) 
 	} else {
 		secStatus = 'PENDING';
 	}
-	// 4. Resolve Secondary Manager Info
-	let secName = '';
-	let secCode = '';
-	let secTimestamp = '';
-	let secReason = '';
-	if (secStatus === 'VERIFIED') {
+	// 4. Resolve Secondary Manager Info (variables declared above at step 3 to avoid TDZ)
+	// If secName was already set (e.g. "Approval Not Required" branch), skip normal resolution
+	if (secStatus === 'VERIFIED' && !secName) {
 		const rawName =
 			secApprovalEntry?.userName ||
 			secApprovalEntry?.user_name ||
