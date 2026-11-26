@@ -16,6 +16,7 @@ import {
 	getUsersWithPrimaryAccessForLoanSecondary,
 	getUsersWithPrimaryAccessForAccount,
 	getLoanSecondaryAccounts,
+	checkLoanSecondaryRequiresApproval,
 	getPrimaryTagColor,
 	isAccountMatch,
 	formatLoanDate,
@@ -331,6 +332,11 @@ export const getLoanSignOffDetails = (loan, allUsers = [], accountObjects = []) 
 		} else {
 			secStatus = 'REJECTED';
 		}
+	} else if (!checkLoanSecondaryRequiresApproval(loan, availableAccountObjects)) {
+		// Secondary approval is not required by account settings -> auto-verified for workflow
+		secStatus = 'VERIFIED';
+		secName = 'Approval Not Required';
+		secReason = 'Secondary account approval is not required';
 	} else if (
 		rawApprovalStatus === 'PENDING_SECONDARY' ||
 		(rawApprovalStatus === 'PENDING' && !secApprovalEntry && (!loan.verified_by || hasPlaceholderVerifier))
@@ -562,13 +568,15 @@ export const isUserPendingLoan = (loan, user, accountObjects = [], meta = null) 
 	}
 
 	const status = (loan.approval_status || loan.approvalStatus || 'PENDING').toUpperCase();
+	const secReqAction = checkLoanSecondaryRequiresApproval(loan, availableAccountObjects);
 	const isPendingSecondary =
-		status === 'PENDING_SECONDARY' ||
+		secReqAction &&
+		(status === 'PENDING_SECONDARY' ||
 		(status === 'PENDING' &&
 			(!loan.verified_by ||
 				['secondary manager', 'secondary account manager'].includes(String(loan.verified_by).toLowerCase().trim())) &&
-			!['active', 'closed', 'settled', 'overdue', 'date overdue'].includes(loanStatus));
-	const isPendingAdmin = status === 'PENDING_ADMIN' || status === 'VERIFIED';
+			!['active', 'closed', 'settled', 'overdue', 'date overdue'].includes(loanStatus)));
+	const isPendingAdmin = status === 'PENDING_ADMIN' || status === 'VERIFIED' || (!secReqAction && status === 'PENDING_SECONDARY');
 
 	const isAdmin = ['admin', 'super admin'].includes((user.role || '').toLowerCase()) || ['admin', 'jc0033'].includes((user.employee_code || '').toLowerCase());
 
@@ -1998,14 +2006,16 @@ export default function Requests({
 				loanStatus === 'payout pending' ||
 				status === 'PENDING_PAYOUT';
 
+			const rowSecReq = checkLoanSecondaryRequiresApproval(loan, availableAccountObjects);
 			const isPendingSecondary =
 				!isPayoutPendingLoan &&
+				rowSecReq &&
 				(status === 'PENDING_SECONDARY' ||
 					(status === 'PENDING' &&
 						(!loan.verified_by ||
 							['secondary manager', 'secondary account manager'].includes(String(loan.verified_by).toLowerCase().trim())) &&
 						!['active', 'closed', 'settled', 'overdue', 'date overdue'].includes(loanStatus)));
-			const isPendingAdmin = !isPayoutPendingLoan && (status === 'PENDING_ADMIN' || status === 'VERIFIED');
+			const isPendingAdmin = !isPayoutPendingLoan && (status === 'PENDING_ADMIN' || status === 'VERIFIED' || (!rowSecReq && status === 'PENDING_SECONDARY'));
 			const isApproved = status === 'APPROVED' || loan.status === 'Active' || loan.status === 'Closed';
 			const isRejected = status === 'REJECTED' || loan.status === 'Rejected';
 

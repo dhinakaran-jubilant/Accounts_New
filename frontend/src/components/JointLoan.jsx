@@ -1426,7 +1426,7 @@ export const areAllPayoutsApproved = (loan, customSchedule) => {
 // - Overdue: loan is active but any one of EMI is overdue (due date crossed and not paid)
 // - Pending: if any payout date approval is pending, or if payout date is not filled, or pending initial approval
 // - Active: all emi's recd/payout date approved by sec manager and no emi date is crossed today date
-export const getComputedLoanStatus = (loan, customSchedule) => {
+export const getComputedLoanStatus = (loan, customSchedule, accountObjects = []) => {
 	if (!loan) return 'Active';
 
 	// 1. Rejected status
@@ -1441,8 +1441,15 @@ export const getComputedLoanStatus = (loan, customSchedule) => {
 	);
 
 	if (!isLoanCreatedBySuperAdmin) {
+		const accList = Array.isArray(accountObjects) && accountObjects.length > 0
+			? accountObjects
+			: ((customSchedule && Array.isArray(customSchedule.accountObjects)) ? customSchedule.accountObjects : []);
+
 		// 2. Pending secondary approval (initial creation)
 		if (loan.approval_status === 'PENDING_SECONDARY') {
+			if (!checkLoanSecondaryRequiresApproval(loan, accList)) {
+				return 'Pending Admin';
+			}
 			return 'Pending Secondary';
 		}
 
@@ -2229,7 +2236,9 @@ export const checkAccountHasApprovalAccess = (accountNameOrTag, accountObjects =
 		matched.approval_access === false ||
 		matched.approvalAccess === false ||
 		matched.is_need_approval === 0 ||
-		matched.approval_access === 0
+		matched.approval_access === 0 ||
+		String(matched.is_need_approval).toLowerCase() === 'false' ||
+		String(matched.approval).toLowerCase() === 'not required'
 	) {
 		return false;
 	}
@@ -2238,9 +2247,9 @@ export const checkAccountHasApprovalAccess = (accountNameOrTag, accountObjects =
 
 // Check if any of this loan's secondary accounts require approval workflow
 export const checkLoanSecondaryRequiresApproval = (loan, accountObjects = []) => {
-	if (!loan) return true;
+	if (!loan) return false;
 	const secAccounts = getLoanSecondaryAccounts(loan);
-	if (!secAccounts || secAccounts.length === 0) return true;
+	if (!secAccounts || secAccounts.length === 0) return false;
 
 	// Returns true if ANY secondary account requires approval. If all are false, returns false.
 	return secAccounts.some((secAcc) => checkAccountHasApprovalAccess(secAcc, accountObjects));
@@ -6168,14 +6177,19 @@ export function JointLoanDetailsPage({
 		isOperationalFacility ||
 		isLoanCreatedBySuperAdmin ||
 		hasPayoutPending;
+	const currentAccounts = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
+	const secRequiresApproval = checkLoanSecondaryRequiresApproval(loan, currentAccounts);
+
 	const isPendingSecondary =
 		!isFinallyApproved &&
 		!hasPayoutPending &&
-		loan?.approval_status === 'PENDING_SECONDARY';
+		loan?.approval_status === 'PENDING_SECONDARY' &&
+		secRequiresApproval;
 	const isPendingAdmin =
 		!isFinallyApproved &&
 		!hasPayoutPending &&
-		(loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED');
+		((loan?.approval_status === 'PENDING_ADMIN' || loan?.approval_status === 'VERIFIED') ||
+		 (loan?.approval_status === 'PENDING_SECONDARY' && !secRequiresApproval));
 	const isRejected =
 		!isFinallyApproved &&
 		(loan?.approval_status === 'REJECTED' || loan?.status === 'Rejected');
@@ -6285,7 +6299,8 @@ export function JointLoanDetailsPage({
 	});
 
 	const [accounts, setAccounts] = useState(() => getLoanAccountDetails(loan));
-	const [currentStatus, setCurrentStatus] = useState(() => getComputedLoanStatus(loan) || loan?.status);
+	const currentAccountsInit = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
+	const [currentStatus, setCurrentStatus] = useState(() => getComputedLoanStatus(loan, null, currentAccountsInit) || loan?.status);
 	const [isEditing, setIsEditing] = useState(false);
 	const [editAccounts, setEditAccounts] = useState(() => getLoanAccountDetails(loan));
 	const [editLoanId, setEditLoanId] = useState(() => loan?.loan_ref_id || loan?.id || '');
@@ -6324,7 +6339,8 @@ export function JointLoanDetailsPage({
 			setAccounts(accs);
 			setEditAccounts(accs);
 			setEditLoanId(loan?.loan_ref_id || loan?.id || '');
-			setCurrentStatus(getComputedLoanStatus(loan) || loan.status);
+			const currAccs = accountObjectsList?.length > 0 ? accountObjectsList : availableAccountObjects;
+			setCurrentStatus(getComputedLoanStatus(loan, null, currAccs) || loan.status);
 			const rawSch = (loan.repaymentSchedule && Array.isArray(loan.repaymentSchedule))
 				? loan.repaymentSchedule
 				: ((loan.repayment_schedule && Array.isArray(loan.repayment_schedule)) ? loan.repayment_schedule : null);
@@ -10254,7 +10270,7 @@ export function JointLoanDetailsPage({
 		};
 
 		const secApprovalItems = cleanLoanHistory.filter((h) => h.type === 'sec_manager_approval');
-		const isSecApproved = secApprovalItems.length > 0 || loan.approval_status === 'APPROVED' || loan.approval_status === 'VERIFIED' || loan.status === 'Active';
+		const isSecApproved = !secRequiresApproval || secApprovalItems.length > 0 || loan.approval_status === 'APPROVED' || loan.approval_status === 'VERIFIED' || loan.status === 'Active';
 
 		const adminApprovalItem = cleanLoanHistory.find((h) => h.type === 'admin_approval');
 		const isAdminApproved = Boolean(adminApprovalItem) || loan.approval_status === 'APPROVED' || loan.status === 'Active';
@@ -11231,8 +11247,12 @@ export function JointLoanDetailsPage({
 								) : (
 									<span>
 										{userPerms?.isAdmin
-											? `Secondary approval verified by ${loan.verified_by || 'Secondary Manager'}. Please perform final authorization to unlock full operational loan servicing.`
-											: `Secondary verification approved by ${loan.verified_by || 'you'}. Now waiting for Administrator to grant final activation.`}
+											? (!secRequiresApproval
+												? `Secondary approval not required (${getLoanSecondaryAccounts(loan).join(', ') || 'Secondary Partner'}). Please perform final authorization to unlock full operational loan servicing.`
+												: `Secondary approval verified by ${loan.verified_by || 'Secondary Manager'}. Please perform final authorization to unlock full operational loan servicing.`)
+											: (!secRequiresApproval
+												? `Secondary approval not required (${getLoanSecondaryAccounts(loan).join(', ') || 'Secondary Partner'}). Awaiting Administrator to grant final activation.`
+												: `Secondary verification approved by ${loan.verified_by || 'you'}. Now waiting for Administrator to grant final activation.`)}
 									</span>
 								)}
 							</p>
@@ -15644,8 +15664,8 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 			riskGrade: 'Grade A',
 			riskColor: 'bg-emerald-50 text-emerald-700 ring-emerald-300',
 			status: isSuperAdmin ? 'Active' : 'Pending',
-			approval_status: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
-			approvalStatus: isSuperAdmin ? 'APPROVED' : 'PENDING_SECONDARY',
+			approval_status: isSuperAdmin ? 'APPROVED' : (checkLoanSecondaryRequiresApproval(newItem, availableAccountObjects) ? 'PENDING_SECONDARY' : 'PENDING_ADMIN'),
+			approvalStatus: isSuperAdmin ? 'APPROVED' : (checkLoanSecondaryRequiresApproval(newItem, availableAccountObjects) ? 'PENDING_SECONDARY' : 'PENDING_ADMIN'),
 			verified_by: undefined,
 			actioned_by: isSuperAdmin ? (activeUser?.name || 'Super Admin') : undefined,
 			actioned_at: isSuperAdmin ? (getFormattedNow ? getFormattedNow() : new Date().toLocaleString()) : undefined,
@@ -15935,8 +15955,10 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 	const renderAccessRestrictedModal = () => {
 		if (!accessRestrictedModal.isOpen || !accessRestrictedModal.loan) return null;
 		const targetLoan = accessRestrictedModal.loan;
-		const isPendingSec = targetLoan.approval_status === 'PENDING_SECONDARY';
-		const isPendingAdm = targetLoan.approval_status === 'PENDING_ADMIN' || targetLoan.approval_status === 'VERIFIED';
+		const targetAccs = availableAccountObjects || [];
+		const secReq = checkLoanSecondaryRequiresApproval(targetLoan, targetAccs);
+		const isPendingSec = targetLoan.approval_status === 'PENDING_SECONDARY' && secReq;
+		const isPendingAdm = targetLoan.approval_status === 'PENDING_ADMIN' || targetLoan.approval_status === 'VERIFIED' || (targetLoan.approval_status === 'PENDING_SECONDARY' && !secReq);
 		const secAccounts = getLoanSecondaryAccounts(targetLoan);
 		const assignedSecUsers = getUsersWithPrimaryAccessForLoanSecondary(targetLoan, allUsers, availableAccountObjects);
 		const approverNames = assignedSecUsers.map((u) => u.name || u.username).join(', ');
@@ -16572,8 +16594,13 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 								paginatedLoans.map((loan, idx) => {
 									const canAccess = canUserAccessLoan(loan, activeUser, userPermissions, availableAccountObjects, allUsers);
 									const hasPayoutPending = isLoanPayoutPending(loan);
-									const isPendingSec = !hasPayoutPending && loan.approval_status === 'PENDING_SECONDARY';
-									const isPendingAdm = !hasPayoutPending && (loan.approval_status === 'PENDING_ADMIN' || loan.approval_status === 'VERIFIED');
+									const rowSecReq = checkLoanSecondaryRequiresApproval(loan, availableAccountObjects);
+									const isPendingSec = !hasPayoutPending && loan.approval_status === 'PENDING_SECONDARY' && rowSecReq;
+									const isPendingAdm = !hasPayoutPending && (
+										loan.approval_status === 'PENDING_ADMIN' ||
+										loan.approval_status === 'VERIFIED' ||
+										(loan.approval_status === 'PENDING_SECONDARY' && !rowSecReq)
+									);
 									const isUserSecMgr = checkUserHasPrimaryAccessForLoanSecondary(activeUser, loan, availableAccountObjects);
 
 									return (
@@ -16653,7 +16680,7 @@ export default function JointLoan({ searchQuery: propSearchQuery = '', currentUs
 											{/* 7. Status */}
 											<td className="py-3 px-4 whitespace-nowrap">
 												{(() => {
-													const computedStatus = getComputedLoanStatus(loan);
+													const computedStatus = getComputedLoanStatus(loan, null, availableAccountObjects);
 													const badge = getStatusBadge(computedStatus);
 
 													if (!canAccess) {
