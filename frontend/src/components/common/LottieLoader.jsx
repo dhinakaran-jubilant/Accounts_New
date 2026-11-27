@@ -107,11 +107,13 @@ export default function LottieLoader({
  * TableLoader Component
  * Renders a full-width table row loader containing the Lottie animation
  */
-export function TableLoader({ colSpan = 7, text = 'Loading data...', size = 'md', className = 'flex justify-center items-center' }) {
+export function TableLoader({ colSpan = 7, text = 'Loading data...', size = 'md', className = '' }) {
 	return (
 		<tr>
 			<td colSpan={colSpan} className={`py-12 text-center ${className}`}>
-				<LottieLoader text={text} size={size} />
+				<div className="w-full flex items-center justify-center">
+					<LottieLoader text={text} size={size} />
+				</div>
 			</td>
 		</tr>
 	);

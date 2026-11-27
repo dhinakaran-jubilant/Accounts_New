@@ -191,10 +191,10 @@ export default function RecentJointLoans({
 					</thead>
 					<tbody className="divide-y divide-slate-100 text-[13px]">
 						{isLoading ? (
-							<TableLoader colSpan={6} text="Loading recent joint loans..." />
+							<TableLoader colSpan={5} text="Loading recent joint loans..." />
 						) : recentLoans.length === 0 ? (
 							<tr>
-								<td colSpan={6} className="py-12 text-center text-slate-400">
+								<td colSpan={5} className="py-12 text-center text-slate-400">
 									<div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-2">
 										<span className="material-symbols-outlined text-[24px]">folder_off</span>
 									</div>

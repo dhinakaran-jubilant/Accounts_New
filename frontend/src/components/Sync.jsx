@@ -647,7 +647,6 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 								title="Reset all filters"
 							>
 								<span className="material-symbols-outlined text-[15px]">filter_list_off</span>
-								<span>Reset All</span>
 							</button>
 						)}
 					</div>
@@ -753,11 +752,7 @@ export default function Sync({ searchQuery: globalSearch = '', currentUser, onNa
 						</thead>
 						<tbody className="divide-y divide-slate-100 text-[13px] bg-white">
 							{isLoading ? (
-								<tr>
-									<td colSpan="8" className="py-16 text-center">
-										<TableLoader message="Loading DayBook synchronized records..." />
-									</td>
-								</tr>
+								<TableLoader colSpan={8} text="Loading DayBook synchronized records..." size="lg" />
 							) : filteredItems.length === 0 ? (
 								<tr>
 									<td colSpan="8" className="py-16 text-center">

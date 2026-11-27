@@ -2184,7 +2184,9 @@ export default function Settings({
 									</tr>
 								</thead>
 								<tbody className="divide-y divide-slate-100 font-medium">
-									{tallyPayouts.length === 0 ? (
+									{isLoadingPayouts ? (
+										<TableLoader colSpan={7} text="Loading Tally payout records..." size="md" />
+									) : tallyPayouts.length === 0 ? (
 										<tr>
 											<td colSpan={7} className="px-5 py-8 text-center text-slate-400">
 												No payout records in Neon DB yet. Send payout dates to your API endpoint below to test.
